@@ -155,12 +155,10 @@ class Client:
                     try:
 
                         parsed_data = json.loads(response_data)
-                        # Process movies based on query
                         if query == QUERY_1:
                             parsed_data = self._format_data_query_1(parsed_data)
                             self._write_to_file(self.output_file_q1, parsed_data)
                         elif query == QUERY_3:
-                            #parse data if needed
                             # parsed_data = self._format_data_query_3(parsed_data) 
                             self._write_to_file(self.output_file_q3, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_3}\033[0m")
@@ -169,7 +167,6 @@ class Client:
                             self._write_to_file(self.output_file_q4, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_4}\033[0m")
                         elif query == QUERY_5:
-                            #parse data if needed
                             # parsed_data = self._format_data_query_5(parsed_data) 
                             self._write_to_file(self.output_file_q5, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_5}\033[0m")

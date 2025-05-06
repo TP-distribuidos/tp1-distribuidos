@@ -32,6 +32,19 @@ services:
     volumes:
       - ./client:/app
 
+  client4:
+    env_file:
+      - ./client/.env
+    build: ./client
+    environment:
+      - CLIENT_ID=4
+    depends_on:
+      - boundary
+    volumes:
+      - ./client:/app
+    profiles:
+      - manual
+
   rabbitmq:
     image: rabbitmq:3-management
     ports:

@@ -10,7 +10,6 @@ from Config import Config
 
 logging.basicConfig(level=logging.INFO)
 
-# Constants
 QUERY_1 = os.getenv("QUERY_1", "1")
 QUERY_3 = os.getenv("QUERY_3", "3")
 QUERY_4 = os.getenv("QUERY_4", "4")
@@ -29,7 +28,6 @@ class Client:
         self.output_file_q4 = f"output/output_records_client_{self.name}_Q4.json"
         self.output_file_q5 = f"output/output_records_client_{self.name}_Q5.json"
         
-        # Register signal handlers
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
         
@@ -46,7 +44,6 @@ class Client:
         logging.info(f"Connected to {host}:{port}")
     
     def shutdown(self):
-        # Stop the receiver thread
         self.receiver_running = False
         
         if self.skt is None:
@@ -60,13 +57,11 @@ class Client:
             self.skt.close()
             self.skt = None
             
-        # Wait for receiver thread to finish if it exists
         if self.receiver_thread and self.receiver_thread.is_alive():
             self.receiver_thread.join()
             if self.receiver_thread.is_alive():
                 logging.warning("Receiver thread did not terminate gracefully")
 
-    # Existing methods
     def _send_csv(self, file_path: str = None):
         if self.skt is None:
             raise Exception("Socket not connected")
@@ -82,7 +77,6 @@ class Client:
         logging.info(f"\033[94mCSV file sent successfully with EOF: {self.config.get_EOF()}\033[0m")
         
     def _read_file_in_batches(self, file_path: str, batch_size: int):
-        # Validate inputs
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         try:
@@ -106,7 +100,6 @@ class Client:
         except IOError as e:
             raise IOError(f"Error reading file {file_path}: {e}")
     
-    # New wrapper methods
     def start_sender_thread(self, file_paths=None):
         """
         Wrapper method to send data files in a separate thread
@@ -118,12 +111,12 @@ class Client:
         def sender_task():
             try:
                 for file_path in file_paths:
-                    if not self.receiver_running:  # Check if shutdown was initiated
+                    if not self.receiver_running:
                         break
                     self._send_csv(file_path)
                 logging.info("\033[92mAll files sent successfully\033[0m")
             except (OSError, socket.error) as e:
-                if not self.receiver_running:  # Socket was closed due to shutdown
+                if not self.receiver_running:
                     logging.info("Sender thread stopping due to client shutdown")
                 else:
                     logging.error(f"Socket error in sender thread: {e}")
@@ -155,13 +148,10 @@ class Client:
                     try:
 
                         parsed_data = json.loads(response_data)
-                        # Process movies based on query
                         if query == QUERY_1:
                             parsed_data = self._format_data_query_1(parsed_data)
                             self._write_to_file(self.output_file_q1, parsed_data)
                         elif query == QUERY_3:
-                            #parse data if needed
-                            # parsed_data = self._format_data_query_3(parsed_data) 
                             self._write_to_file(self.output_file_q3, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_3}\033[0m")
                         elif query == QUERY_4:
@@ -169,8 +159,6 @@ class Client:
                             self._write_to_file(self.output_file_q4, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_4}\033[0m")
                         elif query == QUERY_5:
-                            #parse data if needed
-                            # parsed_data = self._format_data_query_5(parsed_data) 
                             self._write_to_file(self.output_file_q5, parsed_data)
                             logging.info(f"\033[94mReceived data for Query {QUERY_5}\033[0m")
                             
@@ -178,16 +166,15 @@ class Client:
                         logging.error(f"Failed to parse response as JSON: {e}")
                         logging.info(f"Raw response: {response_data[:100]}...")
                 except socket.timeout:
-                    # Just continue if we get a timeout
                     continue
                 except (ConnectionError, OSError) as e:
-                    if self.receiver_running:  # Only log as error if not during shutdown
+                    if self.receiver_running:
                         logging.error(f"Connection error in receiver thread: {e}")
                     else:
                         logging.info("Receiver thread stopping due to client shutdown")
                     break
         except Exception as e:
-            if self.receiver_running:  # Only log as error if not during shutdown
+            if self.receiver_running:
                 logging.error(f"Error in receiver thread: {e}")
         
         logging.info("Receiver thread stopping")
@@ -209,7 +196,6 @@ class Client:
         """
         Format data for Query 4
         """
-        # Transform the data into a more user-friendly format
         formatted_data = []
         for actor in data:
             formatted_data.append({actor.get('name', 'Unknown'): actor.get('count', 0) })
@@ -219,20 +205,15 @@ class Client:
         """
         Format data for Query 1
         """
-        # Transform the data into a more user-friendly format
         formatted_data = []
         for movie in data:
-            # Parse the genres string into a list of genre names
             genres_list = []
             try:
-                # The genres are stored as a string representation of a list of dicts
                 genres_data = json.loads(movie.get('genres', '[]').replace("'", '"'))
                 genres_list = [genre.get('name') for genre in genres_data if genre.get('name')]
             except (json.JSONDecodeError, AttributeError, TypeError):
-                # If we can't parse the genres, use an empty list
                 pass
             
-            # Create a formatted movie entry - without ID
             formatted_movie = {
                 "Movie": movie.get('original_title', 'Unknown'),
                 "Genres": genres_list

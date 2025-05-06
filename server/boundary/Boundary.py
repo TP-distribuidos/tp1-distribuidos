@@ -49,6 +49,7 @@ class Boundary:
     self._server_socket.setblocking(False)
     self._running = True
     self._client_sockets = []
+    self._client_tasks = {}
     self.protocol = Protocol
     self.id = uuid.uuid4()
     
@@ -96,8 +97,8 @@ class Boundary:
 
       logging.info(f"New client {addr[0]}:{addr[1]}")
       self._client_sockets.append({client_id: client_sock})
-      #TODO: delete task if client disconnects
-      asyncio.create_task(self._handle_client_connection(client_sock, addr, client_id))
+      client_task = asyncio.create_task(self._handle_client_connection(client_sock, addr, client_id))
+      self._client_tasks[client_id] = client_task
 
 
 # ------------------------------------------------------------------ #
@@ -224,6 +225,7 @@ class Boundary:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
                 await self._send_disconnect_marker(client_id)
+                self._cleanup_client_resources(client_id)
                 break
                
     except Exception as exc:
@@ -232,6 +234,7 @@ class Boundary:
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
         await self._send_disconnect_marker(client_id)
+        self._cleanup_client_resources(client_id)
 
   async def _send_disconnect_marker(self, client_id):
     """
@@ -259,6 +262,34 @@ class Boundary:
             await self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
         elif csvs_received == RATINGS_CSV:
            await self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+  
+  def _cleanup_client_resources(self, client_id):
+    """
+    Clean up resources associated with a client when they disconnect
+
+    Args:
+      client_id: The ID of the client to clean up
+    """
+    # Remove the client socket
+    for i, client_dict in enumerate(self._client_sockets):
+      if client_id in client_dict:
+        # Close the socket if it's still open
+        try:
+          sock = client_dict[client_id]
+          sock.close()
+        except Exception as e:
+          logging.warning(f"Error closing socket for client {client_id}: {e}")
+        
+        # Remove from the list
+        del self._client_sockets[i]
+        break
+
+    # Remove the task from tracking dictionary
+    # The task is already ending naturally so we don't need to cancel it
+    if client_id in self._client_tasks:
+      del self._client_tasks[client_id]
+      
+    logging.info(f"\033[94mCleaned up resources for client {client_id}\033[0m")
 
   def _remove_ratings_with_0_rating(self, data):
     """
@@ -457,16 +488,23 @@ class Boundary:
 # ------------------------------------------------------------------ #
 
   def _handle_shutdown(self, *_):
-      logging.info(f"Shutting down server")
-      self._running = False
-      self._server_socket.close()
-      
-      # Close RabbitMQ connection
-      asyncio.create_task(self.rabbitmq.close())
-      
-      for sock in self._client_sockets:
-          try:
-              sock.shutdown(socket.SHUT_RDWR)
-          except OSError:
-              pass
-          sock.close()
+    logging.info(f"Shutting down server")
+    self._running = False
+    self._server_socket.close()
+    
+    # Cancel all client tasks
+    for client_id, task in self._client_tasks.items():
+      if not task.done():
+        task.cancel()
+    
+    # Close RabbitMQ connection
+    asyncio.create_task(self.rabbitmq.close())
+    
+    # Close all client sockets
+    for client_dict in self._client_sockets:
+      for _, sock in client_dict.items():
+        try:
+          sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+          pass
+        sock.close()

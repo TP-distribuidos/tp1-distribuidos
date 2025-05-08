@@ -2,6 +2,23 @@
 TP final de Sistemas Distribuidos
 
 
+## Script usage
+First, make sure you have the script `docker_compose_generator.sh` in your working directory. This script generates a Docker Compose file based on the parameters you provide. You need to make the script executable before running it. You can do this by running the following command in your terminal (for Linux or macOS):
+```bash
+chmod +x docker_compose_generator.sh
+```
+Then you can run the script with the desired parameters. For example:
+```bash
+./docker_compose_generator.sh --output my-custom-compose.yaml
+```
+Or if you want to see the help message with all available options:
+```bash
+./docker_compose_generator.sh --help
+```
+
+
+
+
 ### aio-pika vs pika: Performance & Trade-offs
 Performance Comparison
 Aio-pika is typically not significantly slower than pika when used in the right context. In fact, for applications already using asyncio (like yours), it often provides better overall performance.

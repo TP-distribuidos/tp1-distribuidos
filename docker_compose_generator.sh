@@ -1,116 +1,96 @@
 #!/bin/bash
 
-# Default values
-CLIENTS=3
-OUTPUT="docker-compose_test.yaml"
-FILTER_BY_YEAR=2
-FILTER_BY_COUNTRY=2
-JOIN_CREDITS=2
-JOIN_RATINGS=2
-COUNT=4
-SENTIMENT_ANALYSIS=2
-AVERAGE_MOVIES_BY_RATING=1
-MAX_MIN=1
-TOP=1
-AVERAGE_SENTIMENT=2
-INCLUDE_SENTIMENT_ANALYSIS=false
+# Default output filename
+OUTPUT_FILE="docker-compose-test.yaml"
+
+# Function to display usage information
+show_help() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "Generate Docker Compose configuration file."
+    echo ""
+    echo "Options:"
+    echo "  -o, --output FILE    Specify output filename (default: docker-compose-test.yaml)"
+    echo "  -h, --help           Display this help message and exit"
+    echo ""
+    echo "Examples:"
+    echo "  $0                   Generate using default filename"
+    echo "  $0 -o my-compose.yaml   Generate with custom filename"
+}
+
+# Function to show Docker Compose commands after successful generation
+show_docker_commands() {
+    local compose_file=$1
+    
+    echo ""
+    echo "========== DOCKER COMPOSE COMMANDS =========="
+    echo "To use the generated Docker Compose file:"
+    echo ""
+    echo "Start services:"
+    echo "  docker compose -f ${compose_file} up"
+    echo ""
+    echo "Start services in detached mode:"
+    echo "  docker compose -f ${compose_file} up -d"
+    echo ""
+    echo "Build and start services:"
+    echo "  docker compose -f ${compose_file} up --build"
+    echo ""
+    echo "Stop and remove services:"
+    echo "  docker compose -f ${compose_file} down"
+    echo ""
+    echo "Complete reset (stop containers, remove volumes, rebuild):"
+    echo "  docker compose -f ${compose_file} down -v && docker compose -f ${compose_file} up --build"
+    echo ""
+    echo "View logs:"
+    echo "  docker compose -f ${compose_file} logs -f"
+    echo "==========================================="
+}
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
-  case $1 in
-    --clients)
-      CLIENTS="$2"
-      shift 2
-      ;;
-    --output)
-      OUTPUT="$2"
-      shift 2
-      ;;
-    --filter-by-year)
-      FILTER_BY_YEAR="$2"
-      shift 2
-      ;;
-    --filter-by-country)
-      FILTER_BY_COUNTRY="$2"
-      shift 2
-      ;;
-    --join-credits)
-      JOIN_CREDITS="$2"
-      shift 2
-      ;;
-    --join-ratings)
-      JOIN_RATINGS="$2"
-      shift 2
-      ;;
-    --count)
-      COUNT="$2"
-      shift 2
-      ;;
-    --sentiment-analysis)
-      SENTIMENT_ANALYSIS="$2"
-      shift 2
-      ;;
-    --average-movies-by-rating)
-      AVERAGE_MOVIES_BY_RATING="$2"
-      shift 2
-      ;;
-    --max-min)
-      MAX_MIN="$2"
-      shift 2
-      ;;
-    --top)
-      TOP="$2"
-      shift 2
-      ;;
-    --average-sentiment)
-      AVERAGE_SENTIMENT="$2"
-      shift 2
-      ;;
-        
-    --include-sentiment-analysis)
-      INCLUDE_SENTIMENT_ANALYSIS=true
-      shift
-      ;;
-    *)
-      echo "Unknown option: $1"
-      exit 1
-      ;;
-  esac
+    case $1 in
+        -o|--output)
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_help
+            exit 1
+            ;;
+    esac
 done
 
-# Check if python3 is installed
-if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 is required but not installed"
+echo "Will generate Docker Compose file: $OUTPUT_FILE"
+
+# Check if Python is installed
+if command -v python3 &>/dev/null; then
+    PYTHON="python3"
+elif command -v python &>/dev/null; then
+    PYTHON="python"
+else
+    echo "Error: Python is not installed. Please install Python to run this script."
     exit 1
 fi
 
-# Check if pyyaml is installed
-python3 -c "import yaml" &> /dev/null
+# Check if PyYAML is installed
+$PYTHON -c "import yaml" 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo "Installing PyYAML..."
-    pip3 install pyyaml
+    echo "PyYAML is not installed. Installing..."
+    pip install PyYAML
 fi
 
-SENTIMENT_ARGS=""
-if [ "$INCLUDE_SENTIMENT_ANALYSIS" = true ]; then
-  SENTIMENT_ARGS="--include-sentiment-analysis"
+echo "Generating Docker Compose file..."
+$PYTHON docker_compose_generator.py "$OUTPUT_FILE"
+
+# Check if generation was successful
+if [ -f "$OUTPUT_FILE" ]; then
+    echo "Docker Compose file generated successfully at: $OUTPUT_FILE"
+    show_docker_commands "$OUTPUT_FILE"
+else
+    echo "Error: Failed to generate Docker Compose file."
+    exit 1
 fi
-
-# Execute the Python script
-python3 docker_compose_generator.py \
-  --clients "${CLIENTS}" \
-  --output "${OUTPUT}" \
-  --filter-by-year "${FILTER_BY_YEAR}" \
-  --filter-by-country "${FILTER_BY_COUNTRY}" \
-  --join-credits "${JOIN_CREDITS}" \
-  --join-ratings "${JOIN_RATINGS}" \
-  --count "${COUNT}" \
-  --sentiment-analysis "${SENTIMENT_ANALYSIS}" \
-  --average-movies-by-rating "${AVERAGE_MOVIES_BY_RATING}" \
-  --max-min "${MAX_MIN}" \
-  --top "${TOP}" \
-  --average-sentiment "${AVERAGE_SENTIMENT}" \
-  ${SENTIMENT_ARGS}
-
-echo "Docker Compose configuration generated successfully!"
-echo "You can run it with: docker compose -f ${OUTPUT} up --build"

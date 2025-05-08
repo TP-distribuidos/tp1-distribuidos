@@ -658,45 +658,45 @@ services:
       - ./server/rabbitmq:/app/rabbitmq
       - ./server/common:/app/common
 
-  sentiment_analysis_worker_1:
-    build:
-      context: ./server
-      dockerfile: worker/sentiment_analysis/Dockerfile
-    env_file:
-      - ./server/worker/sentiment_analysis/.env
-    environment:
-      - ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_1
-      - ROUTER_PRODUCER_QUEUE=average_sentiment_router
-    depends_on:
-      - rabbitmq
-    volumes:
-      - ./server/worker/sentiment_analysis:/app
-      - ./server/rabbitmq:/app/rabbitmq
-      - ./server/common:/app/common
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+  # sentiment_analysis_worker_1:
+  #   build:
+  #     context: ./server
+  #     dockerfile: worker/sentiment_analysis/Dockerfile
+  #   env_file:
+  #     - ./server/worker/sentiment_analysis/.env
+  #   environment:
+  #     - ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_1
+  #     - ROUTER_PRODUCER_QUEUE=average_sentiment_router
+  #   depends_on:
+  #     - rabbitmq
+  #   volumes:
+  #     - ./server/worker/sentiment_analysis:/app
+  #     - ./server/rabbitmq:/app/rabbitmq
+  #     - ./server/common:/app/common
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 2G
 
-  sentiment_analysis_worker_2:
-    build:
-      context: ./server
-      dockerfile: worker/sentiment_analysis/Dockerfile
-    env_file:
-      - ./server/worker/sentiment_analysis/.env
-    environment:
-      - ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_2
-      - ROUTER_PRODUCER_QUEUE=average_sentiment_router
-    depends_on:
-      - rabbitmq
-    volumes:
-      - ./server/worker/sentiment_analysis:/app
-      - ./server/rabbitmq:/app/rabbitmq
-      - ./server/common:/app/common
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+  # sentiment_analysis_worker_2:
+  #   build:
+  #     context: ./server
+  #     dockerfile: worker/sentiment_analysis/Dockerfile
+  #   env_file:
+  #     - ./server/worker/sentiment_analysis/.env
+  #   environment:
+  #     - ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_2
+  #     - ROUTER_PRODUCER_QUEUE=average_sentiment_router
+  #   depends_on:
+  #     - rabbitmq
+  #   volumes:
+  #     - ./server/worker/sentiment_analysis:/app
+  #     - ./server/rabbitmq:/app/rabbitmq
+  #     - ./server/common:/app/common
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 2G
 
   average_sentiment_router:
     build:

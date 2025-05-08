@@ -9,7 +9,7 @@ chmod +x docker_compose_generator.sh
 ```
 Then you can run the script with the desired parameters. For example:
 ```bash
-./docker_compose_generator.sh --output my-custom-compose.yaml
+./docker_compose_generator.sh -c 5 -o production-compose.yaml
 ```
 Or if you want to see the help message with all available options:
 ```bash

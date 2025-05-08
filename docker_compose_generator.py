@@ -4,12 +4,14 @@ import yaml
 import os
 import sys
 
-def generate_docker_compose(output_file='docker-compose-test.yaml'):
+NUMBER_OF_CLIENTS_AUTOMATIC = 3
+
+def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4):
     # Start with an empty services dictionary
     services = {}
 
-    # Client services
-    for i in range(1, 5):
+    # Client services - now using the specified number of clients
+    for i in range(1, num_clients + 1):
         client_config = {
             "env_file": ["./client/.env"],
             "build": "./client",
@@ -18,11 +20,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml'):
             "volumes": ["./client:/app"]
         }
         
-        # Add profiles for client4
-        if i == 4:
+        # TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
+        # Add profiles for clients beyond the first 3
+        if i > NUMBER_OF_CLIENTS_AUTOMATIC:
             client_config["profiles"] = ["manual"]
             
         services[f"client{i}"] = client_config
+      
       
 
     # RabbitMQ service
@@ -620,11 +624,27 @@ def generate_docker_compose(output_file='docker-compose-test.yaml'):
     with open(output_file, 'w') as file:
         # Convert Python dictionary to YAML and write to file
         yaml.dump(docker_compose, file, default_flow_style=False)
+        
+    print(f"Docker Compose file generated successfully at {output_file} with {num_clients} client nodes")
 
 if __name__ == "__main__":
-    # Check if a filename was provided as command line argument
+    # Process command line arguments
+    output_file = 'docker-compose-test.yaml'
+    num_clients = 4
+    
+    # Get output filename from first argument if provided
     if len(sys.argv) > 1:
         output_file = sys.argv[1]
-        generate_docker_compose(output_file)
-    else:
-        generate_docker_compose()
+    
+    # Get number of clients from second argument if provided
+    if len(sys.argv) > 2:
+        try:
+            num_clients = int(sys.argv[2])
+            if num_clients < 1:
+                raise ValueError("Number of clients must be positive")
+        except ValueError:
+            print("Error: Number of clients must be a positive integer.")
+            sys.exit(1)
+    
+    # Generate the Docker Compose file
+    generate_docker_compose(output_file, num_clients)

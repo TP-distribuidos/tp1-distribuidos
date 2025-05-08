@@ -4,28 +4,35 @@ import yaml
 import os
 import sys
 
-# TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
-NUMBER_OF_CLIENTS_AUTOMATIC = 3
+from docker_compose_generator_files.client import generate_client_services
+from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers
+from docker_compose_generator_files.routers.year_movies_router import generate_year_movies_router
+from docker_compose_generator_files.routers.country_router import generate_country_router
+
+    
+
 
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2):
     # Start with an empty services dictionary
     services = {}
 
-    # Client services - now using the specified number of clients
-    for i in range(1, num_clients + 1):
-        client_config = {
-            "env_file": ["./client/.env"],
-            "build": "./client",
-            "environment": [f"CLIENT_ID={i}"],
-            "depends_on": ["boundary"],
-            "volumes": ["./client:/app"]
-        }
-        
-        # Add profiles for clients beyond the first 3
-        if i > NUMBER_OF_CLIENTS_AUTOMATIC:
-            client_config["profiles"] = ["manual"]
-            
-        services[f"client{i}"] = client_config
+   # Add client services
+   # TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
+    NUMBER_OF_CLIENTS_AUTOMATIC = 3
+    client_services = generate_client_services(num_clients, NUMBER_OF_CLIENTS_AUTOMATIC)
+    services.update(client_services)
+    
+    # Add filter_by_year workers
+    year_workers = generate_filter_by_year_workers(num_year_workers)
+    services.update(year_workers)
+    
+    # Add year_movies_router
+    year_router = generate_year_movies_router(num_year_workers) 
+    services.update(year_router)
+    
+    # Add country_router
+    country_router = generate_country_router(num_year_workers)
+    services.update(country_router)
       
     # RabbitMQ service
     services["rabbitmq"] = {
@@ -50,31 +57,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         "ports": ["5000:5000"],
         "volumes": [
             "./server/boundary:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # Create the output queues string for year_movies_router
-    year_worker_queues = ",".join([f"filter_by_year_worker_{i}" for i in range(1, num_year_workers + 1)])
-
-
-    # BOUNDARY ROUTERS with dynamic filter_by_year workers
-    services["year_movies_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=1",
-            "INPUT_QUEUE=boundary_movies_router",
-            f"OUTPUT_QUEUES={year_worker_queues}",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
             "./server/rabbitmq:/app/rabbitmq",
             "./server/common:/app/common"
         ]
@@ -120,47 +102,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                 "./server/common:/app/common"
             ]
         }
-
-    # FILTER BY YEAR WORKERS - Dynamic based on num_year_workers
-    for i in range(1, num_year_workers + 1):
-        services[f"filter_by_year_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/filter_by_year/Dockerfile"
-            },
-            "env_file": ["./server/worker/filter_by_year/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=filter_by_year_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=country_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/filter_by_year:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # COUNTRY ROUTER - Update NUMBER_OF_PRODUCER_WORKERS to match num_year_workers
-    services["country_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            f"NUMBER_OF_PRODUCER_WORKERS={num_year_workers}",  # Set to match the number of year workers
-            "INPUT_QUEUE=country_router",
-            "OUTPUT_QUEUES=filter_by_country_worker_1,filter_by_country_worker_2",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
 
     # FILTER BY COUNTRY WORKERS
     for i in range(1, 3):

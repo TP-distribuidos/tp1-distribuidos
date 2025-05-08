@@ -3,6 +3,7 @@
 # Default values
 OUTPUT_FILE="docker-compose-test.yaml"
 NUM_CLIENTS=4
+NUM_YEAR_WORKERS=2  # Default number of filter_by_year workers
 
 # Function to display usage information
 show_help() {
@@ -12,13 +13,15 @@ show_help() {
     echo "Options:"
     echo "  -o, --output FILE    Specify output filename (default: docker-compose-test.yaml)"
     echo "  -c, --clients NUM    Specify number of client nodes to generate (default: 4)"
+    echo "  -y, --year-workers NUM  Specify number of filter_by_year worker nodes (default: 2)"
     echo "  -h, --help           Display this help message and exit"
     echo ""
     echo "Examples:"
-    echo "  $0                   Generate using defaults (4 clients, default filename)"
+    echo "  $0                   Generate using defaults (4 clients, 2 year workers)"
     echo "  $0 -o my-compose.yaml   Generate with custom filename"
     echo "  $0 -c 10             Generate with 10 client nodes"
-    echo "  $0 -c 6 -o prod.yaml Generate with 6 client nodes and custom filename"
+    echo "  $0 -y 5              Generate with 5 filter_by_year worker nodes"
+    echo "  $0 -c 6 -y 4 -o prod.yaml Generate with custom settings"
 }
 
 # Function to show Docker Compose commands after successful generation
@@ -65,6 +68,15 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        -y|--year-workers)
+            NUM_YEAR_WORKERS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$NUM_YEAR_WORKERS" =~ ^[0-9]+$ ]] || [ "$NUM_YEAR_WORKERS" -lt 1 ]; then
+                echo "Error: Number of year workers must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -77,7 +89,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "Will generate Docker Compose file: $OUTPUT_FILE with $NUM_CLIENTS client nodes"
+echo "Will generate Docker Compose file: $OUTPUT_FILE with $NUM_CLIENTS client nodes and $NUM_YEAR_WORKERS filter_by_year workers"
 
 # Check if Python is installed
 if command -v python3 &>/dev/null; then
@@ -97,7 +109,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Generating Docker Compose file..."
-$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS"
+$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS"
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

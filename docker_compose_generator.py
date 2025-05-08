@@ -4,9 +4,10 @@ import yaml
 import os
 import sys
 
+# TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
 NUMBER_OF_CLIENTS_AUTOMATIC = 3
 
-def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4):
+def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2):
     # Start with an empty services dictionary
     services = {}
 
@@ -20,15 +21,12 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
             "volumes": ["./client:/app"]
         }
         
-        # TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
         # Add profiles for clients beyond the first 3
         if i > NUMBER_OF_CLIENTS_AUTOMATIC:
             client_config["profiles"] = ["manual"]
             
         services[f"client{i}"] = client_config
       
-      
-
     # RabbitMQ service
     services["rabbitmq"] = {
         "image": "rabbitmq:3-management",
@@ -57,7 +55,11 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         ]
     }
 
-    # BOUNDARY ROUTERS
+    # Create the output queues string for year_movies_router
+    year_worker_queues = ",".join([f"filter_by_year_worker_{i}" for i in range(1, num_year_workers + 1)])
+
+
+    # BOUNDARY ROUTERS with dynamic filter_by_year workers
     services["year_movies_router"] = {
         "build": {
             "context": "./server",
@@ -67,7 +69,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         "environment": [
             "NUMBER_OF_PRODUCER_WORKERS=1",
             "INPUT_QUEUE=boundary_movies_router",
-            "OUTPUT_QUEUES=filter_by_year_worker_1,filter_by_year_worker_2",
+            f"OUTPUT_QUEUES={year_worker_queues}",
             "BALANCER_TYPE=round_robin"
         ],
         "depends_on": ["rabbitmq"],
@@ -119,8 +121,8 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
             ]
         }
 
-    # FILTER BY YEAR WORKERS
-    for i in range(1, 3):
+    # FILTER BY YEAR WORKERS - Dynamic based on num_year_workers
+    for i in range(1, num_year_workers + 1):
         services[f"filter_by_year_worker_{i}"] = {
             "build": {
                 "context": "./server",
@@ -139,7 +141,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
             ]
         }
 
-    # COUNTRY ROUTER
+    # COUNTRY ROUTER - Update NUMBER_OF_PRODUCER_WORKERS to match num_year_workers
     services["country_router"] = {
         "build": {
             "context": "./server",
@@ -147,7 +149,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         },
         "env_file": ["./server/router/.env"],
         "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
+            f"NUMBER_OF_PRODUCER_WORKERS={num_year_workers}",  # Set to match the number of year workers
             "INPUT_QUEUE=country_router",
             "OUTPUT_QUEUES=filter_by_country_worker_1,filter_by_country_worker_2",
             "BALANCER_TYPE=round_robin"
@@ -625,12 +627,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         # Convert Python dictionary to YAML and write to file
         yaml.dump(docker_compose, file, default_flow_style=False)
         
-    print(f"Docker Compose file generated successfully at {output_file} with {num_clients} client nodes")
+    print(f"Docker Compose file generated successfully at {output_file} with {num_clients} client nodes and {num_year_workers} filter_by_year workers")
 
 if __name__ == "__main__":
     # Process command line arguments
     output_file = 'docker-compose-test.yaml'
     num_clients = 4
+    num_year_workers = 2
     
     # Get output filename from first argument if provided
     if len(sys.argv) > 1:
@@ -646,5 +649,15 @@ if __name__ == "__main__":
             print("Error: Number of clients must be a positive integer.")
             sys.exit(1)
     
+    # Get number of year workers from third argument if provided
+    if len(sys.argv) > 3:
+        try:
+            num_year_workers = int(sys.argv[3])
+            if num_year_workers < 1:
+                raise ValueError("Number of year workers must be positive")
+        except ValueError:
+            print("Error: Number of year workers must be a positive integer.")
+            sys.exit(1)
+    
     # Generate the Docker Compose file
-    generate_docker_compose(output_file, num_clients)
+    generate_docker_compose(output_file, num_clients, num_year_workers)

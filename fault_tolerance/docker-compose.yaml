@@ -1,0 +1,68 @@
+version: '3'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  producer_worker:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    environment:
+      - PRODUCER_QUEUE=test_queue
+      - SENTINEL_PORT=9001
+    ports:
+      - "9001:9001"
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./producer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+
+  consumer_worker:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    environment:
+      - CONSUMER_QUEUE=test_queue
+      - SENTINEL_PORT=9002
+      - OUTPUT_FILE=/app/output/received_messages.txt
+    ports:
+      - "9002:9002"
+    depends_on:
+      - rabbitmq
+      - producer_worker
+    volumes:
+      - ./consumer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+
+  sentinel1:
+    build:
+      context: ./sentinel
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_HOST=producer_worker
+      - WORKER_PORT=9001
+      - CHECK_INTERVAL=5
+    depends_on:
+      - producer_worker
+    volumes:
+      - ./sentinel:/app
+
+  sentinel2:
+    build:
+      context: ./sentinel
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_HOST=consumer_worker
+      - WORKER_PORT=9002
+      - CHECK_INTERVAL=5
+    depends_on:
+      - consumer_worker
+    volumes:
+      - ./sentinel:/app

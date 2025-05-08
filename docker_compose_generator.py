@@ -8,14 +8,18 @@ from docker_compose_generator_files.client.client import generate_client_service
 from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers
 from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
 from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers
+from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
 from docker_compose_generator_files.routers.join_credits import generate_join_credits_router
+from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
+from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
 from docker_compose_generator_files.routers.count import generate_count_router
 
+
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
-                           num_country_workers=2, num_join_credits_workers=2):
+                           num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2):
     # Start with an empty services dictionary
     services = {}
 
@@ -36,6 +40,10 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     join_credits_workers = generate_join_credits_workers(num_join_credits_workers)
     services.update(join_credits_workers)
     
+    # Add join_ratings workers
+    join_ratings_workers = generate_join_ratings_workers(num_join_ratings_workers)
+    services.update(join_ratings_workers)
+    
     # Add year_movies_router
     year_router = generate_year_movies_router(num_year_workers) 
     services.update(year_router)
@@ -44,13 +52,21 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     country_router = generate_country_router(num_year_workers, num_country_workers)
     services.update(country_router)
     
-    # Add join_movies_router with country workers and join_credits workers counts
-    join_movies = generate_join_movies_router(num_country_workers, num_join_credits_workers)
+    # Add join_movies_router with all worker counts
+    join_movies = generate_join_movies_router(num_country_workers, num_join_credits_workers, num_join_ratings_workers)
     services.update(join_movies)
     
     # Add join_credits_router with join_credits workers count
     join_credits = generate_join_credits_router(num_join_credits_workers)
     services.update(join_credits)
+    
+    # Add join_ratings_router with join_ratings workers count
+    join_ratings = generate_join_ratings_router(num_join_ratings_workers)
+    services.update(join_ratings)
+    
+    # Add average_movies_by_rating_router with join_ratings workers count
+    avg_rating_router = generate_average_movies_by_rating_router(num_join_ratings_workers)
+    services.update(avg_rating_router)
     
     # Add count_router with join_credits workers count
     count_router = generate_count_router(num_join_credits_workers)
@@ -85,67 +101,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     }
 
     # Q3 SECTION
-    services["join_ratings_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=1",
-            "INPUT_QUEUE=boundary_ratings_router",
-            "OUTPUT_QUEUES=join_ratings_worker_1_ratings,join_ratings_worker_2_ratings",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # JOIN RATINGS WORKERS
-    for i in range(1, 3):
-        services[f"join_ratings_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/join_ratings/Dockerfile"
-            },
-            "env_file": ["./server/worker/join_ratings/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE_MOVIES=join_ratings_worker_{i}_movies",
-                f"ROUTER_CONSUME_QUEUE_RATINGS=join_ratings_worker_{i}_ratings",
-                "ROUTER_PRODUCER_QUEUE=average_movies_by_rating_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/join_ratings:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # AVERAGE MOVIES BY RATING ROUTER
-    services["average_movies_by_rating_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
-            "INPUT_QUEUE=average_movies_by_rating_router",
-            "OUTPUT_QUEUES=[[\"average_movies_by_rating_worker_1\"],[\"average_movies_by_rating_worker_2\",\"average_movies_by_rating_worker_3\"]]",
-            "BALANCER_TYPE=shard_by_ascii"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
 
     # AVERAGE MOVIES BY RATING WORKERS
     for i in range(1, 4):
@@ -497,6 +452,7 @@ if __name__ == "__main__":
     num_year_workers = 2
     num_country_workers = 2
     num_join_credits_workers = 2
+    num_join_ratings_workers = 2
     
     # Get output filename from first argument if provided
     if len(sys.argv) > 1:
@@ -541,7 +497,18 @@ if __name__ == "__main__":
         except ValueError:
             print("Error: Number of join credits workers must be a positive integer.")
             sys.exit(1)
+            
+    # Get number of join ratings workers from sixth argument if provided
+    if len(sys.argv) > 6:
+        try:
+            num_join_ratings_workers = int(sys.argv[6])
+            if num_join_ratings_workers < 1:
+                raise ValueError("Number of join ratings workers must be positive")
+        except ValueError:
+            print("Error: Number of join ratings workers must be a positive integer.")
+            sys.exit(1)
     
     # Generate the Docker Compose file
     generate_docker_compose(output_file, num_clients, num_year_workers, 
-                           num_country_workers, num_join_credits_workers)
+                           num_country_workers, num_join_credits_workers,
+                           num_join_ratings_workers)

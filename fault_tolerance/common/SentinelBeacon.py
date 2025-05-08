@@ -65,9 +65,16 @@ class SentinelBeacon:
                 data = client_socket.recv(1024)
                 if not data:
                     break
-                
-                # Echo the data back
-                client_socket.sendall(data)
+                    
+                try:
+                    # Try to use Serializer if available
+                    from Serializer import Serializer
+                    message = Serializer.deserialize(data)
+                    client_socket.sendall(data)  # Echo the original data back
+                    
+                except ImportError:
+                    # Fallback to simple echo if Serializer not available
+                    client_socket.sendall(data)
                 
             client_socket.close()
             logging.info(f"Sentinel connection closed from {addr}")

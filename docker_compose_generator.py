@@ -4,20 +4,18 @@ import yaml
 import os
 import sys
 
-from docker_compose_generator_files.client import generate_client_services
+from docker_compose_generator_files.client.client import generate_client_services
 from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers
+from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
 from docker_compose_generator_files.routers.year_movies_router import generate_year_movies_router
 from docker_compose_generator_files.routers.country_router import generate_country_router
+from docker_compose_generator_files.routers.join_movies_router import generate_join_movies_router
 
-    
-
-
-def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2):
+def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, num_country_workers=2):
     # Start with an empty services dictionary
     services = {}
 
-   # Add client services
-   # TODO: Make the NUMBER_OF_CLIENTS_AUTOMATIC configurable
+    # Add client services
     NUMBER_OF_CLIENTS_AUTOMATIC = 3
     client_services = generate_client_services(num_clients, NUMBER_OF_CLIENTS_AUTOMATIC)
     services.update(client_services)
@@ -26,13 +24,21 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     year_workers = generate_filter_by_year_workers(num_year_workers)
     services.update(year_workers)
     
+    # Add filter_by_country workers
+    country_workers = generate_filter_by_country_workers(num_country_workers)
+    services.update(country_workers)
+    
     # Add year_movies_router
     year_router = generate_year_movies_router(num_year_workers) 
     services.update(year_router)
     
-    # Add country_router
-    country_router = generate_country_router(num_year_workers)
+    # Add country_router with both worker counts
+    country_router = generate_country_router(num_year_workers, num_country_workers)
     services.update(country_router)
+    
+    # Add join_movies_router
+    join_movies = generate_join_movies_router(num_country_workers)
+    services.update(join_movies)
       
     # RabbitMQ service
     services["rabbitmq"] = {
@@ -98,26 +104,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
             "depends_on": ["rabbitmq"],
             "volumes": [
                 "./server/worker/join_credits:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # FILTER BY COUNTRY WORKERS
-    for i in range(1, 3):
-        services[f"filter_by_country_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/filter_by_country/Dockerfile"
-            },
-            "env_file": ["./server/worker/filter_by_country/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=filter_by_country_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=join_movies_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/filter_by_country:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
             ]
@@ -288,26 +274,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     }
 
     # Q4 SECTION
-    services["join_movies_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
-            "INPUT_QUEUE=join_movies_router",
-            "OUTPUT_QUEUES=join_ratings_worker_1_movies,join_ratings_worker_2_movies,join_credits_worker_1_movies,join_credits_worker_2_movies",
-            "EXCHANGE_TYPE=fanout",
-            "EXCHANGE_NAME=join_router_exchange"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
 
     # COUNT ROUTER
     services["count_router"] = {
@@ -575,6 +541,7 @@ if __name__ == "__main__":
     output_file = 'docker-compose-test.yaml'
     num_clients = 4
     num_year_workers = 2
+    num_country_workers = 2
     
     # Get output filename from first argument if provided
     if len(sys.argv) > 1:
@@ -600,5 +567,15 @@ if __name__ == "__main__":
             print("Error: Number of year workers must be a positive integer.")
             sys.exit(1)
     
+    # Get number of country workers from fourth argument if provided
+    if len(sys.argv) > 4:
+        try:
+            num_country_workers = int(sys.argv[4])
+            if num_country_workers < 1:
+                raise ValueError("Number of country workers must be positive")
+        except ValueError:
+            print("Error: Number of country workers must be a positive integer.")
+            sys.exit(1)
+    
     # Generate the Docker Compose file
-    generate_docker_compose(output_file, num_clients, num_year_workers)
+    generate_docker_compose(output_file, num_clients, num_year_workers, num_country_workers)

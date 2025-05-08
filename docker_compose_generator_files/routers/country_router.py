@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 
-def generate_country_router(num_year_workers=2):
+from docker_compose_generator_files.workers.filter_by_country import generate_worker_queue_names
+
+def generate_country_router(num_year_workers=2, num_country_workers=2):
     """
     Generate the country_router service configuration for Docker Compose.
     
     Args:
         num_year_workers (int): Number of filter_by_year workers 
                                (used to set NUMBER_OF_PRODUCER_WORKERS)
+        num_country_workers (int): Number of filter_by_country workers
+                                  (used to set OUTPUT_QUEUES)
         
     Returns:
         dict: Dictionary with country_router service configuration
     """
+    # Get queue names from the filter_by_country module
+    worker_queues = generate_worker_queue_names(num_country_workers)
+    
+    # Create the output queues string for country_router
+    country_worker_queues = ",".join(worker_queues)
+    
     return {
         "country_router": {
             "build": {
@@ -21,7 +31,7 @@ def generate_country_router(num_year_workers=2):
             "environment": [
                 f"NUMBER_OF_PRODUCER_WORKERS={num_year_workers}",
                 "INPUT_QUEUE=country_router",
-                "OUTPUT_QUEUES=filter_by_country_worker_1,filter_by_country_worker_2",
+                f"OUTPUT_QUEUES={country_worker_queues}",
                 "BALANCER_TYPE=round_robin"
             ],
             "depends_on": ["rabbitmq"],

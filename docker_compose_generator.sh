@@ -9,6 +9,9 @@ NUM_JOIN_CREDITS_WORKERS=2
 NUM_JOIN_RATINGS_WORKERS=2
 AVG_RATING_SHARDS=2
 AVG_RATING_REPLICAS=2
+COUNT_SHARDS=2
+COUNT_WORKERS_PER_SHARD=2
+NUM_TOP_WORKERS=3
 
 # Function to display usage information
 show_help() {
@@ -24,12 +27,15 @@ show_help() {
     echo "  -r, --join-ratings-workers NUM Specify number of join_ratings worker nodes (default: 2)"
     echo "  -a, --avg-rating-shards NUM Specify number of average_movies_by_rating shards (default: 2)"
     echo "  -b, --avg-rating-replicas NUM Specify replicas per avg_rating shard (default: 2)"
+    echo "  -d, --count-shards NUM Specify number of count worker shards (default: 2)"
+    echo "  -e, --count-workers-per-shard NUM Specify workers per count shard (default: 2)"
+    echo "  -t, --top-workers NUM Specify number of top workers (default: 3)"
     echo "  -h, --help            Display this help message and exit"
     echo ""
     echo "Examples:"
     echo "  $0                    Generate using defaults"
-    echo "  $0 -a 3 -b 2          Generate with 3 avg_rating shards and 2 replicas per shard"
-    echo "  $0 -y 5 -n 4 -j 3 -r 4 -a 2 -b 3  Generate with custom worker counts"
+    echo "  $0 -d 2 -e 3          Generate with 2 count shards and 3 workers per shard"
+    echo "  $0 -d 3 -e 2 -t 4     Configure count workers with 3 shards, 2 workers each, and 4 top workers"
 }
 
 
@@ -113,6 +119,33 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        -d|--count-shards)
+            COUNT_SHARDS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$COUNT_SHARDS" =~ ^[0-9]+$ ]] || [ "$COUNT_SHARDS" -lt 1 ]; then
+                echo "Error: Number of count shards must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -e|--count-workers-per-shard)
+            COUNT_WORKERS_PER_SHARD="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$COUNT_WORKERS_PER_SHARD" =~ ^[0-9]+$ ]] || [ "$COUNT_WORKERS_PER_SHARD" -lt 1 ]; then
+                echo "Error: Number of count workers per shard must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -t|--top-workers)
+            NUM_TOP_WORKERS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$NUM_TOP_WORKERS" =~ ^[0-9]+$ ]] || [ "$NUM_TOP_WORKERS" -lt 1 ]; then
+                echo "Error: Number of top workers must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
         -y|--year-workers)
             NUM_YEAR_WORKERS="$2"
             # Validate that the input is a positive integer
@@ -151,6 +184,9 @@ echo "  $NUM_JOIN_CREDITS_WORKERS join_credits workers"
 echo "  $NUM_JOIN_RATINGS_WORKERS join_ratings workers"
 echo "  $AVG_RATING_SHARDS average_movies_by_rating shards"
 echo "  $AVG_RATING_REPLICAS average_movies_by_rating replicas per shard"
+echo "  $COUNT_SHARDS count shards"
+echo "  $COUNT_WORKERS_PER_SHARD count workers per shard"
+echo "  $NUM_TOP_WORKERS top workers"
 
 
 
@@ -172,7 +208,9 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Generating Docker Compose file..."
-$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS"
+$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" \
+"$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS" \
+"$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS"
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

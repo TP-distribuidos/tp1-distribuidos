@@ -9,7 +9,12 @@ chmod +x docker_compose_generator.sh
 ```
 Then you can run the script with the desired parameters. For example:
 ```bash
-./docker_compose_generator.sh -c 8 -y 3 -n 4 -j 5 -o production.yaml
+./docker_compose_generator.sh
+```
+This will generate a default `docker-compose.yaml` file with the default parameters.
+You can also specify various parameters to customize the generated Docker Compose file. Here is an example of how to use the script with different parameters for a production-like setup:
+```bash
+./docker_compose_generator.sh -c 10 -y 3 -n 4 -j 3 -r 3 -a 2 -b 2 -d 3 -e 2 -t 4 -o production.yaml
 ```
 Or if you want to see the help message with all available options:
 ```bash

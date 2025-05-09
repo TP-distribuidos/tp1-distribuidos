@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import yaml
-import os
 import sys
 
 from docker_compose_generator_files.client.client import generate_client_services
@@ -14,6 +13,7 @@ from docker_compose_generator_files.workers.count import generate_count_workers,
 from docker_compose_generator_files.workers.top import generate_top_workers
 from docker_compose_generator_files.workers.max_min import generate_max_min_workers
 from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker
+from docker_compose_generator_files.workers.top_10_actors_collector import generate_collector_top_10_actors_worker
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
@@ -73,8 +73,12 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     services.update(max_min_workers)
     
     # Add collector_max_min_worker
-    collector = generate_collector_max_min_worker()
-    services.update(collector)
+    collector_max_min = generate_collector_max_min_worker()
+    services.update(collector_max_min)
+    
+    # Add collector_top_10_actors_worker
+    collector_top_10_actors = generate_collector_top_10_actors_worker()
+    services.update(collector_top_10_actors)
     
     # Get the total number of average_movies_by_rating workers
     total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
@@ -150,25 +154,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         "ports": ["5000:5000"],
         "volumes": [
             "./server/boundary:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # COLLECTOR TOP 10 ACTORS WORKER
-    services["collector_top_10_actors_worker"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "worker/collector_top_10_actors/Dockerfile"
-        },
-        "env_file": ["./server/worker/collector_top_10_actors/.env"],
-        "environment": [
-            "ROUTER_CONSUME_QUEUE=collector_top_10_actors_worker",
-            "RESPONSE_QUEUE=response_queue"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/worker/collector_top_10_actors:/app",
             "./server/rabbitmq:/app/rabbitmq",
             "./server/common:/app/common"
         ]
@@ -311,7 +296,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         # Convert Python dictionary to YAML and write to file
         yaml.dump(docker_compose, file, default_flow_style=False)
         
-    print(f"Docker Compose file generated successfully at {output_file} with {num_clients} client nodes and {num_year_workers} filter_by_year workers")
+    print(f"Docker Compose file generated successfully at {output_file}")
+    print(f"Configuration: {num_clients} clients, {num_year_workers} year workers, " +
+          f"{num_country_workers} country workers, {num_join_credits_workers} join_credits workers, " +
+          f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
+          f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
+          f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
+          f"and {num_max_min_workers} max_min workers")
 
 if __name__ == "__main__":
     # Process command line arguments

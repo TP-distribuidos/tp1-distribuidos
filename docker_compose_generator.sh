@@ -7,6 +7,8 @@ NUM_YEAR_WORKERS=2
 NUM_COUNTRY_WORKERS=2
 NUM_JOIN_CREDITS_WORKERS=2
 NUM_JOIN_RATINGS_WORKERS=2
+AVG_RATING_SHARDS=2
+AVG_RATING_REPLICAS=2
 
 # Function to display usage information
 show_help() {
@@ -20,15 +22,16 @@ show_help() {
     echo "  -n, --country-workers NUM Specify number of filter_by_country worker nodes (default: 2)"
     echo "  -j, --join-credits-workers NUM Specify number of join_credits worker nodes (default: 2)"
     echo "  -r, --join-ratings-workers NUM Specify number of join_ratings worker nodes (default: 2)"
+    echo "  -a, --avg-rating-shards NUM Specify number of average_movies_by_rating shards (default: 2)"
+    echo "  -b, --avg-rating-replicas NUM Specify replicas per avg_rating shard (default: 2)"
     echo "  -h, --help            Display this help message and exit"
     echo ""
     echo "Examples:"
     echo "  $0                    Generate using defaults"
-    echo "  $0 -o my-compose.yaml    Generate with custom filename"
-    echo "  $0 -c 10              Generate with 10 client nodes"
-    echo "  $0 -y 5 -n 4 -j 3 -r 4  Generate with 5 year workers, 4 country workers,"
-    echo "                          3 join credits workers, and 4 join ratings workers"
+    echo "  $0 -a 3 -b 2          Generate with 3 avg_rating shards and 2 replicas per shard"
+    echo "  $0 -y 5 -n 4 -j 3 -r 4 -a 2 -b 3  Generate with custom worker counts"
 }
+
 
 # Function to show Docker Compose commands after successful generation
 show_docker_commands() {
@@ -92,6 +95,24 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        -a|--avg-rating-shards)
+            AVG_RATING_SHARDS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$AVG_RATING_SHARDS" =~ ^[0-9]+$ ]] || [ "$AVG_RATING_SHARDS" -lt 1 ]; then
+                echo "Error: Number of average_movies_by_rating shards must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -b|--avg-rating-replicas)
+            AVG_RATING_REPLICAS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$AVG_RATING_REPLICAS" =~ ^[0-9]+$ ]] || [ "$AVG_RATING_REPLICAS" -lt 1 ]; then
+                echo "Error: Number of average_movies_by_rating replicas per shard must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
         -y|--year-workers)
             NUM_YEAR_WORKERS="$2"
             # Validate that the input is a positive integer
@@ -122,8 +143,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "Will generate Docker Compose file: $OUTPUT_FILE with $NUM_CLIENTS client nodes, $NUM_YEAR_WORKERS filter_by_year workers,"
-echo "$NUM_COUNTRY_WORKERS filter_by_country workers, $NUM_JOIN_CREDITS_WORKERS join_credits workers, and $NUM_JOIN_RATINGS_WORKERS join_ratings workers"
+echo "Will generate Docker Compose file: $OUTPUT_FILE with:"
+echo "  $NUM_CLIENTS client nodes"
+echo "  $NUM_YEAR_WORKERS filter_by_year workers"
+echo "  $NUM_COUNTRY_WORKERS filter_by_country workers"
+echo "  $NUM_JOIN_CREDITS_WORKERS join_credits workers" 
+echo "  $NUM_JOIN_RATINGS_WORKERS join_ratings workers"
+echo "  $AVG_RATING_SHARDS average_movies_by_rating shards"
+echo "  $AVG_RATING_REPLICAS average_movies_by_rating replicas per shard"
+
 
 
 # Check if Python is installed
@@ -144,7 +172,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Generating Docker Compose file..."
-$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS"
+$PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS"
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

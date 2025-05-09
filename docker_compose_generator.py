@@ -9,17 +9,20 @@ from docker_compose_generator_files.workers.filter_by_year import generate_filte
 from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
 from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers
 from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers
+from docker_compose_generator_files.workers.average_movies_by_rating import generate_average_movies_by_rating_workers, get_total_workers
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
 from docker_compose_generator_files.routers.join_credits import generate_join_credits_router
 from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
 from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
+from docker_compose_generator_files.routers.max_min import generate_max_min_router
 from docker_compose_generator_files.routers.count import generate_count_router
 
 
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
-                           num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2):
+                           num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
+                           avg_rating_shards=2, avg_rating_replicas=2):
     # Start with an empty services dictionary
     services = {}
 
@@ -44,6 +47,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     join_ratings_workers = generate_join_ratings_workers(num_join_ratings_workers)
     services.update(join_ratings_workers)
     
+    # Add average_movies_by_rating workers
+    avg_rating_workers = generate_average_movies_by_rating_workers(avg_rating_shards, avg_rating_replicas)
+    services.update(avg_rating_workers)
+    
+    # Get the total number of average_movies_by_rating workers
+    total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
+    
     # Add year_movies_router
     year_router = generate_year_movies_router(num_year_workers) 
     services.update(year_router)
@@ -64,13 +74,18 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     join_ratings = generate_join_ratings_router(num_join_ratings_workers)
     services.update(join_ratings)
     
-    # Add average_movies_by_rating_router with join_ratings workers count
-    avg_rating_router = generate_average_movies_by_rating_router(num_join_ratings_workers)
+    # Add average_movies_by_rating_router with join_ratings workers count and sharding config
+    avg_rating_router = generate_average_movies_by_rating_router(num_join_ratings_workers, avg_rating_shards, avg_rating_replicas)
     services.update(avg_rating_router)
+    
+    # Add max_min_router with the total average_movies_by_rating workers count
+    max_min_router = generate_max_min_router(total_avg_rating_workers)
+    services.update(max_min_router)
     
     # Add count_router with join_credits workers count
     count_router = generate_count_router(num_join_credits_workers)
     services.update(count_router)
+
       
     # RabbitMQ service
     services["rabbitmq"] = {
@@ -101,47 +116,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     }
 
     # Q3 SECTION
-
-    # AVERAGE MOVIES BY RATING WORKERS
-    for i in range(1, 4):
-        services[f"average_movies_by_rating_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/average_movies_by_rating/Dockerfile"
-            },
-            "env_file": ["./server/worker/average_movies_by_rating/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=average_movies_by_rating_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=max_min_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/average_movies_by_rating:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # MAX MIN ROUTER
-    services["max_min_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=3",
-            "INPUT_QUEUE=max_min_router",
-            "OUTPUT_QUEUES=[[\"max_min_worker_1\"],[\"max_min_worker_2\"]]",
-            "BALANCER_TYPE=shard_by_ascii"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
 
     # MAX MIN WORKERS
     for i in range(1, 3):
@@ -453,6 +427,8 @@ if __name__ == "__main__":
     num_country_workers = 2
     num_join_credits_workers = 2
     num_join_ratings_workers = 2
+    avg_rating_shards = 2
+    avg_rating_replicas = 2
     
     # Get output filename from first argument if provided
     if len(sys.argv) > 1:
@@ -507,8 +483,29 @@ if __name__ == "__main__":
         except ValueError:
             print("Error: Number of join ratings workers must be a positive integer.")
             sys.exit(1)
+            
+    # Get number of average_movies_by_rating shards from seventh argument if provided
+    if len(sys.argv) > 7:
+        try:
+            avg_rating_shards = int(sys.argv[7])
+            if avg_rating_shards < 1:
+                raise ValueError("Number of average_movies_by_rating shards must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating shards must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of average_movies_by_rating replicas per shard from eighth argument if provided
+    if len(sys.argv) > 8:
+        try:
+            avg_rating_replicas = int(sys.argv[8])
+            if avg_rating_replicas < 1:
+                raise ValueError("Number of average_movies_by_rating replicas per shard must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating replicas per shard must be a positive integer.")
+            sys.exit(1)
     
     # Generate the Docker Compose file
     generate_docker_compose(output_file, num_clients, num_year_workers, 
                            num_country_workers, num_join_credits_workers,
-                           num_join_ratings_workers)
+                           num_join_ratings_workers, avg_rating_shards,
+                           avg_rating_replicas)

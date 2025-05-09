@@ -16,6 +16,7 @@ NUM_MAX_MIN_WORKERS=2
 NUM_SENTIMENT_WORKERS=2
 NUM_AVG_SENTIMENT_WORKERS=2
 NETWORK="tp_distribuidos"
+INCLUDE_Q5="false"  # Default: don't include Q5 nodes
 
 # Function to display usage information
 show_help() {
@@ -38,6 +39,7 @@ show_help() {
     echo "  -s, --sentiment-workers NUM Specify number of sentiment analysis workers (default: 2)"
     echo "  -v, --avg-sentiment-workers NUM Specify number of average sentiment workers (default: 2)"
     echo "  -k, --network NAME     Specify Docker network name (default: tp_distribuidos, THIS IS STILL A WORK IN PROGRESS, IT WILL ALWAYS DEFAUTL TO tp_distribuidos)"
+    echo "  -q, --include-q5       Include Q5 sentiment analysis components (default: false)"
     echo "  -h, --help            Display this help message and exit"
     
     echo ""
@@ -202,6 +204,10 @@ while [[ $# -gt 0 ]]; do
             NETWORK="$2"
             shift 2
             ;;
+        -q|--include-q5)
+            INCLUDE_Q5="true"
+            shift
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -229,6 +235,7 @@ echo "  $NUM_MAX_MIN_WORKERS max_min workers"
 echo "  $NUM_MAX_MIN_WORKERS max_min workers"
 echo "  $NUM_SENTIMENT_WORKERS sentiment analysis workers"
 echo "  $NUM_AVG_SENTIMENT_WORKERS average sentiment workers"
+echo "  Include Q5 components: $INCLUDE_Q5"
 echo "  Network: $NETWORK"
 
 
@@ -255,7 +262,8 @@ echo "Generating Docker Compose file..."
 $PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" \
 "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS" \
 "$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS" "$NUM_MAX_MIN_WORKERS" \
-"$NUM_SENTIMENT_WORKERS" "$NUM_AVG_SENTIMENT_WORKERS" "$NETWORK"
+"$NUM_SENTIMENT_WORKERS" "$NUM_AVG_SENTIMENT_WORKERS" "$NETWORK" "$INCLUDE_Q5"
+
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

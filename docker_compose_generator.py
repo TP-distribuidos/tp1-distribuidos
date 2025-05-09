@@ -41,7 +41,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                            avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
                            count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2,
                            num_sentiment_workers=2, num_avg_sentiment_workers=2,
-                           network=NETWORK):
+                           network=NETWORK, include_q5=False):
     # Start with an empty services dictionary
     services = {}
 
@@ -89,17 +89,19 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     collector_top_10_actors = generate_collector_top_10_actors_worker()
     services.update(collector_top_10_actors)
     
-    # Add sentiment_analysis workers (Q5)
-    sentiment_analysis_workers = generate_sentiment_analysis_workers(num_sentiment_workers)
-    services.update(sentiment_analysis_workers)
-    
-    # Add average_sentiment workers (Q5)
-    average_sentiment_workers = generate_average_sentiment_workers(num_avg_sentiment_workers)
-    services.update(average_sentiment_workers)
-    
-    # Add collector_average_sentiment_worker (Q5)
-    collector_avg_sentiment = generate_collector_average_sentiment_worker()
-    services.update(collector_avg_sentiment)
+    # Conditionally add Q5 workers based on include_q5 flag
+    if include_q5:
+        # Add sentiment_analysis workers (Q5)
+        sentiment_analysis_workers = generate_sentiment_analysis_workers(num_sentiment_workers)
+        services.update(sentiment_analysis_workers)
+        
+        # Add average_sentiment workers (Q5)
+        average_sentiment_workers = generate_average_sentiment_workers(num_avg_sentiment_workers)
+        services.update(average_sentiment_workers)
+        
+        # Add collector_average_sentiment_worker (Q5)
+        collector_avg_sentiment = generate_collector_average_sentiment_worker()
+        services.update(collector_avg_sentiment)
     
     # Get the total number of average_movies_by_rating workers
     total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
@@ -151,23 +153,24 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     top_collector = generate_top_10_actors_collector_router(num_top_workers)
     services.update(top_collector)
     
-    # Add movies_q5_router (Q5)
-    movies_q5 = generate_movies_q5_router(num_sentiment_workers)
-    services.update(movies_q5)
-    
-    # Add average_sentiment_router with num_sentiment_workers (Q5)
-    avg_sentiment_router = generate_average_sentiment_router(num_sentiment_workers, num_avg_sentiment_workers)
-    services.update(avg_sentiment_router)
-    
-    # Add average_sentiment_collector_router with num_avg_sentiment_workers (Q5)
-    avg_sentiment_collector = generate_average_sentiment_collector_router(num_avg_sentiment_workers)
-    services.update(avg_sentiment_collector)
+    # Conditionally add Q5 routers based on include_q5 flag
+    if include_q5:
+        # Add movies_q5_router (Q5)
+        movies_q5 = generate_movies_q5_router(num_sentiment_workers)
+        services.update(movies_q5)
+        
+        # Add average_sentiment_router with num_sentiment_workers (Q5)
+        avg_sentiment_router = generate_average_sentiment_router(num_sentiment_workers, num_avg_sentiment_workers)
+        services.update(avg_sentiment_router)
+        
+        # Add average_sentiment_collector_router with num_avg_sentiment_workers (Q5)
+        avg_sentiment_collector = generate_average_sentiment_collector_router(num_avg_sentiment_workers)
+        services.update(avg_sentiment_collector)
 
     # Add RabbitMQ service  
     rabbitmq = generate_rabbitmq_service()
     services.update(rabbitmq)
     
-    # Add Boundary service
     boundary = generate_boundary_service()
     services.update(boundary)
 
@@ -185,14 +188,14 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         # Convert Python dictionary to YAML and write to file
         yaml.dump(docker_compose, file, default_flow_style=False)
         
+    q5_status = "included" if include_q5 else "excluded"
     print(f"Docker Compose file generated successfully at {output_file}")
     print(f"Configuration: {num_clients} clients, {num_year_workers} year workers, " +
           f"{num_country_workers} country workers, {num_join_credits_workers} join_credits workers, " +
           f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
           f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
           f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
-          f"{num_max_min_workers} max_min workers, {num_sentiment_workers} sentiment workers, " +
-          f"{num_avg_sentiment_workers} avg sentiment workers, network: {network}")
+          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, network: {network}")
 
 
 if __name__ == "__main__":
@@ -212,6 +215,8 @@ if __name__ == "__main__":
     num_sentiment_workers = 2
     num_avg_sentiment_workers = 2
     network = NETWORK
+    include_q5 = False  # Default: Q5 nodes are not included
+    
     
     # Get output filename from first argument if provided
      # Get output filename from first argument if provided
@@ -349,6 +354,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 15:
         network = sys.argv[15]
     
+    if len(sys.argv) > 16:
+        include_q5_arg = sys.argv[16].lower()
+        include_q5 = include_q5_arg in ('true', 't', 'yes', 'y', '1')
+    
+    
     # Generate the Docker Compose file
     generate_docker_compose(output_file, num_clients, num_year_workers, 
                            num_country_workers, num_join_credits_workers,
@@ -356,4 +366,4 @@ if __name__ == "__main__":
                            avg_rating_replicas, count_shards, 
                            count_workers_per_shard, num_top_workers,
                            num_max_min_workers, num_sentiment_workers,
-                           num_avg_sentiment_workers, network)
+                           num_avg_sentiment_workers, network, include_q5)

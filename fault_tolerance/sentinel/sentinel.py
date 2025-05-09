@@ -287,6 +287,16 @@ class Sentinel:
         else:
             logging.info(f"I am a SLAVE after coordinating. New leader is {self.current_leader_id}.")
 
+    def shutdown(self):
+        logging.info(f"Shutdown called for Sentinel ID: {self.id}")
+        self.running = False
+        if self.socket:
+            try:
+                self.socket.close()
+                logging.info("Closed worker health check socket.")
+            except Exception as e:
+                logging.warning(f"Error closing worker health check socket: {e}")
+            self.socket = None
 
     def run(self):
         logging.info(f"Sentinel starting (ID: {self.id}) for worker {self.worker_host}:{self.worker_port}")
@@ -345,18 +355,18 @@ class Sentinel:
 
                 time.sleep(self.check_interval)
 
-            except KeyboardInterrupt:
-                logging.info("Sentinel stopped by user")
-                self.running = False
             except Exception as e:
                 logging.error(f"Error in sentinel main loop: {e}", exc_info=True)
                 time.sleep(self.check_interval) # Wait before retrying
 
-        logging.info("Sentinel shutdown initiated...")
-        # Listener thread is daemon, should exit.
+        logging.info("Sentinel main loop ended. Initiating shutdown sequence...")
+        # Listener thread is daemon, should exit when self.running is false and main thread exits.
+        # However, explicit join is good practice.
         if self.peer_listener_thread and self.peer_listener_thread.is_alive():
             logging.info("Waiting for peer listener thread to shut down...")
-            self.peer_listener_thread.join(timeout=2.0)
+            self.peer_listener_thread.join(timeout=3.0) # Increased timeout slightly
+            if self.peer_listener_thread.is_alive():
+                logging.warning("Peer listener thread did not shut down cleanly.")
         logging.info("Sentinel shutdown complete")
 
     def _check_worker_health(self):

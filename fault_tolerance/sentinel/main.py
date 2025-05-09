@@ -1,24 +1,35 @@
 import logging
+import sys
+import signal  # Added
 from sentinel import Sentinel
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(message)s",
-    datefmt="%H:%M:%S",
-)
+# Global instance for signal handler
+sentinel_instance = None  # Added
+
+# Added signal handler function
+def signal_handler(sig, frame):
+    global sentinel_instance
+    logging.info(f"Signal {sig} received. Initiating graceful shutdown...")
+    if sentinel_instance:
+        sentinel_instance.shutdown()
+    # sys.exit(0) # Exit after shutdown is handled by the main loop completion
 
 def main():
-    """
-    Main entry point for the sentinel application
-    """
-    sentinel = Sentinel()
-    sentinel.run()
+    global sentinel_instance  # Added
+    try:
+        sentinel_instance = Sentinel()  # Assign to global
+        sentinel_instance.run()
+    except Exception as e:
+        logging.error(f"Fatal error in sentinel: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        logging.info("Sentinel process exiting.")
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logging.info("Sentinel stopped by user")
-    except Exception as e:
-        logging.error(f"Fatal error in main: {e}")
-        exit(1)
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)  # Added
+    signal.signal(signal.SIGINT, signal_handler)   # Added
+    
+    # Removed try-except KeyboardInterrupt from here
+    main()

@@ -35,7 +35,6 @@ class SentinelBeacon:
             while self._running:
                 try:
                     client_socket, addr = self._server_socket.accept()
-                    logging.info(f"Sentinel connection from {addr}")
                     
                     # Handle client in a separate thread
                     client_thread = threading.Thread(
@@ -82,7 +81,6 @@ class SentinelBeacon:
                     client_socket.sendall(data)
                 
             client_socket.close()
-            logging.info(f"Sentinel connection closed from {addr}")
             
         except Exception as e:
             logging.error(f"Error handling sentinel client: {e}")

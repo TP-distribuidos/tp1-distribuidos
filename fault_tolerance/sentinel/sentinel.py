@@ -23,7 +23,7 @@ PEER_PORT = int(os.getenv("PEER_PORT", 9010))
 # Election and Leader Constants
 ELECTION_TIMEOUT_DURATION = 10
 LEADER_HEARTBEAT_INTERVAL = CHECK_INTERVAL * 2
-LEADER_STALE_DURATION = LEADER_HEARTBEAT_INTERVAL * 2.5
+LEADER_DEAD_DURATION = LEADER_HEARTBEAT_INTERVAL * 1.5
 
 class Sentinel:
     def __init__(self, worker_host=WORKER_HOST, worker_port=WORKER_PORT, check_interval=CHECK_INTERVAL):
@@ -49,11 +49,7 @@ class Sentinel:
         self.last_leader_heartbeat_time = 0
         self.election_message_received_this_cycle = False
 
-        logging.info(f"Sentinel initialized for worker at {worker_host}:{worker_port}")
-        logging.info(f"Health check interval: {check_interval} seconds")
         logging.info(f"My ID: {self.id}")
-        logging.info(f"Service Name for peer discovery: {self.service_name}")
-        logging.info(f"Peer communication port: {self.peer_port}")
 
     def _calculate_hostname_sum(self):
         return sum(ord(char) for char in self.hostname)
@@ -118,8 +114,6 @@ class Sentinel:
             
             if self._send_message_to_peer(peer_host, peer_port_num, message_type, payload):
                 sent_count +=1
-        logging.info(f"Broadcast {message_type} to {sent_count}/{len(peers_to_send)} discovered peers. Payload: {payload}")
-
 
     def _start_peer_listener(self):
         self.peer_listener_thread = threading.Thread(target=self._peer_listener_loop, daemon=True)
@@ -196,7 +190,7 @@ class Sentinel:
                                     elif msg_type == "LEADER_ANNOUNCEMENT":
                                         new_leader_id = message.get("leader_id")
                                         sender_of_announcement = sender_id
-                                        logging.info(f"Received LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id}. My ID is {self.id}.")
+                                        logging.info(f"\033[38;5;208mReceived LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id}. My ID is {self.id}.\033[0m")
 
                                         if new_leader_id < self.id and (self.current_leader_id is None or new_leader_id != self.current_leader_id):
                                             logging.warning(f"Contesting LEADER_ANNOUNCEMENT for {new_leader_id} (lower than my ID {self.id}). Initiating new election.")
@@ -213,9 +207,9 @@ class Sentinel:
                                             self.election_votes = {} 
                                             self.last_leader_heartbeat_time = time.time() 
                                             if self.is_leader:
-                                                logging.info(f"\033[92mI AM THE NEW LEADER (ID: {self.id}) based on announcement from {sender_of_announcement}.\033[0m")
+                                                logging.info(f"\033[38;5;208mI AM THE NEW LEADER (ID: {self.id}) based on announcement from {sender_of_announcement}.\033[0m")
                                             else:
-                                                logging.info(f"I am a SLAVE. Leader is {self.current_leader_id} (announced by {sender_of_announcement}).")
+                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id}.\033[0m")
 
                                     elif msg_type == "LEADER_HEARTBEAT":
                                         leader_id_from_heartbeat = message.get("leader_id")
@@ -229,7 +223,6 @@ class Sentinel:
                                             logging.warning(f"Conflicting LEADER_HEARTBEAT. Current leader {self.current_leader_id}, heartbeat from {sender_id} for {leader_id_from_heartbeat}. Election might be needed.")
                                             # Potentially trigger an election if conflict persists or if this sender has higher ID
                                             # For now, just log. A new election will eventually sort it out if the true leader stops heartbeating.
-
 
                                 except Exception as e:
                                     logging.error(f"Failed to deserialize or process message from {addr}: {e}. Raw data: {data}")
@@ -247,7 +240,7 @@ class Sentinel:
         # This method asserts this node's intention to become coordinator.
         # Any previous election state (e.g., being a slave) is overridden.
 
-        logging.info(f"INITIATING ELECTION (My ID: {self.id}). Broadcasting ELECTION_START.")
+        logging.info(f"\033[38;5;208mINITIATING ELECTION (My ID: {self.id}). Broadcasting ELECTION_START.\033[0m")
         self.election_in_progress = True
         self.i_am_election_coordinator = True 
         self.current_leader_id = None 
@@ -262,7 +255,7 @@ class Sentinel:
         if not self.i_am_election_coordinator or not self.election_in_progress:
             return
 
-        logging.info(f"Processing election results. My ID: {self.id}. Votes received: {self.election_votes}")
+        logging.info(f"\033[38;5;208mProcessing election results. My ID: {self.id}. Votes received: {self.election_votes}\033[0m")
         
         if not self.election_votes:
             logging.warning("No votes received in election. Re-evaluating or re-electing might be needed.")
@@ -272,7 +265,7 @@ class Sentinel:
         else:
             new_leader_id = max(self.election_votes.keys()) # Highest ID wins
 
-        logging.info(f"Election concluded. New leader determined to be ID: {new_leader_id}. Announcing...")
+        logging.info(f"\033[38;5;208mElection concluded. New leader determined to be ID: {new_leader_id}. Announcing...\033[0m")
         self._broadcast_message("LEADER_ANNOUNCEMENT", {"leader_id": new_leader_id})
 
         self.current_leader_id = new_leader_id
@@ -283,9 +276,9 @@ class Sentinel:
         self.last_leader_heartbeat_time = time.time() # New leader is now active
 
         if self.is_leader:
-            logging.info(f"\033[92mI AM THE NEW LEADER (ID: {self.id}) after coordinating election.\033[0m")
+            logging.info(f"\033[32mI AM THE NEW LEADER (ID: {self.id}) after coordinating election.\033[0m")
         else:
-            logging.info(f"I am a SLAVE after coordinating. New leader is {self.current_leader_id}.")
+            logging.info(f"\033[36mI am a SLAVE after coordinating. New leader is {self.current_leader_id}.\033[0m")
 
     def shutdown(self):
         logging.info(f"Shutdown called for Sentinel ID: {self.id}")
@@ -330,8 +323,8 @@ class Sentinel:
                 
                 else:
                     if self.current_leader_id is not None: # We know a leader
-                        if (current_time - self.last_leader_heartbeat_time) > LEADER_STALE_DURATION:
-                            logging.warning(f"Leader {self.current_leader_id} is STALE. Last heartbeat at {self.last_leader_heartbeat_time:.2f}. Initiating new election.")
+                        if (current_time - self.last_leader_heartbeat_time) > LEADER_DEAD_DURATION:
+                            logging.warning(f"\033[31mLeader {self.current_leader_id} not responding. Initiating new election.\033[0m")
                             self.current_leader_id = None # Consider leader lost
                             self.is_leader = False # Ensure not leader
                             self._initiate_election()
@@ -349,7 +342,7 @@ class Sentinel:
                 # Election coordinator tasks (if this instance initiated an election)
                 if self.i_am_election_coordinator and self.election_in_progress:
                     if (current_time - self.election_start_time) > ELECTION_TIMEOUT_DURATION:
-                        logging.info(f"Election timeout reached for coordinator {self.id}. Processing results.")
+                        logging.info(f"\033[38;5;208mElection timeout reached for coordinator {self.id}. Processing results.\033[0m")
                         self._process_election_results()
                         # Resetting i_am_election_coordinator and election_in_progress is done in _process_election_results
 

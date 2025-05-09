@@ -12,6 +12,8 @@ from docker_compose_generator_files.workers.join_ratings import generate_join_ra
 from docker_compose_generator_files.workers.average_movies_by_rating import generate_average_movies_by_rating_workers, get_total_workers
 from docker_compose_generator_files.workers.count import generate_count_workers, get_total_workers as get_total_count_workers
 from docker_compose_generator_files.workers.top import generate_top_workers
+from docker_compose_generator_files.workers.max_min import generate_max_min_workers
+from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
@@ -19,15 +21,17 @@ from docker_compose_generator_files.routers.join_credits import generate_join_cr
 from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
 from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
 from docker_compose_generator_files.routers.max_min import generate_max_min_router
+from docker_compose_generator_files.routers.max_min_collector import generate_max_min_collector_router
 from docker_compose_generator_files.routers.count import generate_count_router
 from docker_compose_generator_files.routers.top import generate_top_router
 from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router
 
 
+
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
                            avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
-                           count_workers_per_shard=2, num_top_workers=3):
+                           count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2):
     # Start with an empty services dictionary
     services = {}
 
@@ -64,6 +68,14 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     top_workers = generate_top_workers(num_top_workers)
     services.update(top_workers)
     
+    # Add max_min workers
+    max_min_workers = generate_max_min_workers(num_max_min_workers)
+    services.update(max_min_workers)
+    
+    # Add collector_max_min_worker
+    collector = generate_collector_max_min_worker()
+    services.update(collector)
+    
     # Get the total number of average_movies_by_rating workers
     total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
     
@@ -94,9 +106,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     avg_rating_router = generate_average_movies_by_rating_router(num_join_ratings_workers, avg_rating_shards, avg_rating_replicas)
     services.update(avg_rating_router)
     
-    # Add max_min_router with the total average_movies_by_rating workers count
-    max_min_router = generate_max_min_router(total_avg_rating_workers)
+    # Add max_min_router with the total average_movies_by_rating workers count and number of max_min workers
+    max_min_router = generate_max_min_router(total_avg_rating_workers, num_max_min_workers)
     services.update(max_min_router)
+    
+    # Add max_min_collector_router with num_max_min_workers
+    max_min_collector = generate_max_min_collector_router(num_max_min_workers)
+    services.update(max_min_collector)
     
     # Add count_router with join_credits workers count and sharding config
     count_router = generate_count_router(num_join_credits_workers, count_shards, count_workers_per_shard)
@@ -134,68 +150,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         "ports": ["5000:5000"],
         "volumes": [
             "./server/boundary:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # Q3 SECTION
-
-    # MAX MIN WORKERS
-    for i in range(1, 3):
-        services[f"max_min_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/max_min/Dockerfile"
-            },
-            "env_file": ["./server/worker/max_min/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=max_min_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=max_min_collector_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/max_min:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # MAX MIN COLLECTOR ROUTER
-    services["max_min_collector_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
-            "INPUT_QUEUE=max_min_collector_router",
-            "OUTPUT_QUEUES=collector_max_min_worker",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # COLLECTOR MAX MIN WORKER
-    services["collector_max_min_worker"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "worker/collector_max_min/Dockerfile"
-        },
-        "env_file": ["./server/worker/collector_max_min/.env"],
-        "environment": [
-            "ROUTER_CONSUME_QUEUE=collector_max_min_worker",
-            "RESPONSE_QUEUE=response_queue"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/worker/collector_max_min:/app",
             "./server/rabbitmq:/app/rabbitmq",
             "./server/common:/app/common"
         ]
@@ -372,13 +326,83 @@ if __name__ == "__main__":
     count_shards = 2
     count_workers_per_shard = 2
     num_top_workers = 3
+    num_max_min_workers = 2
     
     # Get output filename from first argument if provided
+     # Get output filename from first argument if provided
     if len(sys.argv) > 1:
         output_file = sys.argv[1]
     
-    # [... other argument processing ...]
+    # Get number of clients from second argument if provided
+    if len(sys.argv) > 2:
+        try:
+            num_clients = int(sys.argv[2])
+            if num_clients < 1:
+                raise ValueError("Number of clients must be positive")
+        except ValueError:
+            print("Error: Number of clients must be a positive integer.")
+            sys.exit(1)
     
+    # Get number of year workers from third argument if provided
+    if len(sys.argv) > 3:
+        try:
+            num_year_workers = int(sys.argv[3])
+            if num_year_workers < 1:
+                raise ValueError("Number of year workers must be positive")
+        except ValueError:
+            print("Error: Number of year workers must be a positive integer.")
+            sys.exit(1)
+    
+    # Get number of country workers from fourth argument if provided
+    if len(sys.argv) > 4:
+        try:
+            num_country_workers = int(sys.argv[4])
+            if num_country_workers < 1:
+                raise ValueError("Number of country workers must be positive")
+        except ValueError:
+            print("Error: Number of country workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of join credits workers from fifth argument if provided
+    if len(sys.argv) > 5:
+        try:
+            num_join_credits_workers = int(sys.argv[5])
+            if num_join_credits_workers < 1:
+                raise ValueError("Number of join credits workers must be positive")
+        except ValueError:
+            print("Error: Number of join credits workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of join ratings workers from sixth argument if provided
+    if len(sys.argv) > 6:
+        try:
+            num_join_ratings_workers = int(sys.argv[6])
+            if num_join_ratings_workers < 1:
+                raise ValueError("Number of join ratings workers must be positive")
+        except ValueError:
+            print("Error: Number of join ratings workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of average_movies_by_rating shards from seventh argument if provided
+    if len(sys.argv) > 7:
+        try:
+            avg_rating_shards = int(sys.argv[7])
+            if avg_rating_shards < 1:
+                raise ValueError("Number of average_movies_by_rating shards must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating shards must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of average_movies_by_rating replicas per shard from eighth argument if provided
+    if len(sys.argv) > 8:
+        try:
+            avg_rating_replicas = int(sys.argv[8])
+            if avg_rating_replicas < 1:
+                raise ValueError("Number of average_movies_by_rating replicas per shard must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating replicas per shard must be a positive integer.")
+            sys.exit(1)
+
     # Get number of count shards from ninth argument if provided
     if len(sys.argv) > 9:
         try:
@@ -409,9 +433,19 @@ if __name__ == "__main__":
             print("Error: Number of top workers must be a positive integer.")
             sys.exit(1)
     
+    if len(sys.argv) > 12:
+        try:
+            num_max_min_workers = int(sys.argv[12])
+            if num_max_min_workers < 1:
+                raise ValueError("Number of max_min workers must be positive")
+        except ValueError:
+            print("Error: Number of max_min workers must be a positive integer.")
+            sys.exit(1)
+    
     # Generate the Docker Compose file
     generate_docker_compose(output_file, num_clients, num_year_workers, 
                            num_country_workers, num_join_credits_workers,
                            num_join_ratings_workers, avg_rating_shards,
                            avg_rating_replicas, count_shards, 
-                           count_workers_per_shard, num_top_workers)
+                           count_workers_per_shard, num_top_workers,
+                           num_max_min_workers)

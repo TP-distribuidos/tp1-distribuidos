@@ -12,6 +12,7 @@ AVG_RATING_REPLICAS=2
 COUNT_SHARDS=2
 COUNT_WORKERS_PER_SHARD=2
 NUM_TOP_WORKERS=3
+NUM_MAX_MIN_WORKERS=2
 
 # Function to display usage information
 show_help() {
@@ -30,12 +31,13 @@ show_help() {
     echo "  -d, --count-shards NUM Specify number of count worker shards (default: 2)"
     echo "  -e, --count-workers-per-shard NUM Specify workers per count shard (default: 2)"
     echo "  -t, --top-workers NUM Specify number of top workers (default: 3)"
+    echo "  -m, --max-min-workers NUM Specify number of max_min workers (default: 2)"
     echo "  -h, --help            Display this help message and exit"
     echo ""
     echo "Examples:"
     echo "  $0                    Generate using defaults"
-    echo "  $0 -d 2 -e 3          Generate with 2 count shards and 3 workers per shard"
-    echo "  $0 -d 3 -e 2 -t 4     Configure count workers with 3 shards, 2 workers each, and 4 top workers"
+    echo "  $0 -m 3               Generate with 3 max_min workers"
+    echo "  $0 -a 3 -b 2 -m 3     Configure with custom worker counts"
 }
 
 
@@ -164,6 +166,15 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        -m|--max-min-workers)
+            NUM_MAX_MIN_WORKERS="$2"
+            # Validate that the input is a positive integer
+            if ! [[ "$NUM_MAX_MIN_WORKERS" =~ ^[0-9]+$ ]] || [ "$NUM_MAX_MIN_WORKERS" -lt 1 ]; then
+                echo "Error: Number of max_min workers must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -187,6 +198,8 @@ echo "  $AVG_RATING_REPLICAS average_movies_by_rating replicas per shard"
 echo "  $COUNT_SHARDS count shards"
 echo "  $COUNT_WORKERS_PER_SHARD count workers per shard"
 echo "  $NUM_TOP_WORKERS top workers"
+echo "  $NUM_MAX_MIN_WORKERS max_min workers"
+
 
 
 
@@ -210,7 +223,7 @@ fi
 echo "Generating Docker Compose file..."
 $PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" \
 "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS" \
-"$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS"
+"$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS" "$NUM_MAX_MIN_WORKERS"
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

@@ -41,18 +41,32 @@ class ConsumerWorker:
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
-        # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
-            logging.error("Failed to set up RabbitMQ connection. Exiting.")
-            return False
-        
-        logging.info(f"Consumer Worker running and consuming from queue '{self.consumer_queue}'")
-        
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
+        try:
+            # Connect to RabbitMQ
+            if not await self._setup_rabbitmq():
+                logging.error("Failed to set up RabbitMQ connection. Exiting.")
+                return False
             
-        return True
+            logging.info(f"Consumer Worker running and consuming from queue '{self.consumer_queue}'")
+            
+            # Keep the worker running until shutdown is triggered
+            while self._running:
+                await asyncio.sleep(1)
+            
+            return True
+        finally:
+            # Always clean up resources
+            await self.cleanup()
+    
+    async def cleanup(self):
+        """Clean up resources properly"""
+        logging.info("Cleaning up resources...")
+        if hasattr(self, 'rabbitmq'):
+            try:
+                await self.rabbitmq.close()
+                logging.info("RabbitMQ connection closed")
+            except Exception as e:
+                logging.error(f"Error closing RabbitMQ connection: {e}")
     
     async def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
@@ -130,8 +144,3 @@ class ConsumerWorker:
         # Shut down the sentinel beacon
         if hasattr(self, 'sentinel_beacon'):
             self.sentinel_beacon.shutdown()
-        
-        # Close RabbitMQ connection - note we need to create a task
-        # since this is called from a signal handler
-        if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())

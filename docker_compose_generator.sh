@@ -236,7 +236,7 @@ echo "  $NUM_MAX_MIN_WORKERS max_min workers"
 echo "  $NUM_SENTIMENT_WORKERS sentiment analysis workers"
 echo "  $NUM_AVG_SENTIMENT_WORKERS average sentiment workers"
 echo "  Include Q5 components: $INCLUDE_Q5"
-echo "  Network: $NETWORK"
+echo "  Network: $NETWORK (DEFAULTING to tp_distribuidos anyways because this is a WIP)"
 
 
 

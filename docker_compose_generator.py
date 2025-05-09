@@ -195,7 +195,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
           f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
           f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
           f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
-          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, network: {network}")
+          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, network: {network} (DEFAULTING to tp_distribuidos anyways because this is a WIP)")
 
 
 if __name__ == "__main__":

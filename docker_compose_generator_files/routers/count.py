@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from docker_compose_generator_files.workers.count import generate_output_queues_config
+from docker_compose_generator_files.constants import NETWORK
 
 def generate_count_router(num_join_credits_workers=2, count_shards=2, count_workers_per_shard=2):
     """
@@ -36,6 +37,7 @@ def generate_count_router(num_join_credits_workers=2, count_shards=2, count_work
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

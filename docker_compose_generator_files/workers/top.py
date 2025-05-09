@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_top_workers(num_workers=3):
     """
     Generate top worker services configuration for Docker Compose.
@@ -28,7 +30,8 @@ def generate_top_workers(num_workers=3):
                 "./server/worker/top:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
         
     return services

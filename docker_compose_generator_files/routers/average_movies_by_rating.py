@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from docker_compose_generator_files.workers.average_movies_by_rating import generate_output_queues_config
+from docker_compose_generator_files.constants import NETWORK
 
 def generate_average_movies_by_rating_router(num_join_ratings_workers=2, avg_rating_shards=2, avg_rating_replicas=2):
     """
@@ -36,6 +37,7 @@ def generate_average_movies_by_rating_router(num_join_ratings_workers=2, avg_rat
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

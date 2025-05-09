@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def calculate_workers_per_shard(num_shards=2, num_workers_per_shard=2):
     """
     Calculate the distribution of count workers per shard.
@@ -99,7 +101,8 @@ def generate_count_workers(num_shards=2, num_workers_per_shard=2):
                 "./server/worker/count:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
         
     return services

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_collector_max_min_worker():
     """
     Generate the collector_max_min_worker service configuration for Docker Compose.
@@ -23,6 +25,7 @@ def generate_collector_max_min_worker():
                 "./server/worker/collector_max_min:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

@@ -2,6 +2,7 @@
 
 from docker_compose_generator_files.workers.join_credits import generate_worker_queue_names as generate_join_credits_queues
 from docker_compose_generator_files.workers.join_ratings import generate_worker_queue_names as generate_join_ratings_queues
+from docker_compose_generator_files.constants import NETWORK
 
 def generate_join_movies_router(num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2):
     """
@@ -46,6 +47,7 @@ def generate_join_movies_router(num_country_workers=2, num_join_credits_workers=
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-NUMBER_OF_CLIENTS_AUTOMATIC = 3
+from docker_compose_generator_files.constants import NETWORK, NUMBER_OF_CLIENTS_AUTOMATIC
 
 def generate_client_services(num_clients=4, auto_clients=NUMBER_OF_CLIENTS_AUTOMATIC):
     """
@@ -21,7 +21,8 @@ def generate_client_services(num_clients=4, auto_clients=NUMBER_OF_CLIENTS_AUTOM
             "build": "./client",
             "environment": [f"CLIENT_ID={i}"],
             "depends_on": ["boundary"],
-            "volumes": ["./client:/app"]
+            "volumes": ["./client:/app"],
+            "networks": [NETWORK],
         }
         
         # Add profiles for clients beyond the auto clients

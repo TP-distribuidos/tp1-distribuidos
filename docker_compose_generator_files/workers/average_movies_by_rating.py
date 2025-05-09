@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def calculate_workers_per_shard(num_shards=2, num_replicas=2):
     """
     Calculate the distribution of workers per shard.
@@ -121,7 +123,8 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2):
                 "./server/worker/average_movies_by_rating:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
         
     return services

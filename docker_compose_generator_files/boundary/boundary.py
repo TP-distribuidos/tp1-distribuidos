@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from docker_compose_generator_files.constants import NETWORK
 
 def generate_boundary_service():
     """
@@ -26,6 +27,7 @@ def generate_boundary_service():
                 "./server/boundary:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

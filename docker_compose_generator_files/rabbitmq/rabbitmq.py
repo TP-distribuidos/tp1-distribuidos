@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_rabbitmq_service():
     """
     Generate the RabbitMQ service configuration for Docker Compose.
@@ -10,6 +12,7 @@ def generate_rabbitmq_service():
     return {
         "rabbitmq": {
             "image": "rabbitmq:3-management",
-            "ports": ["5672:5672", "15672:15672"]
+            "ports": ["5672:5672", "15672:15672"],
+            "networks": [NETWORK]
         }
     }

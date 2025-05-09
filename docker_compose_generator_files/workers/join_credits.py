@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_worker_queue_names(num_workers=2):
     """
     Generate queue names for join_credits workers.
@@ -47,7 +49,8 @@ def generate_join_credits_workers(num_workers=2):
                 "./server/worker/join_credits:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
         
     return services

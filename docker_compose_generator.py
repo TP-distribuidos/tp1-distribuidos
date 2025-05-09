@@ -28,7 +28,7 @@ from docker_compose_generator_files.routers.top_10_actors_collector import gener
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 
-OUTPUT_FILE = 'docker-compose-test.yaml'
+from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBER_OF_CLIENTS_AUTOMATIC
 
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
@@ -38,7 +38,6 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     services = {}
 
     # Add client services
-    NUMBER_OF_CLIENTS_AUTOMATIC = 3
     client_services = generate_client_services(num_clients, NUMBER_OF_CLIENTS_AUTOMATIC)
     services.update(client_services)
     
@@ -269,8 +268,14 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
         ]
     }
 
+    networks = {
+        NETWORK: {
+            "driver": "bridge",
+        }
+    }
+
     # Compile final docker-compose dictionary
-    docker_compose = {"services": services}
+    docker_compose = {"services": services, "networks": networks}
     
     # Write to the specified output file
     with open(output_file, 'w') as file:

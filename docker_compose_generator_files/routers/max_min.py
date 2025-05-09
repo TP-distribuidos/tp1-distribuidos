@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_max_min_router(num_avg_rating_workers, num_max_min_workers=2):
     """
     Generate the max_min_router service configuration for Docker Compose.
@@ -38,6 +40,7 @@ def generate_max_min_router(num_avg_rating_workers, num_max_min_workers=2):
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

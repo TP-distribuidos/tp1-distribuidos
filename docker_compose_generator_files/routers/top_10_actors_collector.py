@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from docker_compose_generator_files.constants import NETWORK
+
 def generate_top_10_actors_collector_router(num_top_workers=3):
     """
     Generate the top_10_actors_collector_router service configuration for Docker Compose.
@@ -29,6 +31,7 @@ def generate_top_10_actors_collector_router(num_top_workers=3):
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
-            ]
+            ],
+            "networks": [NETWORK]
         }
     }

@@ -53,6 +53,7 @@ services:
       - producer_worker
     volumes:
       - ./sentinel:/app
+      - ./common:/app/common
 
   sentinel2:
     build:
@@ -66,3 +67,4 @@ services:
       - consumer_worker
     volumes:
       - ./sentinel:/app
+      - ./common:/app/common

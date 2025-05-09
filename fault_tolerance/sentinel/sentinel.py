@@ -3,6 +3,7 @@ import os
 import socket
 import time
 import sys
+from common.Serializer import Serializer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,17 +69,23 @@ class Sentinel:
             self.socket.connect((self.worker_host, self.worker_port))
             
             # Send a health check message
-            message = f"HEALTH_CHECK:{int(time.time())}"
-            self.socket.sendall(message.encode('utf-8'))
+            message = {"timestamp": int(time.time())}
+            serialized_message = Serializer.serialize(message)
+            self.socket.sendall(serialized_message)
             
             # Wait for response
-            response = self.socket.recv(1024).decode('utf-8')
+            data = self.socket.recv(1024)
             
-            # Check if response is valid
-            if response == message:
-                return True
-            else:
-                logging.warning(f"Invalid health check response: {response}")
+            # Deserialize and check if response is valid
+            try:
+                response = Serializer.deserialize(data)
+                if "timestamp" in response:
+                    return True
+                else:
+                    logging.warning(f"Invalid health check response: {response}")
+                    return False
+            except Exception as e:
+                logging.warning(f"Failed to deserialize response: {e}")
                 return False
                 
         except socket.timeout:

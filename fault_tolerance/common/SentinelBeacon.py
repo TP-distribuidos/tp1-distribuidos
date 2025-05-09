@@ -1,6 +1,7 @@
 import logging
 import socket
 import threading
+from .Serializer import Serializer
 
 class SentinelBeacon:
     def __init__(self, port, name="Worker"):
@@ -67,13 +68,17 @@ class SentinelBeacon:
                     break
                     
                 try:
-                    # Try to use Serializer if available
-                    from Serializer import Serializer
+                    # Use Serializer to deserialize the message
                     message = Serializer.deserialize(data)
-                    client_socket.sendall(data)  # Echo the original data back
                     
-                except ImportError:
-                    # Fallback to simple echo if Serializer not available
+                    # Echo the original message back
+                    client_socket.sendall(data)
+                    
+                    logging.debug(f"Received and echoed message: {message}")
+                    
+                except Exception as e:
+                    logging.error(f"Error handling serialized data: {e}")
+                    # Fallback to simple echo if deserialization fails
                     client_socket.sendall(data)
                 
             client_socket.close()

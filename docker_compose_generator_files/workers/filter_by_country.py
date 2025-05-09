@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+
+from docker_compose_generator_files.constants import NETWORK
+
+def generate_worker_queue_names(num_workers=2):
+    """
+    Generate queue names for filter_by_country workers.
+    
+    Args:
+        num_workers (int): Number of filter_by_country workers
+        
+    Returns:
+        list: List of queue names for the workers
+    """
+    return [f"filter_by_country_worker_{i}" for i in range(1, num_workers + 1)]
+
+def generate_filter_by_country_workers(num_workers=2):
+    """
+    Generate filter_by_country worker services configuration for Docker Compose.
+    
+    Args:
+        num_workers (int): Number of filter_by_country workers to create
+        
+    Returns:
+        dict: Dictionary with filter_by_country worker service configurations
+    """
+    services = {}
+    
+    for i in range(1, num_workers + 1):
+        services[f"filter_by_country_worker_{i}"] = {
+            "build": {
+                "context": "./server",
+                "dockerfile": "worker/filter_by_country/Dockerfile"
+            },
+            "env_file": ["./server/worker/filter_by_country/.env"],
+            "environment": [
+                f"ROUTER_CONSUME_QUEUE=filter_by_country_worker_{i}",
+                "ROUTER_PRODUCER_QUEUE=join_movies_router"
+            ],
+            "depends_on": ["rabbitmq"],
+            "volumes": [
+                "./server/worker/filter_by_country:/app",
+                "./server/rabbitmq:/app/rabbitmq",
+                "./server/common:/app/common"
+            ],
+            "networks": [NETWORK]
+        }
+        
+    return services

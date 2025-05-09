@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+
+from docker_compose_generator_files.constants import NETWORK
+
+def generate_worker_queue_names(num_workers=2):
+    """
+    Generate queue names for join_ratings workers.
+    
+    Args:
+        num_workers (int): Number of join_ratings workers
+        
+    Returns:
+        dict: Dictionary containing lists of queue names for the workers
+    """
+    movies_queues = [f"join_ratings_worker_{i}_movies" for i in range(1, num_workers + 1)]
+    ratings_queues = [f"join_ratings_worker_{i}_ratings" for i in range(1, num_workers + 1)]
+    
+    return {
+        "movies": movies_queues,
+        "ratings": ratings_queues
+    }
+
+def generate_join_ratings_workers(num_workers=2):
+    """
+    Generate join_ratings worker services configuration for Docker Compose.
+    
+    Args:
+        num_workers (int): Number of join_ratings workers to create
+        
+    Returns:
+        dict: Dictionary with join_ratings worker service configurations
+    """
+    services = {}
+    
+    for i in range(1, num_workers + 1):
+        services[f"join_ratings_worker_{i}"] = {
+            "build": {
+                "context": "./server",
+                "dockerfile": "worker/join_ratings/Dockerfile"
+            },
+            "env_file": ["./server/worker/join_ratings/.env"],
+            "environment": [
+                f"ROUTER_CONSUME_QUEUE_MOVIES=join_ratings_worker_{i}_movies",
+                f"ROUTER_CONSUME_QUEUE_RATINGS=join_ratings_worker_{i}_ratings",
+                "ROUTER_PRODUCER_QUEUE=average_movies_by_rating_router"
+            ],
+            "depends_on": ["rabbitmq"],
+            "volumes": [
+                "./server/worker/join_ratings:/app",
+                "./server/rabbitmq:/app/rabbitmq",
+                "./server/common:/app/common"
+            ],
+            "networks": [NETWORK]
+        }
+        
+    return services

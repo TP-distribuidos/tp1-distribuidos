@@ -25,8 +25,10 @@ from docker_compose_generator_files.routers.max_min_collector import generate_ma
 from docker_compose_generator_files.routers.count import generate_count_router
 from docker_compose_generator_files.routers.top import generate_top_router
 from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router
+from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
+from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 
-
+OUTPUT_FILE = 'docker-compose-test.yaml'
 
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
@@ -130,34 +132,13 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     top_collector = generate_top_10_actors_collector_router(num_top_workers)
     services.update(top_collector)
 
-      
-    # RabbitMQ service
-    services["rabbitmq"] = {
-        "image": "rabbitmq:3-management",
-        "ports": ["5672:5672", "15672:15672"]
-    }
-
-    # Boundary service
-    services["boundary"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "boundary/Dockerfile"
-        },
-        "env_file": ["./server/boundary/.env"],
-        "environment": [
-            "MOVIES_ROUTER_QUEUE=boundary_movies_router",
-            "MOVIES_ROUTER_Q5_QUEUE=boundary_movies_Q5_router",
-            "CREDITS_ROUTER_QUEUE=boundary_credits_router",
-            "RATINGS_ROUTER_QUEUE=boundary_ratings_router"
-        ],
-        "depends_on": ["rabbitmq"],
-        "ports": ["5000:5000"],
-        "volumes": [
-            "./server/boundary:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
+    # Add RabbitMQ service  
+    rabbitmq = generate_rabbitmq_service()
+    services.update(rabbitmq)
+    
+    # Add Boundary service
+    boundary = generate_boundary_service()
+    services.update(boundary)
 
     # Q5 SECTION
     services["movies_q5_router"] = {
@@ -306,7 +287,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
 
 if __name__ == "__main__":
     # Process command line arguments
-    output_file = 'docker-compose-test.yaml'
+    output_file = OUTPUT_FILE
     num_clients = 4
     num_year_workers = 2
     num_country_workers = 2

@@ -49,11 +49,15 @@ services:
       - WORKER_HOST=producer_worker
       - WORKER_PORT=9001
       - CHECK_INTERVAL=5
+      - SERVICE_NAME=sentinel1
+      - PEER_PORT=9010
     depends_on:
       - producer_worker
     volumes:
       - ./sentinel:/app
       - ./common:/app/common
+    deploy:
+      replicas: 2
 
   sentinel2:
     build:
@@ -63,8 +67,12 @@ services:
       - WORKER_HOST=consumer_worker
       - WORKER_PORT=9002
       - CHECK_INTERVAL=5
+      - SERVICE_NAME=sentinel2
+      - PEER_PORT=9010
     depends_on:
       - consumer_worker
     volumes:
       - ./sentinel:/app
       - ./common:/app/common
+    deploy:
+      replicas: 2

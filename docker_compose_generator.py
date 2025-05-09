@@ -14,6 +14,9 @@ from docker_compose_generator_files.workers.top import generate_top_workers
 from docker_compose_generator_files.workers.max_min import generate_max_min_workers
 from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker
 from docker_compose_generator_files.workers.top_10_actors_collector import generate_collector_top_10_actors_worker
+from docker_compose_generator_files.workers.sentiment_analysis import generate_sentiment_analysis_workers
+from docker_compose_generator_files.workers.average_sentiment import generate_average_sentiment_workers
+from docker_compose_generator_files.workers.collector_average_sentiment import generate_collector_average_sentiment_worker
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
@@ -25,6 +28,9 @@ from docker_compose_generator_files.routers.max_min_collector import generate_ma
 from docker_compose_generator_files.routers.count import generate_count_router
 from docker_compose_generator_files.routers.top import generate_top_router
 from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router
+from docker_compose_generator_files.routers.generate_movies_q5 import generate_movies_q5_router
+from docker_compose_generator_files.routers.average_sentiment import generate_average_sentiment_router
+from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 
@@ -33,7 +39,9 @@ from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBE
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
                            avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
-                           count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2):
+                           count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2,
+                           num_sentiment_workers=2, num_avg_sentiment_workers=2,
+                           network=NETWORK):
     # Start with an empty services dictionary
     services = {}
 
@@ -80,6 +88,18 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     # Add collector_top_10_actors_worker
     collector_top_10_actors = generate_collector_top_10_actors_worker()
     services.update(collector_top_10_actors)
+    
+    # Add sentiment_analysis workers (Q5)
+    sentiment_analysis_workers = generate_sentiment_analysis_workers(num_sentiment_workers)
+    services.update(sentiment_analysis_workers)
+    
+    # Add average_sentiment workers (Q5)
+    average_sentiment_workers = generate_average_sentiment_workers(num_avg_sentiment_workers)
+    services.update(average_sentiment_workers)
+    
+    # Add collector_average_sentiment_worker (Q5)
+    collector_avg_sentiment = generate_collector_average_sentiment_worker()
+    services.update(collector_avg_sentiment)
     
     # Get the total number of average_movies_by_rating workers
     total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
@@ -130,6 +150,18 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     # Add top_10_actors_collector_router with num_top_workers
     top_collector = generate_top_10_actors_collector_router(num_top_workers)
     services.update(top_collector)
+    
+    # Add movies_q5_router (Q5)
+    movies_q5 = generate_movies_q5_router(num_sentiment_workers)
+    services.update(movies_q5)
+    
+    # Add average_sentiment_router with num_sentiment_workers (Q5)
+    avg_sentiment_router = generate_average_sentiment_router(num_sentiment_workers, num_avg_sentiment_workers)
+    services.update(avg_sentiment_router)
+    
+    # Add average_sentiment_collector_router with num_avg_sentiment_workers (Q5)
+    avg_sentiment_collector = generate_average_sentiment_collector_router(num_avg_sentiment_workers)
+    services.update(avg_sentiment_collector)
 
     # Add RabbitMQ service  
     rabbitmq = generate_rabbitmq_service()
@@ -139,137 +171,8 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     boundary = generate_boundary_service()
     services.update(boundary)
 
-    # Q5 SECTION
-    services["movies_q5_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=1",
-            "INPUT_QUEUE=boundary_movies_Q5_router",
-            "OUTPUT_QUEUES=sentiment_analysis_worker_1,sentiment_analysis_worker_2",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # SENTIMENT ANALYSIS WORKERS
-    for i in range(1, 3):
-        services[f"sentiment_analysis_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/sentiment_analysis/Dockerfile"
-            },
-            "env_file": ["./server/worker/sentiment_analysis/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=average_sentiment_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/sentiment_analysis:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ],
-            "deploy": {
-                "resources": {
-                    "limits": {
-                        "memory": "2G"
-                    }
-                }
-            }
-        }
-
-    # AVERAGE SENTIMENT ROUTER
-    services["average_sentiment_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
-            "INPUT_QUEUE=average_sentiment_router",
-            "OUTPUT_QUEUES=[[\"average_sentiment_worker_1\"],[\"average_sentiment_worker_2\"]]",
-            "BALANCER_TYPE=shard_by_ascii"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # AVERAGE SENTIMENT WORKERS
-    for i in range(1, 3):
-        services[f"average_sentiment_worker_{i}"] = {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/average_sentiment/Dockerfile"
-            },
-            "env_file": ["./server/worker/average_sentiment/.env"],
-            "environment": [
-                f"ROUTER_CONSUME_QUEUE=average_sentiment_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=average_sentiment_collector_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/average_sentiment:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # AVERAGE SENTIMENT COLLECTOR ROUTER
-    services["average_sentiment_collector_router"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "router/Dockerfile"
-        },
-        "env_file": ["./server/router/.env"],
-        "environment": [
-            "NUMBER_OF_PRODUCER_WORKERS=2",
-            "INPUT_QUEUE=average_sentiment_collector_router",
-            "OUTPUT_QUEUES=collector_average_sentiment_worker",
-            "BALANCER_TYPE=round_robin"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/router:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
-    # COLLECTOR AVERAGE SENTIMENT WORKER
-    services["collector_average_sentiment_worker"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "worker/collector_average_sentiment_worker/Dockerfile"
-        },
-        "env_file": ["./server/worker/collector_average_sentiment_worker/.env"],
-        "environment": [
-            "ROUTER_CONSUME_QUEUE=collector_average_sentiment_worker",
-            "RESPONSE_QUEUE=response_queue"
-        ],
-        "depends_on": ["rabbitmq"],
-        "volumes": [
-            "./server/worker/collector_average_sentiment_worker:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
-
     networks = {
-        NETWORK: {
+        network: {
             "driver": "bridge",
         }
     }
@@ -288,7 +191,9 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
           f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
           f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
           f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
-          f"and {num_max_min_workers} max_min workers")
+          f"{num_max_min_workers} max_min workers, {num_sentiment_workers} sentiment workers, " +
+          f"{num_avg_sentiment_workers} avg sentiment workers, network: {network}")
+
 
 if __name__ == "__main__":
     # Process command line arguments
@@ -304,6 +209,9 @@ if __name__ == "__main__":
     count_workers_per_shard = 2
     num_top_workers = 3
     num_max_min_workers = 2
+    num_sentiment_workers = 2
+    num_avg_sentiment_workers = 2
+    network = NETWORK
     
     # Get output filename from first argument if provided
      # Get output filename from first argument if provided
@@ -418,6 +326,28 @@ if __name__ == "__main__":
         except ValueError:
             print("Error: Number of max_min workers must be a positive integer.")
             sys.exit(1)
+
+    if len(sys.argv) > 13:
+        try:
+            num_sentiment_workers = int(sys.argv[13])
+            if num_sentiment_workers < 1:
+                raise ValueError("Number of sentiment analysis workers must be positive")
+        except ValueError:
+            print("Error: Number of sentiment analysis workers must be a positive integer.")
+            sys.exit(1)
+            
+    if len(sys.argv) > 14:
+        try:
+            num_avg_sentiment_workers = int(sys.argv[14])
+            if num_avg_sentiment_workers < 1:
+                raise ValueError("Number of average sentiment workers must be positive")
+        except ValueError:
+            print("Error: Number of average sentiment workers must be a positive integer.")
+            sys.exit(1)
+        
+    # TODO: Add the network argument in each node
+    if len(sys.argv) > 15:
+        network = sys.argv[15]
     
     # Generate the Docker Compose file
     generate_docker_compose(output_file, num_clients, num_year_workers, 
@@ -425,4 +355,5 @@ if __name__ == "__main__":
                            num_join_ratings_workers, avg_rating_shards,
                            avg_rating_replicas, count_shards, 
                            count_workers_per_shard, num_top_workers,
-                           num_max_min_workers)
+                           num_max_min_workers, num_sentiment_workers,
+                           num_avg_sentiment_workers, network)

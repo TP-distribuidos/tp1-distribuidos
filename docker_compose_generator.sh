@@ -13,6 +13,9 @@ COUNT_SHARDS=2
 COUNT_WORKERS_PER_SHARD=2
 NUM_TOP_WORKERS=3
 NUM_MAX_MIN_WORKERS=2
+NUM_SENTIMENT_WORKERS=2
+NUM_AVG_SENTIMENT_WORKERS=2
+NETWORK="tp_distribuidos"
 
 # Function to display usage information
 show_help() {
@@ -32,7 +35,11 @@ show_help() {
     echo "  -e, --count-workers-per-shard NUM Specify workers per count shard (default: 2)"
     echo "  -t, --top-workers NUM Specify number of top workers (default: 3)"
     echo "  -m, --max-min-workers NUM Specify number of max_min workers (default: 2)"
+    echo "  -s, --sentiment-workers NUM Specify number of sentiment analysis workers (default: 2)"
+    echo "  -v, --avg-sentiment-workers NUM Specify number of average sentiment workers (default: 2)"
+    echo "  -k, --network NAME     Specify Docker network name (default: tp_distribuidos, THIS IS STILL A WORK IN PROGRESS, IT WILL ALWAYS DEFAUTL TO tp_distribuidos)"
     echo "  -h, --help            Display this help message and exit"
+    
     echo ""
     echo "Examples:"
     echo "  $0                    Generate using defaults"
@@ -175,6 +182,26 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        -s|--sentiment-workers)
+            NUM_SENTIMENT_WORKERS="$2"
+            if ! [[ "$NUM_SENTIMENT_WORKERS" =~ ^[0-9]+$ ]] || [ "$NUM_SENTIMENT_WORKERS" -lt 1 ]; then
+                echo "Error: Number of sentiment workers must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -v|--avg-sentiment-workers)
+            NUM_AVG_SENTIMENT_WORKERS="$2"
+            if ! [[ "$NUM_AVG_SENTIMENT_WORKERS" =~ ^[0-9]+$ ]] || [ "$NUM_AVG_SENTIMENT_WORKERS" -lt 1 ]; then
+                echo "Error: Number of average sentiment workers must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -k|--network)
+            NETWORK="$2"
+            shift 2
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -199,6 +226,10 @@ echo "  $COUNT_SHARDS count shards"
 echo "  $COUNT_WORKERS_PER_SHARD count workers per shard"
 echo "  $NUM_TOP_WORKERS top workers"
 echo "  $NUM_MAX_MIN_WORKERS max_min workers"
+echo "  $NUM_MAX_MIN_WORKERS max_min workers"
+echo "  $NUM_SENTIMENT_WORKERS sentiment analysis workers"
+echo "  $NUM_AVG_SENTIMENT_WORKERS average sentiment workers"
+echo "  Network: $NETWORK"
 
 
 
@@ -223,7 +254,8 @@ fi
 echo "Generating Docker Compose file..."
 $PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" \
 "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS" \
-"$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS" "$NUM_MAX_MIN_WORKERS"
+"$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS" "$NUM_MAX_MIN_WORKERS" \
+"$NUM_SENTIMENT_WORKERS" "$NUM_AVG_SENTIMENT_WORKERS" "$NETWORK"
 
 # Check if generation was successful
 if [ -f "$OUTPUT_FILE" ]; then

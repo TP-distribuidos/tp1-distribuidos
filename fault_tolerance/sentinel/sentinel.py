@@ -2,8 +2,8 @@ import logging
 import os
 import socket
 import time
-import sys
 import threading
+import docker
 from common.Serializer import Serializer
 
 logging.basicConfig(
@@ -19,6 +19,9 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 5))
 HOSTNAME = os.getenv("HOSTNAME", "unknown_host")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "sentinel")
 PEER_PORT = int(os.getenv("PEER_PORT", 9010))
+RESTART_ATTEMPTS = int(os.getenv("RESTART_ATTEMPTS", 3))
+RESTART_COOLDOWN = int(os.getenv("RESTART_COOLDOWN", 30))
+COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME")
 
 # Election and Leader Constants
 ELECTION_TIMEOUT_DURATION = 10
@@ -48,6 +51,18 @@ class Sentinel:
         self.election_start_time = 0
         self.last_leader_heartbeat_time = 0
         self.election_message_received_this_cycle = False
+        
+        # Worker revival related variables
+        self.compose_project_name = COMPOSE_PROJECT_NAME
+        self.worker_unhealthy_count = 0
+        self.last_restart_time = 0
+        self.restart_attempts = 0
+        self.docker_client = None
+        try:
+            self.docker_client = docker.from_env()
+            logging.info("Docker client initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize Docker client: {e}")
 
         logging.info(f"My ID: {self.id}")
 
@@ -291,6 +306,65 @@ class Sentinel:
                 logging.warning(f"Error closing worker health check socket: {e}")
             self.socket = None
 
+    def restart_worker(self):
+        """Attempt to restart the worker container with enhanced reliability"""
+        if not self.docker_client:
+            logging.error("Cannot restart worker: Docker client not initialized")
+            return False
+        
+        current_time = time.time()
+        if current_time - self.last_restart_time < RESTART_COOLDOWN:
+            logging.warning(f"Skipping restart attempt: Cooldown period not elapsed ({RESTART_COOLDOWN} seconds)")
+            return False
+        
+        if not self.compose_project_name:
+            logging.error(f"COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
+            return False
+        
+        try:
+            logging.info(f"Attempting to find and restart worker container for service: {self.worker_host}")
+            
+            # Find container using label-based filtering (more precise)
+            containers = self.docker_client.containers.list(
+                all=True, 
+                filters={
+                    "label": [
+                        f"com.docker.compose.service={self.worker_host}",
+                        f"com.docker.compose.project={self.compose_project_name}"
+                    ]
+                }
+            )
+            
+            if not containers:
+                logging.error(f"Could not find container for service '{self.worker_host}' in project '{self.compose_project_name}'")
+                return False
+            
+            # Use the first matching container (should be only one based on precise labels)
+            worker_container = containers[0]
+            
+            # Log detailed restart information
+            self.restart_attempts += 1
+            logging.info(f"\033[31mRestarting worker container {worker_container.name} (attempt #{self.restart_attempts})\033[0m")
+            
+            # Restart with a timeout for graceful shutdown
+            worker_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
+            
+            # Record restart time and notify peers
+            self.last_restart_time = current_time
+            
+            logging.info(f"\033[32mSuccessfully restarted worker container: {worker_container.name}\033[0m")
+            return True
+                
+        except docker.errors.NotFound:
+            logging.error(f"Worker container for service '{self.worker_host}' not found")
+            return False
+        except docker.errors.APIError as e:
+            logging.error(f"Docker API error when restarting container: {e}")
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error restarting worker container: {e}", exc_info=True)
+            return False
+
     def run(self):
         logging.info(f"Sentinel starting (ID: {self.id}) for worker {self.worker_host}:{self.worker_port}")
         self._start_peer_listener()
@@ -308,12 +382,24 @@ class Sentinel:
                 current_time = time.time()
                 self.election_message_received_this_cycle = False # Reset for this iteration
 
-                # Leader tasks
                 if self.is_leader:
                     if self._check_worker_health():
-                        logging.info(f"\033[32mLeader {self.id}: Worker {self.worker_host}:{self.worker_port} is healthy\033[0m")
+                        logging.info(f"\033[32mWorker {self.worker_host}:{self.worker_port} is healthy\033[0m")
+                        self.worker_unhealthy_count = 0  # Reset counter if worker is healthy
                     else:
-                        logging.error(f"\033[31mLeader {self.id}: Worker {self.worker_host}:{self.worker_port} is unhealthy\033[0m")
+                        self.worker_unhealthy_count += 1
+                        logging.error(f"\033[31mWorker {self.worker_host}:{self.worker_port} is unhealthy (count: {self.worker_unhealthy_count}/{RESTART_ATTEMPTS})\033[0m")
+                        
+                        # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
+                        if self.worker_unhealthy_count >= RESTART_ATTEMPTS:
+                            logging.warning(f"\033[31mWorker {self.worker_host} has been unhealthy for {self.worker_unhealthy_count} consecutive checks. Attempting restart...\033[0m")
+                            restart_success = self.restart_worker()
+                            if restart_success:
+                                logging.info(f"Restart initiated successfully. Resetting unhealthy counter and waiting for recovery.")
+                                self.worker_unhealthy_count = 0  # Reset counter after successful restart
+                                self.restart_attempts = 0
+                            else:
+                                logging.error(f"\033[31mFailed to restart worker {self.worker_host}. Will retry after cooldown period.\033[0m")
                     
                     # Broadcast leader heartbeat
                     if current_time - getattr(self, '_last_heartbeat_sent_time', 0) > LEADER_HEARTBEAT_INTERVAL:
@@ -403,14 +489,3 @@ class Sentinel:
         except Exception as e:
             logging.error(f"Error checking worker health for {self.worker_host}:{self.worker_port}: {e}")
             return False
-
-def main():
-    try:
-        sentinel = Sentinel()
-        sentinel.run()
-    except Exception as e:
-        logging.error(f"Fatal error in sentinel: {e}", exc_info=True)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()

@@ -1,729 +1,370 @@
 #!/usr/bin/env python3
 
 import yaml
-import argparse
-from copy import deepcopy
+import sys
 
-def generate_docker_compose(config):
-    """Generate a docker-compose file based on the provided configuration."""
-    
-    output = {"services": {}}
-    services = output["services"]
-    
-    # Add static services
-    add_static_services(services, config)
-    
-    # Add client replicas
-    add_client_replicas(services, config["client_replicas"])
-    
-    # Add worker replicas for each worker type
-    for worker_type, replicas in config["worker_replicas"].items():
-        add_worker_replicas(services, worker_type, replicas, config)
-    
-    # Add routers with proper configuration based on worker counts
-    configure_routers(services, config)
-    
-    return output
+from docker_compose_generator_files.client.client import generate_client_services
+from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers
+from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
+from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers
+from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers
+from docker_compose_generator_files.workers.average_movies_by_rating import generate_average_movies_by_rating_workers, get_total_workers
+from docker_compose_generator_files.workers.count import generate_count_workers, get_total_workers as get_total_count_workers
+from docker_compose_generator_files.workers.top import generate_top_workers
+from docker_compose_generator_files.workers.max_min import generate_max_min_workers
+from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker
+from docker_compose_generator_files.workers.top_10_actors_collector import generate_collector_top_10_actors_worker
+from docker_compose_generator_files.workers.sentiment_analysis import generate_sentiment_analysis_workers
+from docker_compose_generator_files.workers.average_sentiment import generate_average_sentiment_workers
+from docker_compose_generator_files.workers.collector_average_sentiment import generate_collector_average_sentiment_worker
+from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
+from docker_compose_generator_files.routers.country import generate_country_router
+from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
+from docker_compose_generator_files.routers.join_credits import generate_join_credits_router
+from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
+from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
+from docker_compose_generator_files.routers.max_min import generate_max_min_router
+from docker_compose_generator_files.routers.max_min_collector import generate_max_min_collector_router
+from docker_compose_generator_files.routers.count import generate_count_router
+from docker_compose_generator_files.routers.top import generate_top_router
+from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router
+from docker_compose_generator_files.routers.generate_movies_q5 import generate_movies_q5_router
+from docker_compose_generator_files.routers.average_sentiment import generate_average_sentiment_router
+from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router
+from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
+from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 
-def add_static_services(services, config):
-    """Add static services like rabbitmq and boundary."""
-    # RabbitMQ service
-    services["rabbitmq"] = {
-        "image": "rabbitmq:3-management",
-        "ports": ["5672:5672", "15672:15672"]
-    }
-    
-    # Boundary service
-    services["boundary"] = {
-        "build": {
-            "context": "./server",
-            "dockerfile": "boundary/Dockerfile"
-        },
-        "env_file": ["./server/boundary/.env"],
-        "environment": [
-            "MOVIES_ROUTER_QUEUE=boundary_movies_router",
-            "MOVIES_ROUTER_Q5_QUEUE=boundary_movies_Q5_router",
-            "CREDITS_ROUTER_QUEUE=boundary_credits_router",
-            "RATINGS_ROUTER_QUEUE=boundary_ratings_router"
-        ],
-        "depends_on": ["rabbitmq"],
-        "ports": ["5000:5000"],
-        "volumes": [
-            "./server/boundary:/app",
-            "./server/rabbitmq:/app/rabbitmq",
-            "./server/common:/app/common"
-        ]
-    }
+from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBER_OF_CLIENTS_AUTOMATIC
 
-def add_client_replicas(services, replicas):
-    """Add client services based on the specified replica count."""
-    for i in range(1, replicas + 1):
-        client_name = f"client{i}"
-        services[client_name] = {
-            "env_file": ["./client/.env"],
-            "build": "./client",
-            "environment": [f"CLIENT_ID={i}"],
-            "depends_on": {
-                "boundary": {
-                    "condition": "service_started"
-                }
-            },
-            "volumes": ["./client:/app"]
-        }
+def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
+                           num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
+                           avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
+                           count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2,
+                           num_sentiment_workers=2, num_avg_sentiment_workers=2,
+                           network=NETWORK, include_q5=False):
+    # Start with an empty services dictionary
+    services = {}
 
-def add_worker_replicas(services, worker_type, replicas, config):
-    """Add worker services of a specific type based on the replica count."""
+    # Add client services
+    client_services = generate_client_services(num_clients, NUMBER_OF_CLIENTS_AUTOMATIC)
+    services.update(client_services)
     
-    # Define worker templates for different worker types
-    templates = {
-        "filter_by_year": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/filter_by_year/Dockerfile"
-            },
-            "env_file": ["./server/worker/filter_by_year/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=filter_by_year_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=country_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/filter_by_year:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        # TODO: Add the the rabbitmq healthcheck dependency to the rest of the workers
-        "filter_by_country": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/filter_by_country/Dockerfile"
-            },
-            "env_file": ["./server/worker/filter_by_country/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=filter_by_country_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=join_movies_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/filter_by_country:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "join_credits": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/join_credits/Dockerfile"
-            },
-            "env_file": ["./server/worker/join_credits/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE_MOVIES=join_credits_worker_{i}_movies",
-                "ROUTER_CONSUME_QUEUE_CREDITS=join_credits_worker_{i}_credits",
-                "ROUTER_PRODUCER_QUEUE=count_router",
-                f"NUMBER_OF_CLIENTS={config['client_replicas']}"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/join_credits:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "join_ratings": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/join_ratings/Dockerfile"
-            },
-            "env_file": ["./server/worker/join_ratings/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE_MOVIES=join_ratings_worker_{i}_movies",
-                "ROUTER_CONSUME_QUEUE_RATINGS=join_ratings_worker_{i}_ratings",
-                "ROUTER_PRODUCER_QUEUE=average_movies_by_rating_router",
-                f"NUMBER_OF_CLIENTS={config['client_replicas']}"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/join_ratings:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "count": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/count/Dockerfile"
-            },
-            "env_file": ["./server/worker/count/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=count_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=top_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/count:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "sentiment_analysis": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/sentiment_analysis/Dockerfile"
-            },
-            "env_file": ["./server/worker/sentiment_analysis/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=sentiment_analysis_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=average_sentiment_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/sentiment_analysis:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ],
-            "deploy": {
-                "resources": {
-                    "limits": {
-                        "memory": "2G"
-                    }
-                }
-            }
-        },
-        # Adding missing worker types
-        "average_movies_by_rating": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/average_movies_by_rating/Dockerfile"
-            },
-            "env_file": ["./server/worker/average_movies_by_rating/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=average_movies_by_rating_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=max_min_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/average_movies_by_rating:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "max_min": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/max_min/Dockerfile"
-            },
-            "env_file": ["./server/worker/max_min/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=max_min_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=max_min_collector_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/max_min:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "collector_max_min": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/collector_max_min/Dockerfile"
-            },
-            "env_file": ["./server/worker/collector_max_min/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=collector_max_min_worker",
-                "RESPONSE_QUEUE=response_queue"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/collector_max_min:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "top": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/top/Dockerfile"
-            },
-            "env_file": ["./server/worker/top/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=top_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=top_10_actors_collector_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/top:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "collector_top_10_actors": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/collector_top_10_actors/Dockerfile"
-            },
-            "env_file": ["./server/worker/collector_top_10_actors/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=collector_top_10_actors_worker",
-                "RESPONSE_QUEUE=response_queue"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/collector_top_10_actors:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "average_sentiment": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/average_sentiment/Dockerfile"
-            },
-            "env_file": ["./server/worker/average_sentiment/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=average_sentiment_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=average_sentiment_collector_router"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/average_sentiment:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        },
-        "collector_average_sentiment": {
-            "build": {
-                "context": "./server",
-                "dockerfile": "worker/collector_average_sentiment_worker/Dockerfile"
-            },
-            "env_file": ["./server/worker/collector_average_sentiment_worker/.env"],
-            "environment": [
-                "ROUTER_CONSUME_QUEUE=collector_average_sentiment_worker",
-                "RESPONSE_QUEUE=response_queue"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/worker/collector_average_sentiment_worker:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
+    # Add filter_by_year workers
+    year_workers = generate_filter_by_year_workers(num_year_workers)
+    services.update(year_workers)
+    
+    # Add filter_by_country workers
+    country_workers = generate_filter_by_country_workers(num_country_workers)
+    services.update(country_workers)
+    
+    # Add join_credits workers
+    join_credits_workers = generate_join_credits_workers(num_join_credits_workers)
+    services.update(join_credits_workers)
+    
+    # Add join_ratings workers
+    join_ratings_workers = generate_join_ratings_workers(num_join_ratings_workers)
+    services.update(join_ratings_workers)
+    
+    # Add average_movies_by_rating workers
+    avg_rating_workers = generate_average_movies_by_rating_workers(avg_rating_shards, avg_rating_replicas)
+    services.update(avg_rating_workers)
+    
+    # Add count workers
+    count_workers = generate_count_workers(count_shards, count_workers_per_shard)
+    services.update(count_workers)
+    
+    # Add top workers
+    top_workers = generate_top_workers(num_top_workers)
+    services.update(top_workers)
+    
+    # Add max_min workers
+    max_min_workers = generate_max_min_workers(num_max_min_workers)
+    services.update(max_min_workers)
+    
+    # Add collector_max_min_worker
+    collector_max_min = generate_collector_max_min_worker()
+    services.update(collector_max_min)
+    
+    # Add collector_top_10_actors_worker
+    collector_top_10_actors = generate_collector_top_10_actors_worker()
+    services.update(collector_top_10_actors)
+    
+    # Conditionally add Q5 workers based on include_q5 flag
+    if include_q5:
+        # Add sentiment_analysis workers (Q5)
+        sentiment_analysis_workers = generate_sentiment_analysis_workers(num_sentiment_workers)
+        services.update(sentiment_analysis_workers)
+        
+        # Add average_sentiment workers (Q5)
+        average_sentiment_workers = generate_average_sentiment_workers(num_avg_sentiment_workers)
+        services.update(average_sentiment_workers)
+        
+        # Add collector_average_sentiment_worker (Q5)
+        collector_avg_sentiment = generate_collector_average_sentiment_worker()
+        services.update(collector_avg_sentiment)
+    
+    # Get the total number of average_movies_by_rating workers
+    total_avg_rating_workers = get_total_workers(avg_rating_shards, avg_rating_replicas)
+    
+    # Get the total number of count workers
+    total_count_workers = get_total_count_workers(count_shards, count_workers_per_shard)
+    
+    # Add year_movies_router
+    year_router = generate_year_movies_router(num_year_workers) 
+    services.update(year_router)
+    
+    # Add country_router with both worker counts
+    country_router = generate_country_router(num_year_workers, num_country_workers)
+    services.update(country_router)
+    
+    # Add join_movies_router with all worker counts
+    join_movies = generate_join_movies_router(num_country_workers, num_join_credits_workers, num_join_ratings_workers)
+    services.update(join_movies)
+    
+    # Add join_credits_router with join_credits workers count
+    join_credits = generate_join_credits_router(num_join_credits_workers)
+    services.update(join_credits)
+    
+    # Add join_ratings_router with join_ratings workers count
+    join_ratings = generate_join_ratings_router(num_join_ratings_workers)
+    services.update(join_ratings)
+    
+    # Add average_movies_by_rating_router with join_ratings workers count and sharding config
+    avg_rating_router = generate_average_movies_by_rating_router(num_join_ratings_workers, avg_rating_shards, avg_rating_replicas)
+    services.update(avg_rating_router)
+    
+    # Add max_min_router with the total average_movies_by_rating workers count and number of max_min workers
+    max_min_router = generate_max_min_router(total_avg_rating_workers, num_max_min_workers)
+    services.update(max_min_router)
+    
+    # Add max_min_collector_router with num_max_min_workers
+    max_min_collector = generate_max_min_collector_router(num_max_min_workers)
+    services.update(max_min_collector)
+    
+    # Add count_router with join_credits workers count and sharding config
+    count_router = generate_count_router(num_join_credits_workers, count_shards, count_workers_per_shard)
+    services.update(count_router)
+    
+    # Add top_router with total count workers
+    top_router = generate_top_router(total_count_workers, num_top_workers)
+    services.update(top_router)
+    
+    # Add top_10_actors_collector_router with num_top_workers
+    top_collector = generate_top_10_actors_collector_router(num_top_workers)
+    services.update(top_collector)
+    
+    # Conditionally add Q5 routers based on include_q5 flag
+    if include_q5:
+        # Add movies_q5_router (Q5)
+        movies_q5 = generate_movies_q5_router(num_sentiment_workers)
+        services.update(movies_q5)
+        
+        # Add average_sentiment_router with num_sentiment_workers (Q5)
+        avg_sentiment_router = generate_average_sentiment_router(num_sentiment_workers, num_avg_sentiment_workers)
+        services.update(avg_sentiment_router)
+        
+        # Add average_sentiment_collector_router with num_avg_sentiment_workers (Q5)
+        avg_sentiment_collector = generate_average_sentiment_collector_router(num_avg_sentiment_workers)
+        services.update(avg_sentiment_collector)
+
+    # Add RabbitMQ service  
+    rabbitmq = generate_rabbitmq_service()
+    services.update(rabbitmq)
+    
+    boundary = generate_boundary_service()
+    services.update(boundary)
+
+    network = NETWORK
+    networks = {
+        network: {
+            "driver": "bridge",
         }
     }
-    
-    # Special case for collector workers that don't have numbered replicas
-    collector_worker_types = ["collector_max_min", "collector_top_10_actors", "collector_average_sentiment"]
-    if worker_type in collector_worker_types:
-        # Only add if replicas > 0, and don't add a numbered suffix
-        if replicas > 0:
-            template = templates[worker_type]
-            worker_name = worker_type + "_worker"
-            services[worker_name] = deepcopy(template)
-        return
 
-    # Skip sentiment_analysis workers if they should be commented out
-    if worker_type == "sentiment_analysis" and config.get("comment_sentiment_analysis", True):
-        return
-
-    # For all other worker types with replicas > 0, add numbered replicas
-    if replicas > 0 and worker_type in templates:
-        template = templates[worker_type]
-        for i in range(1, replicas + 1):
-            worker_name = f"{worker_type}_worker_{i}"
-            worker_config = deepcopy(template)
-            
-            # Replace {i} placeholders in environment variables
-            for j, env_var in enumerate(worker_config.get("environment", [])):
-                worker_config["environment"][j] = env_var.replace("{i}", str(i))
-            
-            services[worker_name] = worker_config
-
-def configure_routers(services, config):
-    """Configure router services based on worker counts."""
+    # Compile final docker-compose dictionary
+    docker_compose = {"services": services, "networks": networks}
     
-    # Calculate producer workers counts based on upstream workers
-    producer_counts = {
-        "year_movies_router": config["client_replicas"],  # One per client
-        "movies_q5_router": config["client_replicas"],    # One per client
-        "join_credits_router": 1,                         # Always from boundary
-        "join_ratings_router": 1,                         # Always from boundary
-        "country_router": config["worker_replicas"]["filter_by_year"],  # From filter_by_year workers
-        "join_movies_router": config["worker_replicas"]["filter_by_country"],  # From filter_by_country
-        "count_router": config["worker_replicas"]["join_credits"],  # From join_credits workers
-        "average_movies_by_rating_router": config["worker_replicas"]["join_ratings"],  # From join_ratings
-        "max_min_router": config["worker_replicas"]["average_movies_by_rating"],  # From avg_movies_by_rating
-        "top_router": config["worker_replicas"]["count"],  # From count workers
-        "average_sentiment_router": config["worker_replicas"]["sentiment_analysis"],  # From sentiment workers
-        "max_min_collector_router": config["worker_replicas"]["max_min"],  # From max_min workers
-        "top_10_actors_collector_router": config["worker_replicas"]["top"],  # From top workers
-        "average_sentiment_collector_router": config["worker_replicas"]["average_sentiment"]  # From avg_sentiment
-    }
-    
-    # First check if sentiment_analysis should be included
-    include_sentiment_analysis = config["worker_replicas"]["sentiment_analysis"] > 0 and not config.get("comment_sentiment_analysis", True)
-    
-    # Configure year_movies_router
-    year_filter_workers = config["worker_replicas"]["filter_by_year"]
-    if year_filter_workers > 0:
-        services["year_movies_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['year_movies_router']}",
-                "INPUT_QUEUE=boundary_movies_router",
-                f"OUTPUT_QUEUES={','.join([f'filter_by_year_worker_{i}' for i in range(1, year_filter_workers + 1)])}",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ],
-            "restart": "on-failure:3"
-        }
-
-    # Only add movies_q5_router if sentiment_analysis is enabled
-    if include_sentiment_analysis:
-        sentiment_analysis_workers = config["worker_replicas"]["sentiment_analysis"]
-        services["movies_q5_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['movies_q5_router']}",
-                "INPUT_QUEUE=boundary_movies_Q5_router",
-                f"OUTPUT_QUEUES={','.join([f'sentiment_analysis_worker_{i}' for i in range(1, sentiment_analysis_workers + 1)])}",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Configure join_credits_router
-    join_credits_workers = config["worker_replicas"]["join_credits"]
-    if join_credits_workers > 0:
-        services["join_credits_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['join_credits_router']}",
-                "INPUT_QUEUE=boundary_credits_router",
-                f"OUTPUT_QUEUES={','.join([f'join_credits_worker_{i}_credits' for i in range(1, join_credits_workers + 1)])}",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # Configure join_ratings_router
-    join_ratings_workers = config["worker_replicas"]["join_ratings"]
-    if join_ratings_workers > 0:
-        services["join_ratings_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['join_ratings_router']}",
-                "INPUT_QUEUE=boundary_ratings_router",
-                f"OUTPUT_QUEUES={','.join([f'join_ratings_worker_{i}_ratings' for i in range(1, join_ratings_workers + 1)])}",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Configure country_router
-    filter_by_country_workers = config["worker_replicas"]["filter_by_country"]
-    if filter_by_country_workers > 0:
-        services["country_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['country_router']}",
-                "INPUT_QUEUE=country_router",
-                f"OUTPUT_QUEUES={','.join([f'filter_by_country_worker_{i}' for i in range(1, filter_by_country_workers + 1)])}",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Configure join_movies_router
-    join_credits_workers = config["worker_replicas"]["join_credits"]
-    join_ratings_workers = config["worker_replicas"]["join_ratings"]
-    
-    if join_credits_workers > 0 or join_ratings_workers > 0:
-        output_queues = []
-        for i in range(1, join_ratings_workers + 1):
-            output_queues.append(f"join_ratings_worker_{i}_movies")
-        for i in range(1, join_credits_workers + 1):
-            output_queues.append(f"join_credits_worker_{i}_movies")
-            
-        services["join_movies_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['join_movies_router']}",
-                "INPUT_QUEUE=join_movies_router",
-                f"OUTPUT_QUEUES={','.join(output_queues)}",
-                "EXCHANGE_TYPE=fanout",
-                "EXCHANGE_NAME=join_router_exchange"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Configure count_router with shard distribution
-    count_workers = config["worker_replicas"]["count"]
-    if count_workers > 0:
-        # Create count workers distribution for shard_by_ascii
-        middle = count_workers // 2
-        first_half = [f"count_worker_{i}" for i in range(1, middle + 1)]
-        second_half = [f"count_worker_{i}" for i in range(middle + 1, count_workers + 1)]
+    # Write to the specified output file
+    with open(output_file, 'w') as file:
+        # Convert Python dictionary to YAML and write to file
+        yaml.dump(docker_compose, file, default_flow_style=False)
         
-        # Format using JSON format with double quotes
-        if len(first_half) > 0 and len(second_half) > 0:
-            output_queues = '[["{0}"],["{1}"]]'.format('","'.join(first_half), '","'.join(second_half))
-        else:
-            output_queues = '[["{0}"]]'.format('","'.join(first_half + second_half))
-            
-        services["count_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['count_router']}",
-                "INPUT_QUEUE=count_router",
-                f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=shard_by_ascii"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Configure routers for average_movies_by_rating based on the number of workers
-    average_movies_by_rating_workers = config["worker_replicas"]["average_movies_by_rating"]
-    if average_movies_by_rating_workers > 0:
-        worker_list = [f"average_movies_by_rating_worker_{i}" for i in range(1, average_movies_by_rating_workers + 1)]
-        output_queues = '[["{0}"]]'.format('","'.join(worker_list))
-        
-        services["average_movies_by_rating_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['average_movies_by_rating_router']}",
-                "INPUT_QUEUE=average_movies_by_rating_router",
-                f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=shard_by_ascii"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
+    q5_status = "included" if include_q5 else "excluded"
+    print(f"Docker Compose file generated successfully at {output_file}")
+    print(f"Configuration: {num_clients} clients, {num_year_workers} year workers, " +
+          f"{num_country_workers} country workers, {num_join_credits_workers} join_credits workers, " +
+          f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
+          f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
+          f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
+          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, network: {network} (DEFAULTING to tp_distribuidos anyways because this is a WIP)")
 
-    # Configure routers for max_min based on the number of workers
-    max_min_workers = config["worker_replicas"]["max_min"]
-    if max_min_workers > 0:
-        worker_list = [f"max_min_worker_{i}" for i in range(1, max_min_workers + 1)]
-        output_queues = '[["{0}"]]'.format('","'.join(worker_list))
-        
-        services["max_min_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['max_min_router']}",
-                "INPUT_QUEUE=max_min_router",
-                f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=shard_by_ascii"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # Configure routers for top based on the number of workers
-    top_workers = config["worker_replicas"]["top"]
-    if top_workers > 0:
-        worker_list = [f"top_worker_{i}" for i in range(1, top_workers + 1)]
-        output_queues = '[["{0}"]]'.format('","'.join(worker_list))
-        
-        services["top_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['top_router']}",
-                "INPUT_QUEUE=top_router",
-                f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=shard_by_ascii"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-    # Configure average_sentiment_router based on the number of workers
-    average_sentiment_workers = config["worker_replicas"]["average_sentiment"]
-    if average_sentiment_workers > 0 and not config.get("comment_sentiment_analysis", True):
-        output_lists = []
-        for i in range(1, average_sentiment_workers + 1):
-            output_lists.append(f'["average_sentiment_worker_{i}"]')
-        output_queues = f"[{','.join(output_lists)}]"
-        
-        services["average_sentiment_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['average_sentiment_router']}",
-                "INPUT_QUEUE=average_sentiment_router",
-                f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=shard_by_ascii"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    # Add collector routers if their workers are enabled
-    if config["worker_replicas"]["collector_max_min"] > 0:
-        services["max_min_collector_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['max_min_collector_router']}",
-                "INPUT_QUEUE=max_min_collector_router",
-                "OUTPUT_QUEUES=collector_max_min_worker",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    if config["worker_replicas"]["collector_top_10_actors"] > 0:
-        services["top_10_actors_collector_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['top_10_actors_collector_router']}",
-                "INPUT_QUEUE=top_10_actors_collector_router",
-                "OUTPUT_QUEUES=collector_top_10_actors_worker",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-    
-    if config["worker_replicas"]["collector_average_sentiment"] > 0 and not config.get("comment_sentiment_analysis", True):
-        services["average_sentiment_collector_router"] = {
-            "build": {"context": "./server", "dockerfile": "router/Dockerfile"},
-            "env_file": ["./server/router/.env"],
-            "environment": [
-                f"NUMBER_OF_PRODUCER_WORKERS={producer_counts['average_sentiment_collector_router']}",
-                "INPUT_QUEUE=average_sentiment_collector_router",
-                "OUTPUT_QUEUES=collector_average_sentiment_worker",
-                "BALANCER_TYPE=round_robin"
-            ],
-            "depends_on": ["rabbitmq"],
-            "volumes": [
-                "./server/router:/app",
-                "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
-            ]
-        }
-
-def main():
-    parser = argparse.ArgumentParser(description='Generate docker-compose configuration')
-    parser.add_argument('--clients', type=int, default=3, help='Number of client replicas')
-    parser.add_argument('--output', type=str, default='docker-compose_test.yaml', help='Output file')
-    
-    # Worker replica arguments
-    parser.add_argument('--filter-by-year', type=int, default=2, help='Number of filter_by_year workers')
-    parser.add_argument('--filter-by-country', type=int, default=2, help='Number of filter_by_country workers')
-    parser.add_argument('--join-credits', type=int, default=2, help='Number of join_credits workers')
-    parser.add_argument('--join-ratings', type=int, default=2, help='Number of join_ratings workers')
-    parser.add_argument('--count', type=int, default=4, help='Number of count workers')
-    parser.add_argument('--sentiment-analysis', type=int, default=2, help='Number of sentiment_analysis workers')
-    parser.add_argument('--average-movies-by-rating', type=int, default=1, help='Number of average_movies_by_rating workers')
-    parser.add_argument('--max-min', type=int, default=1, help='Number of max_min workers')
-    parser.add_argument('--top', type=int, default=1, help='Number of top workers')
-    parser.add_argument('--average-sentiment', type=int, default=2, help='Number of average_sentiment workers')
-    parser.add_argument('--include-sentiment-analysis', action='store_true', help='Include sentiment_analysis workers (uncommented)')
-    
-    args = parser.parse_args()
-    
-    # Collectors always have exactly one replica, cannot be 0
-    collector_max_min = 1
-    collector_top_10_actors = 1
-    collector_average_sentiment = 1
-    
-    config = {
-        "client_replicas": args.clients,
-        "worker_replicas": {
-            "filter_by_year": args.filter_by_year,
-            "filter_by_country": args.filter_by_country,
-            "join_credits": args.join_credits,
-            "join_ratings": args.join_ratings,
-            "count": args.count,
-            "sentiment_analysis": args.sentiment_analysis,
-            "average_movies_by_rating": args.average_movies_by_rating,
-            "max_min": args.max_min,
-            "top": args.top,
-            "average_sentiment": args.average_sentiment,
-            "collector_max_min": collector_max_min,
-            "collector_top_10_actors": collector_top_10_actors,
-            "collector_average_sentiment": collector_average_sentiment
-        },
-        "comment_sentiment_analysis": not args.include_sentiment_analysis
-    }
-    
-    docker_compose = generate_docker_compose(config)
-    
-    with open(args.output, 'w') as f:
-        yaml.dump(docker_compose, f, default_flow_style=False, sort_keys=False)
-    
-    print(f"Docker Compose configuration generated in {args.output}")
 
 if __name__ == "__main__":
-    main()
+    # Process command line arguments
+    output_file = OUTPUT_FILE
+    num_clients = 4
+    num_year_workers = 2
+    num_country_workers = 2
+    num_join_credits_workers = 2
+    num_join_ratings_workers = 2
+    avg_rating_shards = 2
+    avg_rating_replicas = 2
+    count_shards = 2
+    count_workers_per_shard = 2
+    num_top_workers = 3
+    num_max_min_workers = 2
+    num_sentiment_workers = 2
+    num_avg_sentiment_workers = 2
+    network = NETWORK
+    include_q5 = False  # Default: Q5 nodes are not included
+    
+    
+    # Get output filename from first argument if provided
+     # Get output filename from first argument if provided
+    if len(sys.argv) > 1:
+        output_file = sys.argv[1]
+    
+    # Get number of clients from second argument if provided
+    if len(sys.argv) > 2:
+        try:
+            num_clients = int(sys.argv[2])
+            if num_clients < 1:
+                raise ValueError("Number of clients must be positive")
+        except ValueError:
+            print("Error: Number of clients must be a positive integer.")
+            sys.exit(1)
+    
+    # Get number of year workers from third argument if provided
+    if len(sys.argv) > 3:
+        try:
+            num_year_workers = int(sys.argv[3])
+            if num_year_workers < 1:
+                raise ValueError("Number of year workers must be positive")
+        except ValueError:
+            print("Error: Number of year workers must be a positive integer.")
+            sys.exit(1)
+    
+    # Get number of country workers from fourth argument if provided
+    if len(sys.argv) > 4:
+        try:
+            num_country_workers = int(sys.argv[4])
+            if num_country_workers < 1:
+                raise ValueError("Number of country workers must be positive")
+        except ValueError:
+            print("Error: Number of country workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of join credits workers from fifth argument if provided
+    if len(sys.argv) > 5:
+        try:
+            num_join_credits_workers = int(sys.argv[5])
+            if num_join_credits_workers < 1:
+                raise ValueError("Number of join credits workers must be positive")
+        except ValueError:
+            print("Error: Number of join credits workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of join ratings workers from sixth argument if provided
+    if len(sys.argv) > 6:
+        try:
+            num_join_ratings_workers = int(sys.argv[6])
+            if num_join_ratings_workers < 1:
+                raise ValueError("Number of join ratings workers must be positive")
+        except ValueError:
+            print("Error: Number of join ratings workers must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of average_movies_by_rating shards from seventh argument if provided
+    if len(sys.argv) > 7:
+        try:
+            avg_rating_shards = int(sys.argv[7])
+            if avg_rating_shards < 1:
+                raise ValueError("Number of average_movies_by_rating shards must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating shards must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of average_movies_by_rating replicas per shard from eighth argument if provided
+    if len(sys.argv) > 8:
+        try:
+            avg_rating_replicas = int(sys.argv[8])
+            if avg_rating_replicas < 1:
+                raise ValueError("Number of average_movies_by_rating replicas per shard must be positive")
+        except ValueError:
+            print("Error: Number of average_movies_by_rating replicas per shard must be a positive integer.")
+            sys.exit(1)
+
+    # Get number of count shards from ninth argument if provided
+    if len(sys.argv) > 9:
+        try:
+            count_shards = int(sys.argv[9])
+            if count_shards < 1:
+                raise ValueError("Number of count shards must be positive")
+        except ValueError:
+            print("Error: Number of count shards must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of count workers per shard from tenth argument if provided
+    if len(sys.argv) > 10:
+        try:
+            count_workers_per_shard = int(sys.argv[10])
+            if count_workers_per_shard < 1:
+                raise ValueError("Number of count workers per shard must be positive")
+        except ValueError:
+            print("Error: Number of count workers per shard must be a positive integer.")
+            sys.exit(1)
+            
+    # Get number of top workers from eleventh argument if provided
+    if len(sys.argv) > 11:
+        try:
+            num_top_workers = int(sys.argv[11])
+            if num_top_workers < 1:
+                raise ValueError("Number of top workers must be positive")
+        except ValueError:
+            print("Error: Number of top workers must be a positive integer.")
+            sys.exit(1)
+    
+    if len(sys.argv) > 12:
+        try:
+            num_max_min_workers = int(sys.argv[12])
+            if num_max_min_workers < 1:
+                raise ValueError("Number of max_min workers must be positive")
+        except ValueError:
+            print("Error: Number of max_min workers must be a positive integer.")
+            sys.exit(1)
+
+    if len(sys.argv) > 13:
+        try:
+            num_sentiment_workers = int(sys.argv[13])
+            if num_sentiment_workers < 1:
+                raise ValueError("Number of sentiment analysis workers must be positive")
+        except ValueError:
+            print("Error: Number of sentiment analysis workers must be a positive integer.")
+            sys.exit(1)
+            
+    if len(sys.argv) > 14:
+        try:
+            num_avg_sentiment_workers = int(sys.argv[14])
+            if num_avg_sentiment_workers < 1:
+                raise ValueError("Number of average sentiment workers must be positive")
+        except ValueError:
+            print("Error: Number of average sentiment workers must be a positive integer.")
+            sys.exit(1)
+        
+    # TODO: Add the network argument in each node
+    if len(sys.argv) > 15:
+        network = sys.argv[15]
+    
+    if len(sys.argv) > 16:
+        include_q5_arg = sys.argv[16].lower()
+        include_q5 = include_q5_arg in ('true', 't', 'yes', 'y', '1')
+    
+    
+    # Generate the Docker Compose file
+    generate_docker_compose(output_file, num_clients, num_year_workers, 
+                           num_country_workers, num_join_credits_workers,
+                           num_join_ratings_workers, avg_rating_shards,
+                           avg_rating_replicas, count_shards, 
+                           count_workers_per_shard, num_top_workers,
+                           num_max_min_workers, num_sentiment_workers,
+                           num_avg_sentiment_workers, network, include_q5)

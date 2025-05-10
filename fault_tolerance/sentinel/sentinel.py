@@ -13,8 +13,10 @@ logging.basicConfig(
 )
 
 # Get environment variables
-WORKER_HOST = os.getenv("WORKER_HOST", "localhost")
-WORKER_PORT = int(os.getenv("WORKER_PORT", 9001))
+WORKER_HOSTS_ENV = os.getenv("WORKER_HOSTS", "localhost")
+WORKER_PORTS_ENV = os.getenv("WORKER_PORTS", "9001")
+WORKER_HOSTS = WORKER_HOSTS_ENV.split(",") if "," in WORKER_HOSTS_ENV else [WORKER_HOSTS_ENV]
+WORKER_PORTS = [int(port) for port in WORKER_PORTS_ENV.split(",")] if "," in WORKER_PORTS_ENV else [int(WORKER_PORTS_ENV)]
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 5))
 HOSTNAME = os.getenv("HOSTNAME", "unknown_host")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "sentinel")
@@ -29,12 +31,19 @@ LEADER_HEARTBEAT_INTERVAL = CHECK_INTERVAL * 2
 LEADER_DEAD_DURATION = LEADER_HEARTBEAT_INTERVAL * 1.5
 
 class Sentinel:
-    def __init__(self, worker_host=WORKER_HOST, worker_port=WORKER_PORT, check_interval=CHECK_INTERVAL):
-        self.worker_host = worker_host
-        self.worker_port = worker_port
+    def __init__(self, worker_hosts=WORKER_HOSTS, worker_ports=WORKER_PORTS, check_interval=CHECK_INTERVAL):
+        self.worker_hosts = worker_hosts
+        self.worker_ports = worker_ports
+        
+        # Ensure worker_ports is the same length as worker_hosts
+        if len(self.worker_ports) < len(self.worker_hosts):
+            self.worker_ports.extend([self.worker_ports[0]] * (len(self.worker_hosts) - len(self.worker_ports)))
+        elif len(self.worker_ports) > len(self.worker_hosts):
+            self.worker_ports = self.worker_ports[:len(self.worker_hosts)]
+            
         self.check_interval = check_interval
         self.running = True
-        self.socket = None
+        self.sockets = {}  # Dictionary to store sockets for each worker
         self.hostname = HOSTNAME
         self.service_name = SERVICE_NAME
         self.peer_port = PEER_PORT
@@ -54,13 +63,14 @@ class Sentinel:
         
         # Worker revival related variables
         self.compose_project_name = COMPOSE_PROJECT_NAME
-        self.worker_unhealthy_count = 0
-        self.last_restart_time = 0
-        self.restart_attempts = 0
+        self.worker_unhealthy_counts = {worker: 0 for worker in self.worker_hosts}  # Track each worker separately
+        self.last_restart_times = {worker: 0 for worker in self.worker_hosts}  # Track last restart time for each worker
+        self.restart_attempts = {worker: 0 for worker in self.worker_hosts}  # Track restart attempts for each worker
         self.docker_client = None
         try:
             self.docker_client = docker.from_env()
             logging.info("Docker client initialized successfully")
+            logging.info(f"Monitoring workers: {', '.join(self.worker_hosts)} on ports: {', '.join(str(port) for port in self.worker_ports)}")
         except Exception as e:
             logging.error(f"Failed to initialize Docker client: {e}")
 
@@ -298,23 +308,27 @@ class Sentinel:
     def shutdown(self):
         logging.info(f"Shutdown called for Sentinel ID: {self.id}")
         self.running = False
-        if self.socket:
-            try:
-                self.socket.close()
-                logging.info("Closed worker health check socket.")
-            except Exception as e:
-                logging.warning(f"Error closing worker health check socket: {e}")
-            self.socket = None
+        
+        # Close all worker sockets
+        for worker_host, socket_conn in self.sockets.items():
+            if socket_conn:
+                try:
+                    socket_conn.close()
+                    logging.info(f"Closed worker health check socket for {worker_host}.")
+                except Exception as e:
+                    logging.warning(f"Error closing worker health check socket for {worker_host}: {e}")
+        
+        self.sockets = {}
 
-    def restart_worker(self):
-        """Attempt to restart the worker container with enhanced reliability"""
+    def restart_worker(self, worker_host):
+        """Attempt to restart the specific worker container with enhanced reliability"""
         if not self.docker_client:
             logging.error("Cannot restart worker: Docker client not initialized")
             return False
         
         current_time = time.time()
-        if current_time - self.last_restart_time < RESTART_COOLDOWN:
-            logging.warning(f"Skipping restart attempt: Cooldown period not elapsed ({RESTART_COOLDOWN} seconds)")
+        if current_time - self.last_restart_times.get(worker_host, 0) < RESTART_COOLDOWN:
+            logging.warning(f"Skipping restart attempt for {worker_host}: Cooldown period not elapsed ({RESTART_COOLDOWN} seconds)")
             return False
         
         if not self.compose_project_name:
@@ -322,41 +336,41 @@ class Sentinel:
             return False
         
         try:
-            logging.info(f"Attempting to find and restart worker container for service: {self.worker_host}")
+            logging.info(f"\033[34mAttempting to find and restart worker container for service: {worker_host}\033[0m")
             
             # Find container using label-based filtering (more precise)
             containers = self.docker_client.containers.list(
                 all=True, 
                 filters={
                     "label": [
-                        f"com.docker.compose.service={self.worker_host}",
+                        f"com.docker.compose.service={worker_host}",
                         f"com.docker.compose.project={self.compose_project_name}"
                     ]
                 }
             )
             
             if not containers:
-                logging.error(f"Could not find container for service '{self.worker_host}' in project '{self.compose_project_name}'")
+                logging.error(f"Could not find container for service '{worker_host}' in project '{self.compose_project_name}'")
                 return False
             
             # Use the first matching container (should be only one based on precise labels)
             worker_container = containers[0]
             
             # Log detailed restart information
-            self.restart_attempts += 1
-            logging.info(f"\033[31mRestarting worker container {worker_container.name} (attempt #{self.restart_attempts})\033[0m")
+            self.restart_attempts[worker_host] += 1
+            logging.info(f"\033[31mRestarting worker container {worker_container.name} (attempt #{self.restart_attempts[worker_host]})\033[0m")
             
             # Restart with a timeout for graceful shutdown
             worker_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
             
-            # Record restart time and notify peers
-            self.last_restart_time = current_time
+            # Record restart time
+            self.last_restart_times[worker_host] = current_time
             
             logging.info(f"\033[32mSuccessfully restarted worker container: {worker_container.name}\033[0m")
             return True
                 
         except docker.errors.NotFound:
-            logging.error(f"Worker container for service '{self.worker_host}' not found")
+            logging.error(f"Worker container for service '{worker_host}' not found")
             return False
         except docker.errors.APIError as e:
             logging.error(f"Docker API error when restarting container: {e}")
@@ -366,7 +380,8 @@ class Sentinel:
             return False
 
     def run(self):
-        logging.info(f"Sentinel starting (ID: {self.id}) for worker {self.worker_host}:{self.worker_port}")
+        worker_list = ", ".join([f"{host}:{port}" for host, port in zip(self.worker_hosts, self.worker_ports)])
+        logging.info(f"Sentinel starting (ID: {self.id}) for workers: {worker_list}")
         self._start_peer_listener()
 
         # Initial peer discovery and ID announcement
@@ -383,23 +398,27 @@ class Sentinel:
                 self.election_message_received_this_cycle = False # Reset for this iteration
 
                 if self.is_leader:
-                    if self._check_worker_health():
-                        logging.info(f"\033[32mWorker {self.worker_host}:{self.worker_port} is healthy\033[0m")
-                        self.worker_unhealthy_count = 0  # Reset counter if worker is healthy
-                    else:
-                        self.worker_unhealthy_count += 1
-                        logging.error(f"\033[31mWorker {self.worker_host}:{self.worker_port} is unhealthy (count: {self.worker_unhealthy_count}/{RESTART_ATTEMPTS})\033[0m")
+                    # Check health for all workers
+                    for i, worker_host in enumerate(self.worker_hosts):
+                        worker_port = self.worker_ports[i]
                         
-                        # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
-                        if self.worker_unhealthy_count >= RESTART_ATTEMPTS:
-                            logging.warning(f"\033[31mWorker {self.worker_host} has been unhealthy for {self.worker_unhealthy_count} consecutive checks. Attempting restart...\033[0m")
-                            restart_success = self.restart_worker()
-                            if restart_success:
-                                logging.info(f"Restart initiated successfully. Resetting unhealthy counter and waiting for recovery.")
-                                self.worker_unhealthy_count = 0  # Reset counter after successful restart
-                                self.restart_attempts = 0
-                            else:
-                                logging.error(f"\033[31mFailed to restart worker {self.worker_host}. Will retry after cooldown period.\033[0m")
+                        if self._check_worker_health(worker_host, worker_port):
+                            logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
+                            self.worker_unhealthy_counts[worker_host] = 0  # Reset counter if worker is healthy
+                        else:
+                            self.worker_unhealthy_counts[worker_host] += 1
+                            logging.error(f"\033[31mWorker {worker_host}:{worker_port} is unhealthy \033[33m(count: {self.worker_unhealthy_counts[worker_host]}/{RESTART_ATTEMPTS})\033[0m")
+                            
+                            # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
+                            if self.worker_unhealthy_counts[worker_host] >= RESTART_ATTEMPTS:
+                                logging.warning(f"\033[31mWorker {worker_host} has been unhealthy for {self.worker_unhealthy_counts[worker_host]} consecutive checks. Attempting restart...\033[0m")
+                                restart_success = self.restart_worker(worker_host)
+                                if restart_success:
+                                    logging.info(f"\033[34mRestart initiated \033[32msuccessfully\033[34m for \033[32m{worker_host}\033[34m. Resetting unhealthy counter and waiting for recovery.\033[0m")
+                                    self.worker_unhealthy_counts[worker_host] = 0  # Reset counter after successful restart
+                                    self.restart_attempts[worker_host] = 0
+                                else:
+                                    logging.error(f"\033[31mFailed to restart worker {worker_host}. Will retry after cooldown period.\033[0m")
                     
                     # Broadcast leader heartbeat
                     if current_time - getattr(self, '_last_heartbeat_sent_time', 0) > LEADER_HEARTBEAT_INTERVAL:
@@ -448,44 +467,47 @@ class Sentinel:
                 logging.warning("Peer listener thread did not shut down cleanly.")
         logging.info("Sentinel shutdown complete")
 
-    def _check_worker_health(self):
-        """Check if the worker is healthy by connecting to its echo server"""
+    def _check_worker_health(self, worker_host, worker_port):
+        """Check if the specific worker is healthy by connecting to its echo server"""
         try:
-            # Close previous connection if open
-            if self.socket:
+            # Close previous connection if open for this worker
+            if worker_host in self.sockets and self.sockets[worker_host]:
                 try:
-                    self.socket.close()
+                    self.sockets[worker_host].close()
                 except:
                     pass
-                self.socket = None
+                self.sockets[worker_host] = None
             
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5) 
-            self.socket.connect((self.worker_host, self.worker_port))
+            socket_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            socket_conn.settimeout(5) 
+            socket_conn.connect((worker_host, worker_port))
             
             message = {"timestamp": int(time.time())} 
             serialized_message = Serializer.serialize(message)
-            self.socket.sendall(serialized_message)
+            socket_conn.sendall(serialized_message)
             
-            data = self.socket.recv(1024)
+            data = socket_conn.recv(1024)
+            
+            # Store the socket for later cleanup
+            self.sockets[worker_host] = socket_conn
             
             try:
                 response = Serializer.deserialize(data)
                 if "timestamp" in response:
                     return True
                 else:
-                    logging.warning(f"Invalid health check response: {response}")
+                    logging.warning(f"Invalid health check response from {worker_host}:{worker_port}: {response}")
                     return False
             except Exception as e:
-                logging.warning(f"Failed to deserialize health check response: {e}")
+                logging.warning(f"Failed to deserialize health check response from {worker_host}:{worker_port}: {e}")
                 return False
                 
         except socket.timeout:
-            logging.error(f"Health check for {self.worker_host}:{self.worker_port} timed out")
+            logging.error(f"Health check for {worker_host}:{worker_port} timed out")
             return False
         except ConnectionRefusedError:
-            logging.error(f"Connection refused for {self.worker_host}:{self.worker_port} - worker may be down")
+            logging.error(f"Connection refused for {worker_host}:{worker_port} - worker may be down")
             return False
         except Exception as e:
-            logging.error(f"Error checking worker health for {self.worker_host}:{self.worker_port}: {e}")
+            logging.error(f"Error checking worker health for {worker_host}:{worker_port}: {e}")
             return False

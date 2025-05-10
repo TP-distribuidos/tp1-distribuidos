@@ -174,6 +174,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     boundary = generate_boundary_service()
     services.update(boundary)
 
+    network = NETWORK
     networks = {
         network: {
             "driver": "bridge",

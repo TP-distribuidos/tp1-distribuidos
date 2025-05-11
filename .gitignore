@@ -165,3 +165,10 @@ cython_debug/
 .pypirc
 
 client/data/
+
+# Docker-compose files (except the main one)
+docker-compose-*.yaml
+docker-compose-*.yml
+!docker-compose.yaml
+!docker-compose.yml
+

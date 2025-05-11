@@ -292,7 +292,7 @@ services:
     environment:
       - NUMBER_OF_PRODUCER_WORKERS=2
       - INPUT_QUEUE=average_movies_by_rating_router
-      - OUTPUT_QUEUES=[["average_movies_by_rating_worker_1"]]
+      - OUTPUT_QUEUES=[["average_movies_by_rating_worker_1"],["average_movies_by_rating_worker_2","average_movies_by_rating_worker_3"]]
       - BALANCER_TYPE=shard_by_ascii
     depends_on:
       - rabbitmq
@@ -316,6 +316,36 @@ services:
       - ./server/worker/average_movies_by_rating:/app
       - ./server/rabbitmq:/app/rabbitmq
       - ./server/common:/app/common
+  average_movies_by_rating_worker_2:
+    build:
+      context: ./server
+      dockerfile: worker/average_movies_by_rating/Dockerfile
+    env_file:
+      - ./server/worker/average_movies_by_rating/.env
+    environment:
+      - ROUTER_CONSUME_QUEUE=average_movies_by_rating_worker_2
+      - ROUTER_PRODUCER_QUEUE=max_min_router
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./server/worker/average_movies_by_rating:/app
+      - ./server/rabbitmq:/app/rabbitmq
+      - ./server/common:/app/common
+  average_movies_by_rating_worker_3:
+    build:
+      context: ./server
+      dockerfile: worker/average_movies_by_rating/Dockerfile
+    env_file:
+      - ./server/worker/average_movies_by_rating/.env
+    environment:
+      - ROUTER_CONSUME_QUEUE=average_movies_by_rating_worker_3
+      - ROUTER_PRODUCER_QUEUE=max_min_router
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./server/worker/average_movies_by_rating:/app
+      - ./server/rabbitmq:/app/rabbitmq
+      - ./server/common:/app/common
 
   max_min_router:
     build:
@@ -324,7 +354,7 @@ services:
     env_file:
       - ./server/router/.env
     environment:
-      - NUMBER_OF_PRODUCER_WORKERS=1
+      - NUMBER_OF_PRODUCER_WORKERS=3
       - INPUT_QUEUE=max_min_router
       - OUTPUT_QUEUES=[["max_min_worker_1"],["max_min_worker_2"]]
       - BALANCER_TYPE=shard_by_ascii

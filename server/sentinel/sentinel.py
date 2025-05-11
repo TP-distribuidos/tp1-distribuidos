@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import socket
@@ -499,8 +498,8 @@ class Sentinel:
             socket_conn.settimeout(5) 
             socket_conn.connect((host_ip, worker_port))
             
-            # Use direct JSON encoding instead of Serializer
-            message = json.dumps({"timestamp": int(time.time())}).encode('utf-8')
+            message = Serializer.serialize({"timestamp": int(time.time())})
+
             socket_conn.sendall(message)
             
             data = socket_conn.recv(1024)

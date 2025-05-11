@@ -4,6 +4,7 @@ import signal
 import os
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
+from common.SentinelBeacon import SentinelBeacon
 from dotenv import load_dotenv
 
 logging.basicConfig(
@@ -12,21 +13,19 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-# Load environment variables
 load_dotenv()
 
-# Constants
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 MIN_YEAR = 2000
 MAX_YEAR = 2010
 RELEASE_DATE = "release_date"
 
-# Router configuration - we now push to a single queue
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "filtered_data_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9002))
 
-# Query types - used as metadata instead of separate queues
+
 QUERY_EQ_YEAR = "eq_year"
 QUERY_GT_YEAR = "gt_year"
 
@@ -47,8 +46,9 @@ class Worker:
         self.exchange_type_consumer = exchange_type_consumer
         self.exchange_type_producer = exchange_type_producer
         self.rabbitmq = RabbitMQClient()
-        
-        # Set up signal handlers for graceful shutdown
+
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
@@ -247,3 +247,6 @@ class Worker:
         # since this is called from a signal handler
         if hasattr(self, 'rabbitmq'):
             asyncio.create_task(self.rabbitmq.close())
+        # Shut down the sentinel beacon
+        if hasattr(self, 'sentinel_beacon'):
+            self.sentinel_beacon.shutdown()

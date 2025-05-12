@@ -4,6 +4,7 @@ import socket
 import time
 import threading
 import docker
+import asyncio
 from common.Serializer import Serializer
 
 logging.basicConfig(
@@ -29,6 +30,7 @@ COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME")
 ELECTION_TIMEOUT_DURATION = 10
 LEADER_HEARTBEAT_INTERVAL = CHECK_INTERVAL * 2
 LEADER_DEAD_DURATION = LEADER_HEARTBEAT_INTERVAL * 1.5
+SLAVE_HEARTBEAT_TIMEOUT = 5  # Timeout in seconds for slave heartbeats
 
 class Sentinel:
     def __init__(self, worker_hosts=WORKER_HOSTS, worker_ports=WORKER_PORTS, check_interval=CHECK_INTERVAL):
@@ -63,6 +65,9 @@ class Sentinel:
         
         self.previous_leader_hostname = None
         self.previous_leader_id = None
+        
+        self.active_slaves = {}
+        self.event_loop = None
 
         # Worker revival related variables
         self.compose_project_name = COMPOSE_PROJECT_NAME
@@ -72,12 +77,8 @@ class Sentinel:
         self.docker_client = None
         try:
             self.docker_client = docker.from_env()
-            logging.info("Docker client initialized successfully")
-            logging.info(f"Monitoring workers: {', '.join(self.worker_hosts)} on ports: {', '.join(str(port) for port in self.worker_ports)}")
         except Exception as e:
             logging.error(f"Failed to initialize Docker client: {e}")
-
-        logging.info(f"My ID: {self.id}")
 
     def _calculate_hostname_sum(self):
         return sum(ord(char) for char in self.hostname)
@@ -146,7 +147,6 @@ class Sentinel:
     def _start_peer_listener(self):
         self.peer_listener_thread = threading.Thread(target=self._peer_listener_loop, daemon=True)
         self.peer_listener_thread.start()
-        logging.info(f"Peer listener started on port {self.peer_port}")
 
     def _peer_listener_loop(self):
         try:
@@ -155,7 +155,6 @@ class Sentinel:
                 s.bind(('0.0.0.0', self.peer_port))
                 s.settimeout(1.0) # Timeout for accept to allow checking self.running
                 s.listen()
-                logging.info(f"Listening for peer connections on 0.0.0.0:{self.peer_port}")
                 while self.running:
                     try:
                         conn, addr = s.accept()
@@ -172,25 +171,16 @@ class Sentinel:
 
                                     self.election_message_received_this_cycle = True 
 
-                                    if msg_type == "ID_ANNOUNCE":
-                                        logging.info(f"Received ID_ANNOUNCE from {sender_id} (ID: {message.get('id')})")
-
-                                    elif msg_type == "ELECTION_START":
-                                        coordinator_id_from_msg = message.get('coordinator_id')
-                                        logging.info(f"Received ELECTION_START from {sender_id} (Coordinator ID: {coordinator_id_from_msg}). My ID is {self.id}.")
-
+                                    if msg_type == "ELECTION_START":
                                         if sender_id < self.id: 
-                                            logging.info(f"ELECTION_START from lower ID coordinator {sender_id}. Responding to assert higher ID and initiating my own election.")
-                                            self._send_message_to_peer(addr[0], self.peer_port, "ELECTION_RESPONSE", {"id": self.id, "coordinator_id": sender_id})
+                                            self._send_message_to_peer(addr[0], self.peer_port, "ELECTION_RESPONSE", {"id": self.id, "coordinator_id": sender_id, "hostname": self.hostname})
                                             
                                             # Initiate my own election.
                                             # This node is higher, so it should take over or ensure a proper election happens.
                                             self._initiate_election()
                                         
                                         elif sender_id > self.id:
-                                            logging.info(f"ELECTION_START from higher ID coordinator {sender_id}. Participating.")
                                             if self.i_am_election_coordinator:
-                                                logging.info(f"Was coordinating an election, but ELECTION_START from higher ID {sender_id} received. Abdicating my coordination.")
                                                 self.i_am_election_coordinator = False
                                                 self.election_in_progress = False 
                                                 self.election_votes = {} 
@@ -199,21 +189,30 @@ class Sentinel:
                                             self.i_am_election_coordinator = False # 
                                             self.current_leader_id = None
                                             self.is_leader = False
-                                            self._send_message_to_peer(addr[0], self.peer_port, "ELECTION_RESPONSE", {"id": self.id, "coordinator_id": sender_id})
+                                            self._send_message_to_peer(addr[0], self.peer_port, "ELECTION_RESPONSE", {"id": self.id, "coordinator_id": sender_id, "hostname": self.hostname})
 
                                     elif msg_type == "ELECTION_RESPONSE":
                                         voter_id = message.get("id") 
                                         response_for_coordinator_id = message.get("coordinator_id")
+                                        voter_hostname = message.get("hostname", "unknown_hostname")
 
                                         if self.i_am_election_coordinator and self.election_in_progress and response_for_coordinator_id == self.id:
                                             if voter_id > self.id:
-                                                logging.info(f"Received ELECTION_RESPONSE from a higher ID node ({voter_id}). Abdicating my coordination. They should have started a new election.")
                                                 self.i_am_election_coordinator = False
                                                 self.election_in_progress = False 
                                                 self.election_votes = {}
                                             else:
-                                                logging.info(f"Received ELECTION_RESPONSE (vote) from {voter_id} for my election.")
                                                 self.election_votes[voter_id] = voter_id
+                                                # Store slave information for future heartbeats
+                                                current_time = time.time()
+                                                self.active_slaves[voter_hostname] = {
+                                                    "id": voter_id,
+                                                    "ip": addr[0],
+                                                    "last_heartbeat": current_time,
+                                                    "last_sent_heartbeat": current_time,
+                                                    "response_time": 0,
+                                                    "consecutive_success": 0
+                                                }
 
                                     elif msg_type == "LEADER_ANNOUNCEMENT":
                                         new_leader_id = message.get("leader_id")
@@ -247,10 +246,20 @@ class Sentinel:
                                                 # Check if there's a previous leader to revive
                                                 self._check_and_revive_previous_leader()
                                             else:
-                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id} (hostname: {self.current_leader_hostname}).\033[0m")
+                                                # When becoming a slave, reset any leader-related state
+                                                self.active_slaves = {} 
+                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id}.\033[0m")
 
                                     elif msg_type == "LEADER_HEARTBEAT":
                                         leader_id_from_heartbeat = message.get("leader_id")
+                                        timestamp = message.get("timestamp", 0)
+                                        
+                                        # Send an acknowledgement back to the leader
+                                        self._send_message_to_peer(addr[0], self.peer_port, "HEARTBEAT_ACK", {
+                                            "original_timestamp": timestamp,
+                                            "hostname": self.hostname
+                                        })
+                                        
                                         if self.current_leader_id is None or leader_id_from_heartbeat == self.current_leader_id:
                                             if self.current_leader_id is None:
                                                 logging.info(f"Accepting leader {leader_id_from_heartbeat} from first heartbeat.")
@@ -261,6 +270,36 @@ class Sentinel:
                                             logging.warning(f"Conflicting LEADER_HEARTBEAT. Current leader {self.current_leader_id}, heartbeat from {sender_id} for {leader_id_from_heartbeat}. Election might be needed.")
                                             # Potentially trigger an election if conflict persists or if this sender has higher ID
                                             # For now, just log. A new election will eventually sort it out if the true leader stops heartbeating.
+                                    
+                                    elif msg_type == "HEARTBEAT_ACK":
+                                        # Handle heartbeat acknowledgement from a slave if we're the leader
+                                        if self.is_leader:
+                                            original_timestamp = message.get("original_timestamp", 0)
+                                            slave_hostname = message.get("hostname", "unknown")
+                                            current_time = time.time()
+                                            response_time = current_time - original_timestamp
+                                            
+                                            if slave_hostname in self.active_slaves:
+                                                # Update the last successful heartbeat time for this slave
+                                                self.active_slaves[slave_hostname]["last_heartbeat"] = current_time
+                                                # Update IP if it changed (rare but possible with dynamic IPs)
+                                                self.active_slaves[slave_hostname]["ip"] = addr[0]
+                                                # Calculate and store response time
+                                                self.active_slaves[slave_hostname]["response_time"] = response_time
+                                                # Track consecutive successful heartbeats
+                                                self.active_slaves[slave_hostname]["consecutive_success"] = self.active_slaves[slave_hostname].get("consecutive_success", 0) + 1
+                                                
+                                            else:
+                                                # We don't know this slave yet - might be a new one that joined after election
+                                                logging.info(f"Received heartbeat ACK from unknown slave {slave_hostname} (ID: {sender_id}). Adding to active slaves.")
+                                                self.active_slaves[slave_hostname] = {
+                                                    "id": sender_id,
+                                                    "ip": addr[0],
+                                                    "last_heartbeat": current_time,
+                                                    "last_sent_heartbeat": current_time,
+                                                    "response_time": response_time,
+                                                    "consecutive_success": 1
+                                                }
 
                                 except Exception as e:
                                     logging.error(f"Failed to deserialize or process message from {addr}: {e}. Raw data: {data}")
@@ -336,17 +375,11 @@ class Sentinel:
             return False
             
         if not self.previous_leader_hostname:
-            logging.info("No previous leader hostname stored, nothing to revive")
             return False
             
         logging.info(f"\033[33mNew leader detected previous leader: {self.previous_leader_hostname} (ID: {self.previous_leader_id}). Attempting to revive...\033[0m")
         
         restart_success = self.restart_sentinel(self.previous_leader_hostname)
-        
-        if restart_success:
-            logging.info(f"\033[32mSuccessfully initiated restart of previous leader {self.previous_leader_hostname}\033[0m")
-        else:
-            logging.error(f"\033[31mFailed to restart previous leader {self.previous_leader_hostname}\033[0m")
         
         # Clear previous leader info regardless of restart success
         # We only want to attempt restart once
@@ -368,7 +401,6 @@ class Sentinel:
         try:
             logging.info(f"\033[34mAttempting to find and restart sentinel container with hostname: {sentinel_hostname}\033[0m")
             
-            # Find container using label-based filtering (more precise)
             containers = self.docker_client.containers.list(
                 all=True, 
                 filters={
@@ -381,23 +413,59 @@ class Sentinel:
             
             matching_container = None
             for container in containers:
-                # Check if container's hostname matches the sentinel we want to restart
                 container_info = container.attrs
                 if container_info.get('Config', {}).get('Hostname') == sentinel_hostname:
                     matching_container = container
+                    logging.info(f"Found sentinel container by hostname: {container.name}")
                     break
             
+            # If no match by hostname, try the container ID (some hostnames might be container IDs)
+            if not matching_container:
+                logging.info(f"No container found with hostname {sentinel_hostname}, trying container ID")
+                try:
+                    # Try to get container directly by ID
+                    matching_container = self.docker_client.containers.get(sentinel_hostname)
+                    logging.info(f"Found container by ID: {matching_container.name}")
+                except docker.errors.NotFound:
+                    # If that fails, try to find any sentinel container that's stopped
+                    logging.warning(f"No container found with ID {sentinel_hostname}, looking for stopped sentinel containers")
+                    
+                    # Get all sentinel containers that are not running (might be stopped or exited)
+                    stopped_containers = self.docker_client.containers.list(
+                        all=True, 
+                        filters={
+                            "status": ["exited", "dead"],
+                            "label": [
+                                f"com.docker.compose.service={self.service_name}",
+                                f"com.docker.compose.project={self.compose_project_name}"
+                            ]
+                        }
+                    )
+                    
+                    if stopped_containers:
+                        # Use the first stopped container we find
+                        matching_container = stopped_containers[0]
+                        logging.info(f"Found stopped sentinel container: {matching_container.name}")
+                    else:
+                        logging.error(f"No stopped sentinel containers found")
+                
             if not matching_container:
                 logging.error(f"Could not find sentinel container with hostname '{sentinel_hostname}' in project '{self.compose_project_name}'")
                 return False
             
             # Log detailed restart information
-            logging.info(f"\033[31mRestarting sentinel container {matching_container.name} (hostname: {sentinel_hostname})\033[0m")
+            container_status = matching_container.status
+            logging.info(f"\033[31mRestarting sentinel container {matching_container.name} (current status: {container_status})\033[0m")
             
-            # Restart with a timeout for graceful shutdown
-            matching_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
+            # For stopped containers, we need to start not restart
+            if container_status.lower() in ('exited', 'dead'):
+                logging.info(f"Container is {container_status}, using start() instead of restart()")
+                matching_container.start()
+            else:
+                # Restart with a timeout for graceful shutdown
+                matching_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
             
-            logging.info(f"\033[32mSuccessfully restarted sentinel container: {matching_container.name}\033[0m")
+            logging.info(f"\033[32mSuccessfully initiated {container_status.lower() in ('exited', 'dead') and 'start' or 'restart'} of sentinel container: {matching_container.name}\033[0m")
             return True
                 
         except docker.errors.NotFound:
@@ -424,6 +492,9 @@ class Sentinel:
                     logging.warning(f"Error closing worker health check socket for {worker_host}: {e}")
         
         self.sockets = {}
+        
+        # Any running asyncio tasks will be cancelled when their event loop is closed
+        logging.info("Asyncio heartbeat tasks will terminate as their event loop is closed")
 
     def restart_worker(self, worker_host):
         """Attempt to restart the specific worker container with enhanced reliability"""
@@ -525,11 +596,11 @@ class Sentinel:
                                 else:
                                     logging.error(f"\033[31mFailed to restart worker {worker_host}. Will retry after cooldown period.\033[0m")
                     
-                    # Broadcast leader heartbeat
-                    if current_time - getattr(self, '_last_heartbeat_sent_time', 0) > LEADER_HEARTBEAT_INTERVAL:
-                        # logging.debug(f"Leader {self.id} sending LEADER_HEARTBEAT.")
+                    if current_time - getattr(self, '_last_heartbeat_management_time', 0) > LEADER_HEARTBEAT_INTERVAL:
+                        self._manage_slave_heartbeats()
+                        self._last_heartbeat_management_time = current_time
+                        
                         self._broadcast_message("LEADER_HEARTBEAT", {"leader_id": self.id})
-                        self._last_heartbeat_sent_time = current_time
                 
                 else:
                     if self.current_leader_id is not None: # We know a leader
@@ -551,7 +622,6 @@ class Sentinel:
                         if not self.election_in_progress and not self.election_message_received_this_cycle:
                             # Avoid starting election too frequently if one just failed or if messages are flowing
                             if current_time - last_election_initiation_attempt > ELECTION_TIMEOUT_DURATION * 1.5 : # Add some buffer
-                                logging.info("No leader known and no election in progress. Attempting to initiate election.")
                                 self._initiate_election()
                                 last_election_initiation_attempt = current_time
 
@@ -598,7 +668,6 @@ class Sentinel:
                     # Use the first resolved address
                     socket_family, socket_type, proto, _, addr = addr_info[0]
                     host_ip = addr[0]
-                    logging.info(f"Resolved {worker_host} to IP {host_ip}")
                 else:
                     host_ip = worker_host  # Fallback to the original hostname
             except socket.gaierror:
@@ -634,3 +703,162 @@ class Sentinel:
         except Exception as e:
             logging.error(f"Error checking worker health for {worker_host}:{worker_port}: {e}")
             return False
+
+    async def _async_send_message_to_peer(self, peer_host, peer_port, message_type, payload):
+        """Asynchronous version of _send_message_to_peer"""
+        full_message = {"type": message_type, "sender_id": self.id, **payload}
+        serialized_message = Serializer.serialize(full_message)
+        try:
+            reader, writer = await asyncio.open_connection(peer_host, peer_port)
+            writer.write(serialized_message)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except ConnectionRefusedError:
+            logging.warning(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
+        except asyncio.TimeoutError:
+            logging.warning(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
+        except Exception as e:
+            logging.error(f"Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
+        return False
+
+    async def _send_heartbeat_to_slave(self, slave_hostname, slave_info):
+        """
+        Sends a heartbeat to a specific slave and monitors the response
+        This function is intended to be run as an asyncio task
+        """
+        slave_ip = slave_info["ip"]
+        slave_id = slave_info["id"]
+        current_time = time.time()
+        
+        # First check if the slave has been unresponsive for too long
+        if slave_hostname in self.active_slaves:
+            last_heartbeat = self.active_slaves[slave_hostname].get("last_heartbeat", 0)
+            time_since_last_heartbeat = current_time - last_heartbeat
+            
+            # If we haven't heard from this slave in a while, consider it potentially dead
+            if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 3:
+                logging.warning(f"\033[33mSlave {slave_hostname} (ID: {slave_id}) has been unresponsive for {time_since_last_heartbeat:.1f} seconds\033[0m")
+                
+                if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 5:
+                    logging.error(f"\033[31mSlave {slave_hostname} (ID: {slave_id}) considered dead. Attempting restart...\033[0m")
+                    
+                    restart_success = self.restart_sentinel(slave_hostname)
+                    
+                    if restart_success:
+                        if slave_hostname in self.active_slaves:
+                            self.active_slaves.pop(slave_hostname, None)
+                    else:
+                        logging.error(f"\033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
+                    
+                    return slave_hostname
+        
+        # Try to send a heartbeat
+        heartbeat_sent_time = current_time
+        sent = await self._async_send_message_to_peer(
+            slave_ip, 
+            self.peer_port, 
+            "LEADER_HEARTBEAT", 
+            {"leader_id": self.id, "timestamp": heartbeat_sent_time}
+        )
+        
+        if sent:
+            if slave_hostname in self.active_slaves:
+                self.active_slaves[slave_hostname]["last_sent_heartbeat"] = heartbeat_sent_time
+                logging.debug(f"Sent heartbeat to slave {slave_hostname}")
+        else:
+            logging.warning(f"\033[33mCouldn't send heartbeat to slave {slave_hostname} (ID: {slave_id})\033[0m")
+            
+            if slave_hostname in self.active_slaves:
+                last_heartbeat = self.active_slaves[slave_hostname].get("last_heartbeat", 0)
+                time_since_last_heartbeat = current_time - last_heartbeat
+                
+                if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 3:
+                    logging.error(f"\033[31mSlave {slave_hostname} (ID: {slave_id}) connection failed and has been unresponsive for {time_since_last_heartbeat:.1f} seconds. Attempting restart...\033[0m")
+                    
+                    restart_success = self.restart_sentinel(slave_hostname)
+                    
+                    if restart_success:
+                        logging.info(f"\033[32mSuccessfully initiated restart of slave {slave_hostname}\033[0m")
+                        if slave_hostname in self.active_slaves:
+                            self.active_slaves.pop(slave_hostname, None)
+                    else:
+                        logging.error(f"\033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
+        
+        return slave_hostname
+
+    async def _async_manage_slave_heartbeats(self):
+        """Manages heartbeat tasks for all known slaves using asyncio"""
+        if not self.is_leader:
+            logging.warning("Only the leader should manage slave heartbeats")
+            return
+        
+        # Create tasks for all slaves and wait for them to complete with timeout
+        heartbeat_tasks = []
+        completed_tasks = set()
+        slaves_to_check = []
+        
+        for hostname, slave_info in list(self.active_slaves.items()):
+            slaves_to_check.append((hostname, slave_info))
+            
+        if not slaves_to_check:
+            logging.debug("No slaves to check")
+            return
+            
+        for hostname, slave_info in slaves_to_check:
+            task = asyncio.create_task(self._send_heartbeat_to_slave(hostname, slave_info))
+            task.slave_hostname = hostname
+            heartbeat_tasks.append(task)
+        
+        if heartbeat_tasks:
+            # Wait for all tasks to complete with a timeout
+            try:
+                # Wait for all tasks with a timeout
+                done, pending = await asyncio.wait(
+                    heartbeat_tasks,
+                    timeout=SLAVE_HEARTBEAT_TIMEOUT
+                )
+                
+                for task in done:
+                    try:
+                        hostname = await task
+                        completed_tasks.add(hostname)
+                        logging.debug(f"Task for slave {hostname} completed successfully")
+                    except Exception as e:
+                        hostname = getattr(task, 'slave_hostname', 'unknown')
+                        logging.error(f"Error in heartbeat task for slave {hostname}: {e}")
+                
+                # Cancel any pending tasks that didn't complete within the timeout
+                for task in pending:
+                    hostname = getattr(task, 'slave_hostname', 'unknown')
+                    task.cancel()
+                    logging.warning(f"Heartbeat task for slave {hostname} timed out and was cancelled")
+                    
+                # Clean up pending tasks
+                if pending:
+                    try:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        pass
+                    
+            except Exception as e:
+                logging.error(f"Error managing heartbeat tasks: {e}")
+        
+        if slaves_to_check:
+            logging.info(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
+            
+    def _manage_slave_heartbeats(self):
+        """Synchronous wrapper for async heartbeat management"""
+        if not self.is_leader:
+            logging.warning("Only the leader should manage slave heartbeats")
+            return
+            
+        # Create and run an event loop to execute the async functions
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._async_manage_slave_heartbeats())
+            loop.close()
+        except Exception as e:
+            logging.error(f"Error in asyncio event loop for heartbeat management: {e}")

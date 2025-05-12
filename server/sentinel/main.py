@@ -1,7 +1,7 @@
 import logging
 import sys
 import signal
-from sentinel import Sentinel
+from Sentinel import Sentinel
 
 logging.basicConfig(
     level=logging.INFO,

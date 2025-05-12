@@ -61,6 +61,9 @@ class Sentinel:
         self.last_leader_heartbeat_time = 0
         self.election_message_received_this_cycle = False
         
+        self.previous_leader_hostname = None
+        self.previous_leader_id = None
+
         # Worker revival related variables
         self.compose_project_name = COMPOSE_PROJECT_NAME
         self.worker_unhealthy_counts = {worker: 0 for worker in self.worker_hosts}  # Track each worker separately
@@ -215,7 +218,8 @@ class Sentinel:
                                     elif msg_type == "LEADER_ANNOUNCEMENT":
                                         new_leader_id = message.get("leader_id")
                                         sender_of_announcement = sender_id
-                                        logging.info(f"\033[38;5;208mReceived LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id}. My ID is {self.id}.\033[0m")
+                                        leader_hostname = message.get("leader_hostname", "unknown")  # Get leader hostname
+                                        logging.info(f"\033[38;5;208mReceived LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id} (hostname: {leader_hostname}). My ID is {self.id}.\033[0m")
 
                                         if new_leader_id < self.id and (self.current_leader_id is None or new_leader_id != self.current_leader_id):
                                             logging.warning(f"Contesting LEADER_ANNOUNCEMENT for {new_leader_id} (lower than my ID {self.id}). Initiating new election.")
@@ -225,7 +229,14 @@ class Sentinel:
                                             self.i_am_election_coordinator = False
                                             self._initiate_election()
                                         else:
+                                            # If there was a previous leader, store it before switching to new leader
+                                            if self.current_leader_id is not None and self.current_leader_id != new_leader_id:
+                                                self.previous_leader_id = self.current_leader_id
+                                                self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
+                                                logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+                                            
                                             self.current_leader_id = new_leader_id
+                                            self.current_leader_hostname = leader_hostname  # Store the leader's hostname
                                             self.is_leader = (self.id == new_leader_id)
                                             self.election_in_progress = False
                                             self.i_am_election_coordinator = False
@@ -233,8 +244,10 @@ class Sentinel:
                                             self.last_leader_heartbeat_time = time.time() 
                                             if self.is_leader:
                                                 logging.info(f"\033[38;5;208mI AM THE NEW LEADER (ID: {self.id}) based on announcement from {sender_of_announcement}.\033[0m")
+                                                # Check if there's a previous leader to revive
+                                                self._check_and_revive_previous_leader()
                                             else:
-                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id}.\033[0m")
+                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id} (hostname: {self.current_leader_hostname}).\033[0m")
 
                                     elif msg_type == "LEADER_HEARTBEAT":
                                         leader_id_from_heartbeat = message.get("leader_id")
@@ -291,9 +304,18 @@ class Sentinel:
             new_leader_id = max(self.election_votes.keys()) # Highest ID wins
 
         logging.info(f"\033[38;5;208mElection concluded. New leader determined to be ID: {new_leader_id}. Announcing...\033[0m")
-        self._broadcast_message("LEADER_ANNOUNCEMENT", {"leader_id": new_leader_id})
+        
+        # Include hostname in leader announcement
+        self._broadcast_message("LEADER_ANNOUNCEMENT", {"leader_id": new_leader_id, "leader_hostname": self.hostname})
 
+        # If there was a previous leader and we're becoming the new leader, store it
+        if self.current_leader_id is not None and self.current_leader_id != new_leader_id and new_leader_id == self.id:
+            self.previous_leader_id = self.current_leader_id
+            self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
+            logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+        
         self.current_leader_id = new_leader_id
+        self.current_leader_hostname = self.hostname if new_leader_id == self.id else None
         self.is_leader = (self.id == new_leader_id)
         self.election_in_progress = False
         self.i_am_election_coordinator = False
@@ -302,8 +324,91 @@ class Sentinel:
 
         if self.is_leader:
             logging.info(f"\033[32mI AM THE NEW LEADER (ID: {self.id}) after coordinating election.\033[0m")
+            # Check if there's a previous leader to revive
+            self._check_and_revive_previous_leader()
         else:
             logging.info(f"\033[36mI am a SLAVE after coordinating. New leader is {self.current_leader_id}.\033[0m")
+
+    def _check_and_revive_previous_leader(self):
+        """Check if there's a previous leader to revive and attempt to restart it"""
+        if not self.is_leader:
+            logging.warning("Only the leader should attempt to revive previous leaders")
+            return False
+            
+        if not self.previous_leader_hostname:
+            logging.info("No previous leader hostname stored, nothing to revive")
+            return False
+            
+        logging.info(f"\033[33mNew leader detected previous leader: {self.previous_leader_hostname} (ID: {self.previous_leader_id}). Attempting to revive...\033[0m")
+        
+        restart_success = self.restart_sentinel(self.previous_leader_hostname)
+        
+        if restart_success:
+            logging.info(f"\033[32mSuccessfully initiated restart of previous leader {self.previous_leader_hostname}\033[0m")
+        else:
+            logging.error(f"\033[31mFailed to restart previous leader {self.previous_leader_hostname}\033[0m")
+        
+        # Clear previous leader info regardless of restart success
+        # We only want to attempt restart once
+        self.previous_leader_hostname = None
+        self.previous_leader_id = None
+        
+        return restart_success
+
+    def restart_sentinel(self, sentinel_hostname):
+        """Attempt to restart a Sentinel container by hostname"""
+        if not self.docker_client:
+            logging.error("Cannot restart sentinel: Docker client not initialized")
+            return False
+        
+        if not self.compose_project_name:
+            logging.error(f"COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
+            return False
+        
+        try:
+            logging.info(f"\033[34mAttempting to find and restart sentinel container with hostname: {sentinel_hostname}\033[0m")
+            
+            # Find container using label-based filtering (more precise)
+            containers = self.docker_client.containers.list(
+                all=True, 
+                filters={
+                    "label": [
+                        f"com.docker.compose.service={self.service_name}",
+                        f"com.docker.compose.project={self.compose_project_name}"
+                    ]
+                }
+            )
+            
+            matching_container = None
+            for container in containers:
+                # Check if container's hostname matches the sentinel we want to restart
+                container_info = container.attrs
+                if container_info.get('Config', {}).get('Hostname') == sentinel_hostname:
+                    matching_container = container
+                    break
+            
+            if not matching_container:
+                logging.error(f"Could not find sentinel container with hostname '{sentinel_hostname}' in project '{self.compose_project_name}'")
+                return False
+            
+            # Log detailed restart information
+            logging.info(f"\033[31mRestarting sentinel container {matching_container.name} (hostname: {sentinel_hostname})\033[0m")
+            
+            # Restart with a timeout for graceful shutdown
+            matching_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
+            
+            logging.info(f"\033[32mSuccessfully restarted sentinel container: {matching_container.name}\033[0m")
+            return True
+                
+        except docker.errors.NotFound:
+            logging.error(f"Sentinel container with hostname '{sentinel_hostname}' not found")
+            return False
+        except docker.errors.APIError as e:
+            logging.error(f"Docker API error when restarting container: {e}")
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error restarting sentinel container: {e}", exc_info=True)
+            return False
 
     def shutdown(self):
         logging.info(f"Shutdown called for Sentinel ID: {self.id}")
@@ -429,7 +534,13 @@ class Sentinel:
                 else:
                     if self.current_leader_id is not None: # We know a leader
                         if (current_time - self.last_leader_heartbeat_time) > LEADER_DEAD_DURATION:
-                            logging.warning(f"\033[31mLeader {self.current_leader_id} not responding. Initiating new election.\033[0m")
+                            logging.warning(f"\033[31mLeader {self.current_leader_id} not responding. Storing as previous leader and initiating new election.\033[0m")
+                            
+                            # Store the failing leader before considering it lost
+                            self.previous_leader_id = self.current_leader_id
+                            self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
+                            logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+                            
                             self.current_leader_id = None # Consider leader lost
                             self.is_leader = False # Ensure not leader
                             self._initiate_election()

@@ -675,7 +675,7 @@ class Sentinel:
                 host_ip = worker_host  # Use the original hostname as fallback
                 
             socket_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            socket_conn.settimeout(5) 
+            socket_conn.settimeout(15) 
             socket_conn.connect((host_ip, worker_port))
             
             message = Serializer.serialize({"timestamp": int(time.time())})

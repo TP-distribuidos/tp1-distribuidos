@@ -3,8 +3,9 @@
 import yaml
 import sys
 
+
 from docker_compose_generator_files.client.client import generate_client_services
-from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers
+from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers, get_worker_hosts_and_ports as get_year_worker_hosts_and_ports
 from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
 from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers
 from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers
@@ -20,7 +21,7 @@ from docker_compose_generator_files.workers.collector_average_sentiment import g
 from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
 from docker_compose_generator_files.routers.country import generate_country_router
 from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
-from docker_compose_generator_files.routers.join_credits import generate_join_credits_router
+from docker_compose_generator_files.routers.join_credits import generate_join_credits_router, get_router_host_and_port as get_credits_router_host_and_port
 from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
 from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
 from docker_compose_generator_files.routers.max_min import generate_max_min_router
@@ -33,19 +34,22 @@ from docker_compose_generator_files.routers.average_sentiment import generate_av
 from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
+from docker_compose_generator_files.sentinel.sentinel import generate_sentinel_service
 
 from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBER_OF_CLIENTS_AUTOMATIC
+
+
 
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
                            avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
                            count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2,
                            num_sentiment_workers=2, num_avg_sentiment_workers=2,
-                           network=NETWORK, include_q5=False):
+                           network=NETWORK, include_q5=False, sentinel_replicas=2):
     # Start with an empty services dictionary
     services = {}
 
-    # Add client services
+   # Add client services
     client_services = generate_client_services(num_clients, NUMBER_OF_CLIENTS_AUTOMATIC)
     services.update(client_services)
     
@@ -174,7 +178,26 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     boundary = generate_boundary_service()
     services.update(boundary)
 
-    network = NETWORK
+    # Add sentinels
+    # 1. Add sentinel for filter_by_year workers
+    year_worker_hosts, year_worker_ports = get_year_worker_hosts_and_ports(num_year_workers)
+    sentinel_filter_by_year = generate_sentinel_service("filter_by_year", 
+                                                      year_worker_hosts, 
+                                                      year_worker_ports, 
+                                                      sentinel_replicas, 
+                                                      network)
+    services.update(sentinel_filter_by_year)
+    
+    # 2. Add sentinel for join_credits_router
+    credits_router_host, credits_router_port = get_credits_router_host_and_port()
+    sentinel_join_credits = generate_sentinel_service("join_credits_router", 
+                                                   [credits_router_host], 
+                                                   [credits_router_port], 
+                                                   sentinel_replicas, 
+                                                   network)
+    services.update(sentinel_join_credits)
+
+
     networks = {
         network: {
             "driver": "bridge",
@@ -196,8 +219,8 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
           f"{num_join_ratings_workers} join_ratings workers, {avg_rating_shards} avg_rating shards, " +
           f"{avg_rating_replicas} avg_rating replicas per shard, {count_shards} count shards, " +
           f"{count_workers_per_shard} count workers per shard, {num_top_workers} top workers, " +
-          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, network: {network} (DEFAULTING to tp_distribuidos anyways because this is a WIP)")
-
+          f"{num_max_min_workers} max_min workers, Q5 components {q5_status}, " + 
+          f"{sentinel_replicas} sentinel replicas per service, network: {network}")
 
 if __name__ == "__main__":
     # Process command line arguments
@@ -216,8 +239,9 @@ if __name__ == "__main__":
     num_sentiment_workers = 2
     num_avg_sentiment_workers = 2
     network = NETWORK
-    include_q5 = False  # Default: Q5 nodes are not included
-    
+    include_q5 = False
+    sentinel_replicas = 2
+
     
     # Get output filename from first argument if provided
      # Get output filename from first argument if provided
@@ -359,12 +383,23 @@ if __name__ == "__main__":
         include_q5_arg = sys.argv[16].lower()
         include_q5 = include_q5_arg in ('true', 't', 'yes', 'y', '1')
     
+    # Get sentinel_replicas from 17th argument if provided
+    if len(sys.argv) > 17:
+        try:
+            sentinel_replicas = int(sys.argv[17])
+            if sentinel_replicas < 1:
+                raise ValueError("Number of sentinel replicas must be positive")
+        except ValueError:
+            print("Error: Number of sentinel replicas must be a positive integer.")
+            sys.exit(1)
     
     # Generate the Docker Compose file
+    network = NETWORK
     generate_docker_compose(output_file, num_clients, num_year_workers, 
                            num_country_workers, num_join_credits_workers,
                            num_join_ratings_workers, avg_rating_shards,
                            avg_rating_replicas, count_shards, 
                            count_workers_per_shard, num_top_workers,
                            num_max_min_workers, num_sentiment_workers,
-                           num_avg_sentiment_workers, network, include_q5)
+                           num_avg_sentiment_workers, network, include_q5,
+                           sentinel_replicas)

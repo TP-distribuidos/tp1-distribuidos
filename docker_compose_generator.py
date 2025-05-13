@@ -35,6 +35,19 @@ from docker_compose_generator_files.routers.average_sentiment_collector import g
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 from docker_compose_generator_files.sentinel.sentinel import generate_sentinel_service
+from docker_compose_generator_files.routers.year_movies import get_router_host_and_port as get_year_movies_router_host_and_port
+from docker_compose_generator_files.routers.country import get_router_host_and_port as get_country_router_host_and_port
+from docker_compose_generator_files.routers.join_ratings import get_router_host_and_port as get_ratings_router_host_and_port
+from docker_compose_generator_files.routers.average_movies_by_rating import get_router_host_and_port as get_avg_rating_router_host_and_port
+from docker_compose_generator_files.routers.max_min import get_router_host_and_port as get_max_min_router_host_and_port
+from docker_compose_generator_files.routers.count import get_router_host_and_port as get_count_router_host_and_port
+from docker_compose_generator_files.routers.join_movies import get_router_host_and_port as get_join_movies_router_host_and_port
+from docker_compose_generator_files.routers.top import get_router_host_and_port as get_top_router_host_and_port
+from docker_compose_generator_files.routers.top_10_actors_collector import get_router_host_and_port as get_top_10_actors_collector_router_host_and_port
+from docker_compose_generator_files.routers.max_min_collector import get_router_host_and_port as get_max_min_collector_router_host_and_port
+from docker_compose_generator_files.routers.generate_movies_q5 import get_router_host_and_port as get_movies_q5_router_host_and_port
+from docker_compose_generator_files.routers.average_sentiment import get_router_host_and_port as get_avg_sentiment_router_host_and_port
+from docker_compose_generator_files.routers.average_sentiment_collector import get_router_host_and_port as get_avg_sentiment_collector_router_host_and_port
 
 from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBER_OF_CLIENTS_AUTOMATIC
 
@@ -178,8 +191,10 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     boundary = generate_boundary_service()
     services.update(boundary)
 
-    # Add sentinels
-    # 1. Add sentinel for filter_by_year workers
+
+    # Add sentinels for all critical routers
+    
+    # 1. Add sentinel for filter_by_year workers (existing)
     year_worker_hosts, year_worker_ports = get_year_worker_hosts_and_ports(num_year_workers)
     sentinel_filter_by_year = generate_sentinel_service("filter_by_year", 
                                                       year_worker_hosts, 
@@ -188,7 +203,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                                                       network)
     services.update(sentinel_filter_by_year)
     
-    # 2. Add sentinel for join_credits_router
+    # 2. Add sentinel for join_credits_router (existing)
     credits_router_host, credits_router_port = get_credits_router_host_and_port()
     sentinel_join_credits = generate_sentinel_service("join_credits_router", 
                                                    [credits_router_host], 
@@ -196,7 +211,125 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                                                    sentinel_replicas, 
                                                    network)
     services.update(sentinel_join_credits)
+    
+    # 3. Add sentinel for year_movies_router
+    year_movies_router_host, year_movies_router_port = get_year_movies_router_host_and_port()
+    sentinel_year_movies = generate_sentinel_service("year_movies_router", 
+                                                  [year_movies_router_host], 
+                                                  [year_movies_router_port], 
+                                                  sentinel_replicas, 
+                                                  network)
+    services.update(sentinel_year_movies)
+    
+    # 4. Add sentinel for country_router
+    country_router_host, country_router_port = get_country_router_host_and_port()
+    sentinel_country = generate_sentinel_service("country_router", 
+                                               [country_router_host], 
+                                               [country_router_port], 
+                                               sentinel_replicas, 
+                                               network)
+    services.update(sentinel_country)
+    
+    # 5. Add sentinel for join_ratings_router
+    ratings_router_host, ratings_router_port = get_ratings_router_host_and_port()
+    sentinel_join_ratings = generate_sentinel_service("join_ratings_router", 
+                                                   [ratings_router_host], 
+                                                   [ratings_router_port], 
+                                                   sentinel_replicas, 
+                                                   network)
+    services.update(sentinel_join_ratings)
+    
+    # 6. Add sentinel for average_movies_by_rating_router
+    avg_rating_router_host, avg_rating_router_port = get_avg_rating_router_host_and_port()
+    sentinel_avg_rating = generate_sentinel_service("avg_movies_by_rating_router", 
+                                                 [avg_rating_router_host], 
+                                                 [avg_rating_router_port], 
+                                                 sentinel_replicas, 
+                                                 network)
+    services.update(sentinel_avg_rating)
+    
+    # 7. Add sentinel for max_min_router
+    max_min_router_host, max_min_router_port = get_max_min_router_host_and_port()
+    sentinel_max_min = generate_sentinel_service("max_min_router", 
+                                              [max_min_router_host], 
+                                              [max_min_router_port], 
+                                              sentinel_replicas, 
+                                              network)
+    services.update(sentinel_max_min)
+    
+    # 8. Add sentinel for count_router
+    count_router_host, count_router_port = get_count_router_host_and_port()
+    sentinel_count = generate_sentinel_service("count_router", 
+                                            [count_router_host], 
+                                            [count_router_port], 
+                                            sentinel_replicas, 
+                                            network)
+    services.update(sentinel_count)
 
+    # 9. Add sentinel for join_movies_router
+    join_movies_router_host, join_movies_router_port = get_join_movies_router_host_and_port()
+    sentinel_join_movies = generate_sentinel_service("join_movies_router", 
+                                                  [join_movies_router_host], 
+                                                  [join_movies_router_port], 
+                                                  sentinel_replicas, 
+                                                  network)
+    services.update(sentinel_join_movies)
+    
+    # 10. Add sentinel for top_router
+    top_router_host, top_router_port = get_top_router_host_and_port()
+    sentinel_top = generate_sentinel_service("top_router", 
+                                          [top_router_host], 
+                                          [top_router_port], 
+                                          sentinel_replicas, 
+                                          network)
+    services.update(sentinel_top)
+    
+    # 11. Add sentinel for top_10_actors_collector_router
+    top_collector_router_host, top_collector_router_port = get_top_10_actors_collector_router_host_and_port()
+    sentinel_top_collector = generate_sentinel_service("top_10_actors_collector_router", 
+                                                    [top_collector_router_host], 
+                                                    [top_collector_router_port], 
+                                                    sentinel_replicas, 
+                                                    network)
+    services.update(sentinel_top_collector)
+    
+    # 12. Add sentinel for max_min_collector_router
+    max_min_collector_router_host, max_min_collector_router_port = get_max_min_collector_router_host_and_port()
+    sentinel_max_min_collector = generate_sentinel_service("max_min_collector_router", 
+                                                        [max_min_collector_router_host], 
+                                                        [max_min_collector_router_port], 
+                                                        sentinel_replicas, 
+                                                        network)
+    services.update(sentinel_max_min_collector)
+    
+    # Conditionally add Q5 sentinels based on include_q5 flag
+    if include_q5:
+        # 13. Add sentinel for movies_q5_router
+        movies_q5_router_host, movies_q5_router_port = get_movies_q5_router_host_and_port()
+        sentinel_movies_q5 = generate_sentinel_service("movies_q5_router", 
+                                                    [movies_q5_router_host], 
+                                                    [movies_q5_router_port], 
+                                                    sentinel_replicas, 
+                                                    network)
+        services.update(sentinel_movies_q5)
+        
+        # 14. Add sentinel for average_sentiment_router
+        avg_sentiment_router_host, avg_sentiment_router_port = get_avg_sentiment_router_host_and_port()
+        sentinel_avg_sentiment = generate_sentinel_service("average_sentiment_router", 
+                                                        [avg_sentiment_router_host], 
+                                                        [avg_sentiment_router_port], 
+                                                        sentinel_replicas, 
+                                                        network)
+        services.update(sentinel_avg_sentiment)
+        
+        # 15. Add sentinel for average_sentiment_collector_router
+        avg_sentiment_collector_router_host, avg_sentiment_collector_router_port = get_avg_sentiment_collector_router_host_and_port()
+        sentinel_avg_sentiment_collector = generate_sentinel_service("average_sentiment_collector_router", 
+                                                                  [avg_sentiment_collector_router_host], 
+                                                                  [avg_sentiment_collector_router_port], 
+                                                                  sentinel_replicas, 
+                                                                  network)
+        services.update(sentinel_avg_sentiment_collector)
 
     networks = {
         network: {

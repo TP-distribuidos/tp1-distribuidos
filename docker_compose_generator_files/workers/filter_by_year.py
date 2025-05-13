@@ -38,13 +38,13 @@ def generate_filter_by_year_workers(num_workers=2, network=NETWORK):
             },
             "depends_on": ["rabbitmq"],
             "ports": [
-                f"{worker_port}:{base_port}"
+                f"{worker_port}:{worker_port}"
             ],
             "env_file": ["./server/worker/filter_by_year/.env"],
             "environment": [
                 f"ROUTER_CONSUME_QUEUE=filter_by_year_worker_{i}",
                 "ROUTER_PRODUCER_QUEUE=country_router",
-                f"SENTINEL_PORT={base_port}"
+                f"SENTINEL_PORT={worker_port}"
             ],
             "volumes": [
                 "./server/worker/filter_by_year:/app",

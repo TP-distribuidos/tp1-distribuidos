@@ -6,6 +6,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 import ast
+from common.SentinelBeacon import SentinelBeacon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,6 +16,8 @@ logging.basicConfig(
 
 # Load environment variables
 load_dotenv()
+
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 # Constants for query types - these match what the previous worker outputs
 QUERY_EQ_YEAR = "eq_year"
@@ -48,6 +51,8 @@ class Worker:
         self.exchange_name_producer = exchange_name_producer
         self.exchange_type_producer = exchange_type_producer
         self.rabbitmq = RabbitMQClient()
+        
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)

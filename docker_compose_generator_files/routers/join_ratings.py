@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
-
 from docker_compose_generator_files.workers.join_ratings import generate_worker_queue_names
 from docker_compose_generator_files.constants import NETWORK
 
-def generate_join_ratings_router(num_join_ratings_workers=2):
+def generate_join_ratings_router(num_join_ratings_workers=2, network=NETWORK):
     """
     Generate the join_ratings_router service configuration for Docker Compose.
     
     Args:
         num_join_ratings_workers (int): Number of join_ratings workers
+        network (str): Name of the Docker network to use
         
     Returns:
         dict: Dictionary with join_ratings_router service configuration
@@ -20,6 +19,9 @@ def generate_join_ratings_router(num_join_ratings_workers=2):
     # Create the output queues string for join_ratings_router
     output_queues = ",".join(ratings_queues)
     
+    # Base port for sentinel monitoring
+    base_port = 9401
+    
     return {
         "join_ratings_router": {
             "build": {
@@ -27,11 +29,15 @@ def generate_join_ratings_router(num_join_ratings_workers=2):
                 "dockerfile": "router/Dockerfile"
             },
             "env_file": ["./server/router/.env"],
+            "ports": [
+                f"{base_port}:{base_port}"
+            ],
             "environment": [
                 "NUMBER_OF_PRODUCER_WORKERS=1",
                 "INPUT_QUEUE=boundary_ratings_router",
                 f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=round_robin"
+                "BALANCER_TYPE=round_robin",
+                f"SENTINEL_PORT={base_port}"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [
@@ -39,6 +45,15 @@ def generate_join_ratings_router(num_join_ratings_workers=2):
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
             ],
-            "networks": [NETWORK]
+            "networks": [network]
         }
     }
+
+def get_router_host_and_port():
+    """
+    Get the hostname and port for the join_ratings_router.
+    
+    Returns:
+        tuple: (hostname, port)
+    """
+    return "join_ratings_router", 9401

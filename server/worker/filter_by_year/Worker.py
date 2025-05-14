@@ -23,7 +23,7 @@ RELEASE_DATE = "release_date"
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "filtered_data_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
-SENTINEL_PORT = int(os.getenv("SENTINEL_PORT"))
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 
 QUERY_EQ_YEAR = "eq_year"

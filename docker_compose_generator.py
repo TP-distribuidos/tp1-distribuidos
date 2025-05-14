@@ -1,37 +1,37 @@
-#!/usr/bin/env python3
-
 import yaml
 import sys
 
 
 from docker_compose_generator_files.client.client import generate_client_services
 from docker_compose_generator_files.workers.filter_by_year import generate_filter_by_year_workers, get_worker_hosts_and_ports as get_year_worker_hosts_and_ports
-from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers
-from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers
-from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers
-from docker_compose_generator_files.workers.average_movies_by_rating import generate_average_movies_by_rating_workers, get_total_workers
-from docker_compose_generator_files.workers.count import generate_count_workers, get_total_workers as get_total_count_workers
-from docker_compose_generator_files.workers.top import generate_top_workers
-from docker_compose_generator_files.workers.max_min import generate_max_min_workers
-from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker
-from docker_compose_generator_files.workers.top_10_actors_collector import generate_collector_top_10_actors_worker
-from docker_compose_generator_files.workers.sentiment_analysis import generate_sentiment_analysis_workers
-from docker_compose_generator_files.workers.average_sentiment import generate_average_sentiment_workers
-from docker_compose_generator_files.workers.collector_average_sentiment import generate_collector_average_sentiment_worker
-from docker_compose_generator_files.routers.year_movies import generate_year_movies_router
-from docker_compose_generator_files.routers.country import generate_country_router
-from docker_compose_generator_files.routers.join_movies import generate_join_movies_router
+from docker_compose_generator_files.workers.filter_by_country import generate_filter_by_country_workers, get_worker_hosts_and_ports as get_country_worker_hosts_and_ports
+from docker_compose_generator_files.workers.join_credits import generate_join_credits_workers, get_worker_hosts_and_ports as get_join_credits_worker_hosts_and_ports
+from docker_compose_generator_files.workers.join_ratings import generate_join_ratings_workers, get_worker_hosts_and_ports as get_join_ratings_worker_hosts_and_ports
+from docker_compose_generator_files.workers.average_movies_by_rating import generate_average_movies_by_rating_workers, get_total_workers, get_worker_hosts_and_ports as get_avg_rating_worker_hosts_and_ports
+from docker_compose_generator_files.workers.count import generate_count_workers, get_total_workers as get_total_count_workers, get_worker_hosts_and_ports as get_count_worker_hosts_and_ports
+from docker_compose_generator_files.workers.top import generate_top_workers, get_worker_hosts_and_ports as get_top_worker_hosts_and_ports
+from docker_compose_generator_files.workers.max_min import generate_max_min_workers, get_worker_hosts_and_ports as get_max_min_worker_hosts_and_ports
+from docker_compose_generator_files.workers.max_min_collector import generate_collector_max_min_worker, get_worker_host_and_port as get_collector_max_min_worker_host_and_port
+from docker_compose_generator_files.workers.top_10_actors_collector import generate_collector_top_10_actors_worker, get_worker_host_and_port as get_collector_top_10_actors_worker_host_and_port
+from docker_compose_generator_files.workers.sentiment_analysis import generate_sentiment_analysis_workers, get_worker_hosts_and_ports as get_sentiment_analysis_worker_hosts_and_ports
+from docker_compose_generator_files.workers.average_sentiment import generate_average_sentiment_workers, get_worker_hosts_and_ports as get_avg_sentiment_worker_hosts_and_ports
+from docker_compose_generator_files.workers.collector_average_sentiment import generate_collector_average_sentiment_worker, get_worker_host_and_port as get_collector_avg_sentiment_worker_host_and_port
+
+from docker_compose_generator_files.routers.year_movies import generate_year_movies_router, get_router_host_and_port as get_year_movies_router_host_and_port
+from docker_compose_generator_files.routers.country import generate_country_router, get_router_host_and_port as get_country_router_host_and_port
+from docker_compose_generator_files.routers.join_movies import generate_join_movies_router, get_router_host_and_port as get_join_movies_router_host_and_port
 from docker_compose_generator_files.routers.join_credits import generate_join_credits_router, get_router_host_and_port as get_credits_router_host_and_port
-from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router
-from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router
-from docker_compose_generator_files.routers.max_min import generate_max_min_router
-from docker_compose_generator_files.routers.max_min_collector import generate_max_min_collector_router
-from docker_compose_generator_files.routers.count import generate_count_router
-from docker_compose_generator_files.routers.top import generate_top_router
-from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router
-from docker_compose_generator_files.routers.generate_movies_q5 import generate_movies_q5_router
-from docker_compose_generator_files.routers.average_sentiment import generate_average_sentiment_router
-from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router
+from docker_compose_generator_files.routers.join_ratings import generate_join_ratings_router, get_router_host_and_port as get_ratings_router_host_and_port
+from docker_compose_generator_files.routers.average_movies_by_rating import generate_average_movies_by_rating_router, get_router_host_and_port as get_avg_rating_router_host_and_port
+from docker_compose_generator_files.routers.max_min import generate_max_min_router, get_router_host_and_port as get_max_min_router_host_and_port
+from docker_compose_generator_files.routers.max_min_collector import generate_max_min_collector_router, get_router_host_and_port as get_max_min_collector_router_host_and_port
+from docker_compose_generator_files.routers.count import generate_count_router, get_router_host_and_port as get_count_router_host_and_port
+from docker_compose_generator_files.routers.top import generate_top_router, get_router_host_and_port as get_top_router_host_and_port
+from docker_compose_generator_files.routers.top_10_actors_collector import generate_top_10_actors_collector_router, get_router_host_and_port as get_top_10_actors_collector_router_host_and_port
+from docker_compose_generator_files.routers.generate_movies_q5 import generate_movies_q5_router, get_router_host_and_port as get_movies_q5_router_host_and_port
+from docker_compose_generator_files.routers.average_sentiment import generate_average_sentiment_router, get_router_host_and_port as get_avg_sentiment_router_host_and_port
+from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router, get_router_host_and_port as get_avg_sentiment_collector_router_host_and_port
+
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
 from docker_compose_generator_files.sentinel.sentinel import generate_sentinel_service
@@ -178,8 +178,10 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     boundary = generate_boundary_service()
     services.update(boundary)
 
-    # Add sentinels
-    # 1. Add sentinel for filter_by_year workers
+
+    # Add sentinels for all critical routers
+    
+    # 1. Add sentinel for filter_by_year workers (existing)
     year_worker_hosts, year_worker_ports = get_year_worker_hosts_and_ports(num_year_workers)
     sentinel_filter_by_year = generate_sentinel_service("filter_by_year", 
                                                       year_worker_hosts, 
@@ -196,7 +198,239 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                                                    sentinel_replicas, 
                                                    network)
     services.update(sentinel_join_credits)
+    
+    # 3. Add sentinel for year_movies_router
+    year_movies_router_host, year_movies_router_port = get_year_movies_router_host_and_port()
+    sentinel_year_movies = generate_sentinel_service("year_movies_router", 
+                                                  [year_movies_router_host], 
+                                                  [year_movies_router_port], 
+                                                  sentinel_replicas, 
+                                                  network)
+    services.update(sentinel_year_movies)
+    
+    # 4. Add sentinel for country_router
+    country_router_host, country_router_port = get_country_router_host_and_port()
+    sentinel_country = generate_sentinel_service("country_router", 
+                                               [country_router_host], 
+                                               [country_router_port], 
+                                               sentinel_replicas, 
+                                               network)
+    services.update(sentinel_country)
+    
+    # 5. Add sentinel for join_ratings_router
+    ratings_router_host, ratings_router_port = get_ratings_router_host_and_port()
+    sentinel_join_ratings = generate_sentinel_service("join_ratings_router", 
+                                                   [ratings_router_host], 
+                                                   [ratings_router_port], 
+                                                   sentinel_replicas, 
+                                                   network)
+    services.update(sentinel_join_ratings)
+    
+    # 6. Add sentinel for average_movies_by_rating_router
+    avg_rating_router_host, avg_rating_router_port = get_avg_rating_router_host_and_port()
+    sentinel_avg_rating = generate_sentinel_service("avg_movies_by_rating_router", 
+                                                 [avg_rating_router_host], 
+                                                 [avg_rating_router_port], 
+                                                 sentinel_replicas, 
+                                                 network)
+    services.update(sentinel_avg_rating)
+    
+    # 7. Add sentinel for max_min_router
+    max_min_router_host, max_min_router_port = get_max_min_router_host_and_port()
+    sentinel_max_min = generate_sentinel_service("max_min_router", 
+                                              [max_min_router_host], 
+                                              [max_min_router_port], 
+                                              sentinel_replicas, 
+                                              network)
+    services.update(sentinel_max_min)
+    
+    # 8. Add sentinel for count_router
+    count_router_host, count_router_port = get_count_router_host_and_port()
+    sentinel_count = generate_sentinel_service("count_router", 
+                                            [count_router_host], 
+                                            [count_router_port], 
+                                            sentinel_replicas, 
+                                            network)
+    services.update(sentinel_count)
 
+    # 9. Add sentinel for join_movies_router
+    join_movies_router_host, join_movies_router_port = get_join_movies_router_host_and_port()
+    sentinel_join_movies = generate_sentinel_service("join_movies_router", 
+                                                  [join_movies_router_host], 
+                                                  [join_movies_router_port], 
+                                                  sentinel_replicas, 
+                                                  network)
+    services.update(sentinel_join_movies)
+    
+    # 10. Add sentinel for top_router
+    top_router_host, top_router_port = get_top_router_host_and_port()
+    sentinel_top = generate_sentinel_service("top_router", 
+                                          [top_router_host], 
+                                          [top_router_port], 
+                                          sentinel_replicas, 
+                                          network)
+    services.update(sentinel_top)
+    
+    # 11. Add sentinel for top_10_actors_collector_router
+    top_collector_router_host, top_collector_router_port = get_top_10_actors_collector_router_host_and_port()
+    sentinel_top_collector = generate_sentinel_service("top_10_actors_collector_router", 
+                                                    [top_collector_router_host], 
+                                                    [top_collector_router_port], 
+                                                    sentinel_replicas, 
+                                                    network)
+    services.update(sentinel_top_collector)
+    
+    # 12. Add sentinel for max_min_collector_router
+    max_min_collector_router_host, max_min_collector_router_port = get_max_min_collector_router_host_and_port()
+    sentinel_max_min_collector = generate_sentinel_service("max_min_collector_router", 
+                                                        [max_min_collector_router_host], 
+                                                        [max_min_collector_router_port], 
+                                                        sentinel_replicas, 
+                                                        network)
+    services.update(sentinel_max_min_collector)
+    
+    # Conditionally add Q5 sentinels based on include_q5 flag
+    if include_q5:
+        # 13. Add sentinel for movies_q5_router
+        movies_q5_router_host, movies_q5_router_port = get_movies_q5_router_host_and_port()
+        sentinel_movies_q5 = generate_sentinel_service("movies_q5_router", 
+                                                    [movies_q5_router_host], 
+                                                    [movies_q5_router_port], 
+                                                    sentinel_replicas, 
+                                                    network)
+        services.update(sentinel_movies_q5)
+        
+        # 14. Add sentinel for average_sentiment_router
+        avg_sentiment_router_host, avg_sentiment_router_port = get_avg_sentiment_router_host_and_port()
+        sentinel_avg_sentiment = generate_sentinel_service("average_sentiment_router", 
+                                                        [avg_sentiment_router_host], 
+                                                        [avg_sentiment_router_port], 
+                                                        sentinel_replicas, 
+                                                        network)
+        services.update(sentinel_avg_sentiment)
+        
+        # 15. Add sentinel for average_sentiment_collector_router
+        avg_sentiment_collector_router_host, avg_sentiment_collector_router_port = get_avg_sentiment_collector_router_host_and_port()
+        sentinel_avg_sentiment_collector = generate_sentinel_service("average_sentiment_collector_router", 
+                                                                  [avg_sentiment_collector_router_host], 
+                                                                  [avg_sentiment_collector_router_port], 
+                                                                  sentinel_replicas, 
+                                                                  network)
+        services.update(sentinel_avg_sentiment_collector)
+
+    # Add worker sentinels
+    
+    # 16. Add sentinel for filter_by_country workers
+    country_worker_hosts, country_worker_ports = get_country_worker_hosts_and_ports(num_country_workers)
+    sentinel_filter_by_country = generate_sentinel_service("filter_by_country", 
+                                                        country_worker_hosts, 
+                                                        country_worker_ports, 
+                                                        sentinel_replicas, 
+                                                        network)
+    services.update(sentinel_filter_by_country)
+    
+    # 17. Add sentinel for average_movies_by_rating workers
+    avg_rating_worker_hosts, avg_rating_worker_ports = get_avg_rating_worker_hosts_and_ports(avg_rating_shards, avg_rating_replicas)
+    sentinel_avg_rating_workers = generate_sentinel_service("avg_movies_by_rating_workers", 
+                                                          avg_rating_worker_hosts, 
+                                                          avg_rating_worker_ports, 
+                                                          sentinel_replicas, 
+                                                          network)
+    services.update(sentinel_avg_rating_workers)
+    
+    # 18. Add sentinel for count workers
+    count_worker_hosts, count_worker_ports = get_count_worker_hosts_and_ports(count_shards, count_workers_per_shard)
+    sentinel_count_workers = generate_sentinel_service("count_workers", 
+                                                    count_worker_hosts, 
+                                                    count_worker_ports, 
+                                                    sentinel_replicas, 
+                                                    network)
+    services.update(sentinel_count_workers)
+    
+    # Conditionally add Q5 worker sentinels based on include_q5 flag
+    if include_q5:
+        # 19. Add sentinel for average_sentiment workers
+        avg_sentiment_worker_hosts, avg_sentiment_worker_ports = get_avg_sentiment_worker_hosts_and_ports(num_avg_sentiment_workers)
+        sentinel_avg_sentiment_workers = generate_sentinel_service("average_sentiment_workers", 
+                                                                avg_sentiment_worker_hosts, 
+                                                                avg_sentiment_worker_ports, 
+                                                                sentinel_replicas, 
+                                                                network)
+        services.update(sentinel_avg_sentiment_workers)
+        
+        # 20. Add sentinel for collector_average_sentiment worker
+        collector_avg_sentiment_host, collector_avg_sentiment_port = get_collector_avg_sentiment_worker_host_and_port()
+        sentinel_collector_avg_sentiment = generate_sentinel_service("collector_avg_sentiment_worker", 
+                                                                   [collector_avg_sentiment_host], 
+                                                                   [collector_avg_sentiment_port], 
+                                                                   sentinel_replicas, 
+                                                                   network)
+        services.update(sentinel_collector_avg_sentiment)
+
+     # 21. Add sentinel for top workers
+    top_worker_hosts, top_worker_ports = get_top_worker_hosts_and_ports(num_top_workers)
+    sentinel_top_workers = generate_sentinel_service("top_workers", 
+                                                  top_worker_hosts, 
+                                                  top_worker_ports, 
+                                                  sentinel_replicas, 
+                                                  network)
+    services.update(sentinel_top_workers)
+    
+    # 22. Add sentinel for max_min workers
+    max_min_worker_hosts, max_min_worker_ports = get_max_min_worker_hosts_and_ports(num_max_min_workers)
+    sentinel_max_min_workers = generate_sentinel_service("max_min_workers", 
+                                                      max_min_worker_hosts, 
+                                                      max_min_worker_ports, 
+                                                      sentinel_replicas, 
+                                                      network)
+    services.update(sentinel_max_min_workers)
+    
+    # 23. Add sentinel for join_ratings workers
+    join_ratings_worker_hosts, join_ratings_worker_ports = get_join_ratings_worker_hosts_and_ports(num_join_ratings_workers)
+    sentinel_join_ratings_workers = generate_sentinel_service("join_ratings_workers", 
+                                                           join_ratings_worker_hosts, 
+                                                           join_ratings_worker_ports, 
+                                                           sentinel_replicas, 
+                                                           network)
+    services.update(sentinel_join_ratings_workers)
+    
+    # 24. Add sentinel for join_credits workers
+    join_credits_worker_hosts, join_credits_worker_ports = get_join_credits_worker_hosts_and_ports(num_join_credits_workers)
+    sentinel_join_credits_workers = generate_sentinel_service("join_credits_workers", 
+                                                           join_credits_worker_hosts, 
+                                                           join_credits_worker_ports, 
+                                                           sentinel_replicas, 
+                                                           network)
+    services.update(sentinel_join_credits_workers)
+    
+    # 25. Add sentinel for collector_top_10_actors_worker
+    collector_top_10_actors_worker_host, collector_top_10_actors_worker_port = get_collector_top_10_actors_worker_host_and_port()
+    sentinel_collector_top_10_actors = generate_sentinel_service("collector_top_10_actors_worker", 
+                                                              [collector_top_10_actors_worker_host], 
+                                                              [collector_top_10_actors_worker_port], 
+                                                              sentinel_replicas, 
+                                                              network)
+    services.update(sentinel_collector_top_10_actors)
+    
+    # 26. Add sentinel for collector_max_min_worker
+    collector_max_min_worker_host, collector_max_min_worker_port = get_collector_max_min_worker_host_and_port()
+    sentinel_collector_max_min = generate_sentinel_service("collector_max_min_worker", 
+                                                        [collector_max_min_worker_host], 
+                                                        [collector_max_min_worker_port], 
+                                                        sentinel_replicas, 
+                                                        network)
+    services.update(sentinel_collector_max_min)
+    
+    # Conditionally add sentiment analysis workers sentinel based on include_q5 flag
+    if include_q5:
+        # 27. Add sentinel for sentiment_analysis workers
+        sentiment_analysis_worker_hosts, sentiment_analysis_worker_ports = get_sentiment_analysis_worker_hosts_and_ports(num_sentiment_workers)
+        sentinel_sentiment_analysis_workers = generate_sentinel_service("sentiment_analysis_workers", 
+                                                                     sentiment_analysis_worker_hosts, 
+                                                                     sentiment_analysis_worker_ports, 
+                                                                     sentinel_replicas, 
+                                                                     network)
+        services.update(sentinel_sentiment_analysis_workers)
 
     networks = {
         network: {

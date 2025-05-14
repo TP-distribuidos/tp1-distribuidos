@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from docker_compose_generator_files.constants import NETWORK
 
 def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, network=NETWORK):
@@ -14,6 +12,9 @@ def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, net
     Returns:
         dict: Dictionary with average_sentiment_collector_router service configuration
     """
+    # Base port for sentinel monitoring
+    base_port = 9991
+    
     return {
         "average_sentiment_collector_router": {
             "build": {
@@ -21,11 +22,15 @@ def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, net
                 "dockerfile": "router/Dockerfile"
             },
             "env_file": ["./server/router/.env"],
+            "ports": [
+                f"{base_port}:{base_port}"
+            ],
             "environment": [
                 f"NUMBER_OF_PRODUCER_WORKERS={num_avg_sentiment_workers}",
                 "INPUT_QUEUE=average_sentiment_collector_router",
                 "OUTPUT_QUEUES=collector_average_sentiment_worker",
-                "BALANCER_TYPE=round_robin"
+                "BALANCER_TYPE=round_robin",
+                f"SENTINEL_PORT={base_port}"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [
@@ -36,3 +41,12 @@ def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, net
             "networks": [network]
         }
     }
+
+def get_router_host_and_port():
+    """
+    Get the hostname and port for the average_sentiment_collector_router.
+    
+    Returns:
+        tuple: (hostname, port)
+    """
+    return "average_sentiment_collector_router", 9991

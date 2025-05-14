@@ -6,6 +6,9 @@
 # Check if a container name argument is provided
 if [ -z "$1" ]; then
   echo "Usage: $0 <partial_container_name>"
+  echo "Available containers related to 'tp1-distribuidos':"
+  # List running container names that include "tp1-distribuidos", removing the "tp1-distribuidos-" prefix
+  docker ps --filter name=tp1-distribuidos --format "{{.Names}}" | sed 's/tp1-distribuidos-//g' | sed 's/^ *//;s/ *$//'
   exit 1
 fi
 

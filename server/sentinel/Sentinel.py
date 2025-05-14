@@ -579,7 +579,7 @@ class Sentinel:
                         worker_port = self.worker_ports[i]
                         
                         if self._check_worker_health(worker_host, worker_port):
-                            logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
+                            # logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
                             self.worker_unhealthy_counts[worker_host] = 0  # Reset counter if worker is healthy
                         else:
                             self.worker_unhealthy_counts[worker_host] += 1
@@ -845,8 +845,8 @@ class Sentinel:
             except Exception as e:
                 logging.error(f"Error managing heartbeat tasks: {e}")
         
-        if slaves_to_check:
-            logging.info(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
+        # if slaves_to_check:
+            # logging.info(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
             
     def _manage_slave_heartbeats(self):
         """Synchronous wrapper for async heartbeat management"""

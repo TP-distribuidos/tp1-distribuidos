@@ -1,6 +1,16 @@
-#!/usr/bin/env python3
-
 from docker_compose_generator_files.constants import NETWORK
+
+def generate_worker_queue_names(num_workers=2):
+    """
+    Generate queue names for average_sentiment workers.
+    
+    Args:
+        num_workers (int): Number of average_sentiment workers
+        
+    Returns:
+        list: List of queue names for the workers
+    """
+    return [f"average_sentiment_worker_{i}" for i in range(1, num_workers + 1)]
 
 def generate_average_sentiment_workers(num_workers=2, network=NETWORK):
     """
@@ -15,18 +25,28 @@ def generate_average_sentiment_workers(num_workers=2, network=NETWORK):
     """
     services = {}
     
+    # Base port for sentinel monitoring
+    base_port = 9071
+    
     for i in range(1, num_workers + 1):
+        # Calculate unique port for each worker
+        worker_port = base_port + (i - 1) * 10
+        
         services[f"average_sentiment_worker_{i}"] = {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/average_sentiment/Dockerfile"
             },
+            "depends_on": ["rabbitmq"],
+            "ports": [
+                f"{worker_port}:{worker_port}"
+            ],
             "env_file": ["./server/worker/average_sentiment/.env"],
             "environment": [
                 f"ROUTER_CONSUME_QUEUE=average_sentiment_worker_{i}",
-                "ROUTER_PRODUCER_QUEUE=average_sentiment_collector_router"
+                "ROUTER_PRODUCER_QUEUE=average_sentiment_collector_router",
+                f"SENTINEL_PORT={worker_port}"
             ],
-            "depends_on": ["rabbitmq"],
             "volumes": [
                 "./server/worker/average_sentiment:/app",
                 "./server/rabbitmq:/app/rabbitmq",
@@ -36,3 +56,19 @@ def generate_average_sentiment_workers(num_workers=2, network=NETWORK):
         }
     
     return services
+
+def get_worker_hosts_and_ports(num_workers=2):
+    """
+    Get the hostnames and ports for the average_sentiment workers.
+    
+    Args:
+        num_workers (int): Number of average_sentiment workers
+        
+    Returns:
+        tuple: (list of hostnames, list of ports)
+    """
+    base_port = 9071
+    hosts = [f"average_sentiment_worker_{i}" for i in range(1, num_workers + 1)]
+    ports = [base_port + (i - 1) * 10 for i in range(1, num_workers + 1)]
+    
+    return hosts, ports

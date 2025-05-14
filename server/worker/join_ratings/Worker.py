@@ -5,6 +5,7 @@ import os
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
+from common.SentinelBeacon import SentinelBeacon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,6 +15,8 @@ logging.basicConfig(
 
 # Load environment variables
 load_dotenv()
+
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 # Constants
 MOVIES_ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE_MOVIES")
@@ -40,6 +43,8 @@ class Worker:
         self.exchange_name_producer = exchange_name_producer
         self.exchange_type_producer = exchange_type_producer
         self.rabbitmq = RabbitMQClient()
+        
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         # Client state tracking
         self.client_states = {}  # {client_id: {'movies_done': bool}}

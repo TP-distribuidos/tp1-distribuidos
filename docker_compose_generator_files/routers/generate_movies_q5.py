@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
-
 from docker_compose_generator_files.constants import NETWORK
 
-def generate_movies_q5_router(num_sentiment_workers=2):
+def generate_movies_q5_router(num_sentiment_workers=2, network=NETWORK):
     """
     Generate the movies_q5_router service configuration for Docker Compose.
     
@@ -16,6 +14,9 @@ def generate_movies_q5_router(num_sentiment_workers=2):
     # Dynamically generate the list of worker queues
     output_queues = ','.join([f"sentiment_analysis_worker_{i}" for i in range(1, num_sentiment_workers + 1)])
     
+    # Base port for sentinel monitoring
+    base_port = 9951
+    
     return {
         "movies_q5_router": {
             "build": {
@@ -23,11 +24,15 @@ def generate_movies_q5_router(num_sentiment_workers=2):
                 "dockerfile": "router/Dockerfile"
             },
             "env_file": ["./server/router/.env"],
+            "ports": [
+                f"{base_port}:{base_port}"
+            ],
             "environment": [
                 "NUMBER_OF_PRODUCER_WORKERS=1",
                 "INPUT_QUEUE=boundary_movies_Q5_router",
                 f"OUTPUT_QUEUES={output_queues}",
-                "BALANCER_TYPE=round_robin"
+                "BALANCER_TYPE=round_robin",
+                f"SENTINEL_PORT={base_port}"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [
@@ -35,6 +40,15 @@ def generate_movies_q5_router(num_sentiment_workers=2):
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common"
             ],
-            "networks": [NETWORK]
+            "networks": [network]
         }
     }
+
+def get_router_host_and_port():
+    """
+    Get the hostname and port for the movies_q5_router.
+    
+    Returns:
+        tuple: (hostname, port)
+    """
+    return "movies_q5_router", 9951

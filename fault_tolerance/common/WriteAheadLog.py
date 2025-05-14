@@ -9,14 +9,13 @@ import asyncio
 
 class WALEntryStatus(Enum):
     """Estados posibles para una entrada del WAL"""
-    PENDING = "PENDING"  # La operación está pendiente de procesamiento
     PROCESSING = "PROCESSING"  # La operación está en proceso
     COMPLETED = "COMPLETED"  # La operación ha sido completada exitosamente
     FAILED = "FAILED"  # La operación ha fallado
 
 class WALEntry:
     """Representa una entrada en el Write Ahead Log"""
-    def __init__(self, message_id, batch, content, status=WALEntryStatus.PENDING):
+    def __init__(self, message_id, batch, content, status=WALEntryStatus.PROCESSING):
         self.id = message_id
         self.batch = batch
         self.content = content
@@ -87,7 +86,7 @@ class WriteAheadLog:
         new_file = os.path.join(self.log_dir, f"wal_{timestamp}.log")
         
         # Verificar si hay entradas pendientes antes de rotar
-        pending_entries = self._get_entries_by_status([WALEntryStatus.PENDING, WALEntryStatus.PROCESSING])
+        pending_entries = self._get_entries_by_status([WALEntryStatus.PROCESSING])
         
         if pending_entries:
             # Copiar solo las entradas pendientes al nuevo archivo
@@ -112,12 +111,13 @@ class WriteAheadLog:
         else:
             logging.info(f"WAL rotado: {old_file} -> {new_file}")
     
-    async def append(self, message_id, message_data):
+    async def append(self, message_id, message_data, status):
         """Agrega una nueva entrada al WAL"""
         entry = WALEntry(
             message_id=message_id,
             batch=message_data.get('batch'),
-            content=message_data.get('content')
+            content=message_data.get('content'),
+            status=status
         )
         
         # Escribir entrada al log (operación de E/S, usar run_in_executor)
@@ -185,7 +185,7 @@ class WriteAheadLog:
         """Obtiene todas las entradas pendientes de procesamiento"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, 
-            self._get_entries_by_status, [WALEntryStatus.PENDING, WALEntryStatus.PROCESSING])
+            self._get_entries_by_status, [WALEntryStatus.PROCESSING])
     
     async def recover(self):
         """Recupera las entradas pendientes para su reprocesamiento"""

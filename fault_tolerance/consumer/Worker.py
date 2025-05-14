@@ -78,6 +78,7 @@ class ConsumerWorker:
             
     async def _recover_pending_entries(self):
         """Recupera y procesa entradas pendientes del WAL"""
+        # 1. Recuperar y procesar entradas PENDING y PROCESSING
         pending_entries = await self.wal.get_pending_entries()
         
         if pending_entries:
@@ -88,6 +89,9 @@ class ConsumerWorker:
                     await self._process_wal_entry(entry)
                 except Exception as e:
                     logging.error(f"Error processing pending WAL entry {entry.id}: {e}")
+        
+        # 2. Verificar y enviar el último mensaje COMPLETED a la siguiente cola
+        self._verify_wal_entries()
     
     async def cleanup(self):
         """Clean up resources properly"""
@@ -147,17 +151,17 @@ class ConsumerWorker:
             content = deserialized_message.get('content')
             logging.info(f"Received message {message_id} - Batch: {batch}")
             
-            # Paso 2: Registrar en el WAL como PENDING
+            # Paso 2: Registrar en el WAL como PROCESSING
             message_data = {
                 'batch': batch,
                 'content': content
             }
-            wal_entry = await self.wal.append(message_id, message_data)
+            wal_entry = await self.wal.append(message_id, message_data, WALEntryStatus.PROCESSING)
             logging.info(f"Registered message in WAL with ID: {message_id}")
             
             # Paso 3: Actualizar estado a PROCESSING
-            await self.wal.update_status(message_id, WALEntryStatus.PROCESSING)
-            logging.info(f"Updated WAL entry {message_id} to PROCESSING")
+            # await self.wal.update_status(message_id, WALEntryStatus.PROCESSING)
+            # logging.info(f"Updated WAL entry {message_id} to PROCESSING")
             
             # Paso 4: Procesar los datos (capitalizar)
             processed_data = process_data(content)
@@ -167,16 +171,15 @@ class ConsumerWorker:
             formatted_message = f"--- Message {batch} ---\n"
             formatted_message += f"{processed_data}\n\n"
             
-            # Escribir a archivo de forma asíncrona
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._write_to_file_sync, formatted_message)
+            self._write_to_file_sync(formatted_message)
             logging.info(f"Wrote processed message {message_id} to file")
+
+            # Paso 6: Actualizar estado a COMPLETED y confirmar mensaje
+            await self.wal.update_status(message_id, WALEntryStatus.COMPLETED)
             
-            # Paso 6: Aquí iría el envío a la siguiente cola si fuera necesario
+            # Paso 7: Aquí iría el envío a la siguiente cola si fuera necesario
             # await self.rabbitmq.publish_to_queue("next_queue", processed_data)
             
-            # Paso 7: Actualizar estado a COMPLETED y confirmar mensaje
-            await self.wal.update_status(message_id, WALEntryStatus.COMPLETED)
             await message.ack()
             logging.info(f"Completed processing message {message_id}")
             
@@ -223,9 +226,8 @@ class ConsumerWorker:
             formatted_message = f"--- Message {entry.batch} (recovered) ---\n"
             formatted_message += f"{processed_data}\n\n"
             
-            # Escribir a archivo de forma asíncrona
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._write_to_file_sync, formatted_message)
+            # Escribir a archivo de forma sincronica para garantizar la transacción
+            self._write_to_file_sync(formatted_message)
             
             # Marcar como completado
             await self.wal.update_status(entry.id, WALEntryStatus.COMPLETED)
@@ -236,3 +238,36 @@ class ConsumerWorker:
             await self.wal.update_status(entry.id, WALEntryStatus.FAILED)
             logging.error(f"Failed to process WAL entry {entry.id}: {e}")
             raise
+
+    def _verify_wal_entries(self):
+        """
+        Verifica el último mensaje en estado COMPLETED y lo envía a la siguiente cola.
+        Las entradas en estado PROCESSING se ignoran ya que se volverán a recibir de RabbitMQ.
+        """
+        # Recuperar entradas COMPLETED para enviar el último a la siguiente cola
+        completed_entries = self.wal._get_entries_by_status([WALEntryStatus.COMPLETED])
+        
+        if completed_entries:
+            # Ordenar por fecha de actualización para identificar el último completado
+            last_completed = sorted(completed_entries, key=lambda e: e.updated_at)[-1]
+            
+            logging.info(f"Found last COMPLETED entry: {last_completed.id} (Batch: {last_completed.batch})")
+            
+            try:
+                # Extraer datos y procesar
+                message_content = last_completed.content.get('content', '')
+                processed_data = process_data(message_content)
+                
+                # Solo enviar a la siguiente cola el ÚLTIMO mensaje COMPLETED (no escribir a disco nuevamente)
+                logging.info(f"Sending last COMPLETED entry to next queue: {last_completed.id}")
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(self._send_to_next_queue(last_completed.id, last_completed.batch, processed_data))
+            except Exception as e:
+                logging.error(f"Error sending last COMPLETED entry {last_completed.id} to next queue: {e}")
+    
+    async def _send_to_next_queue(self, message_id, batch, processed_data):
+        """Envía el mensaje procesado a la siguiente cola si es necesario"""
+        # Implementación para enviar a la siguiente cola
+        # Por ejemplo:
+        # await self.rabbitmq.publish_to_queue("next_queue", processed_data)
+        logging.info(f"Message {message_id} (Batch: {batch}) would be sent to next queue")

@@ -25,7 +25,7 @@ def generate_filter_by_year_workers(num_workers=2, network=NETWORK):
     """
     services = {}
     
-    base_port = 9000
+    base_port = 9007
     
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
@@ -66,7 +66,7 @@ def get_worker_hosts_and_ports(num_workers=2):
     Returns:
         tuple: (list of hostnames, list of ports)
     """
-    base_port = 9000
+    base_port = 9007
     hosts = [f"filter_by_year_worker_{i}" for i in range(1, num_workers + 1)]
     ports = [base_port + (i - 1) * 10 for i in range(1, num_workers + 1)]
     

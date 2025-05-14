@@ -11,7 +11,7 @@ def generate_collector_average_sentiment_worker(network=NETWORK):
         dict: Dictionary with collector_average_sentiment_worker service configuration
     """
     # Base port for sentinel monitoring
-    worker_port = 9080
+    worker_port = 9084
     
     return {
         "collector_average_sentiment_worker": {
@@ -45,4 +45,4 @@ def get_worker_host_and_port():
     Returns:
         tuple: (hostname, port)
     """
-    return "collector_average_sentiment_worker", 9080
+    return "collector_average_sentiment_worker", 9084

@@ -32,7 +32,7 @@ def generate_join_credits_workers(num_workers=2, network=NETWORK):
     services = {}
     
     # Base port for sentinel monitoring
-    base_port = 9500
+    base_port = 9508
     
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
@@ -74,7 +74,7 @@ def get_worker_hosts_and_ports(num_workers=2):
     Returns:
         tuple: (list of hostnames, list of ports)
     """
-    base_port = 9500
+    base_port = 9508
     hosts = [f"join_credits_worker_{i}" for i in range(1, num_workers + 1)]
     ports = [base_port + (i - 1) * 10 for i in range(1, num_workers + 1)]
     

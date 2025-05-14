@@ -5,6 +5,7 @@ import os
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
+from common.SentinelBeacon import SentinelBeacon
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +20,7 @@ logging.basicConfig(
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE", "average_sentiment_worker")
 COLLECTOR_QUEUE = os.getenv("COLLECTOR_QUEUE", "average_sentiment_collector_router")
 QUERY_5 = os.getenv("QUERY_5", "5")
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class Worker:
     def __init__(self, consumer_queue_name=ROUTER_CONSUME_QUEUE, producer_queue_name=COLLECTOR_QUEUE):
@@ -26,6 +28,8 @@ class Worker:
         self.consumer_queue_name = consumer_queue_name
         self.producer_queue_name = producer_queue_name
         self.rabbitmq = RabbitMQClient()
+        
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         # Initialize client data dictionary to track sentiment data per client
         self.client_data = {}

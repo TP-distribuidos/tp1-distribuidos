@@ -1,0 +1,103 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  producer_worker1:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    environment:
+      - PRODUCER_QUEUE=test_queue
+      - SENTINEL_PORT=9001
+    ports:
+      - "9001:9001"
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./producer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+      
+  producer_worker2:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    environment:
+      - PRODUCER_QUEUE=test_queue
+      - SENTINEL_PORT=9011
+    ports:
+      - "9011:9001"
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./producer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+
+  consumer_worker:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    environment:
+      - CONSUMER_QUEUE=test_queue
+      - SENTINEL_PORT=9002
+      - OUTPUT_FILE=/app/output/received_messages.txt
+    ports:
+      - "9002:9002"
+    depends_on:
+      - rabbitmq
+      - producer_worker1
+      - producer_worker2
+    volumes:
+      - ./consumer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+
+  sentinel1:
+    build:
+      context: ./sentinel
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_HOSTS=producer_worker1,producer_worker2
+      - WORKER_PORTS=9001,9011
+      - CHECK_INTERVAL=5
+      - SERVICE_NAME=sentinel1
+      - PEER_PORT=9010
+      - RESTART_ATTEMPTS=2
+      - RESTART_COOLDOWN=5
+      - COMPOSE_PROJECT_NAME=fault_tolerance
+    depends_on:
+      - producer_worker1
+      - producer_worker2
+    volumes:
+      - ./sentinel:/app
+      - ./common:/app/common
+      - /var/run/docker.sock:/var/run/docker.sock  # Give access to Docker socket
+    deploy:
+      replicas: 2
+
+  sentinel2:
+    build:
+      context: ./sentinel
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_HOSTS=consumer_worker
+      - WORKER_PORTS=9002
+      - CHECK_INTERVAL=5
+      - SERVICE_NAME=sentinel2
+      - PEER_PORT=9010
+      - RESTART_ATTEMPTS=3
+      - RESTART_COOLDOWN=30
+      - COMPOSE_PROJECT_NAME=fault_tolerance
+    depends_on:
+      - consumer_worker
+    volumes:
+      - ./sentinel:/app
+      - ./common:/app/common
+      - /var/run/docker.sock:/var/run/docker.sock  # Give access to Docker socket
+    deploy:
+      replicas: 2
+  

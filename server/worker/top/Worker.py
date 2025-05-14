@@ -7,6 +7,7 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import heapq
 from collections import defaultdict
+from common.SentinelBeacon import SentinelBeacon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +24,7 @@ ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE",)
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "top_actors_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 TOP_N = int(os.getenv("TOP_N", 10))
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class Worker:
     def __init__(self, 
@@ -37,6 +39,8 @@ class Worker:
         self.exchange_name_producer = exchange_name_producer
         self.exchange_type_producer = exchange_type_producer
         self.rabbitmq = RabbitMQClient()
+        
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         self.client_data = {}
         self.top_n = TOP_N

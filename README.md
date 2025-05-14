@@ -1,163 +1,144 @@
-# TP-distribuidos
-TP final de Sistemas Distribuidos
+# Sistema de Tolerancia a Fallos para Aplicación Distribuida
 
+## Visión General
 
-## Script usage
-First, make sure you have the script `docker_compose_generator.sh` in your working directory. This script generates a Docker Compose file based on the parameters you provide. You need to make the script executable before running it. You can do this by running the following command in your terminal (for Linux or macOS):
-```bash
-chmod +x docker_compose_generator.sh
+El sistema consiste en servicios worker que realizan las queries y servicios sentinel que monitorean a los workers bajo una arquitectura maestro-esclavo. Cuando se detectan fallos, el sistema reinicia automáticamente los componentes fallidos para mantener la disponibilidad del servicio.
+
 ```
-Then you can run the script with the desired parameters. For example:
-```bash
-./docker_compose_generator.sh
+                 ┌─────────────┐ Escucha      ┌─────────────┐  (Si el Maestro cae,
+                 │             │ al Maestro   │             │   el Esclavo asume
+         ┌───────► Sentinel 1  ◄─────────────►  Sentinel 2  │   el monitoreo de
+         │       │  (Maestro)  │              │ (Esclavo)   │   los Workers)
+         │       │             │              │             │
+         │       └──────┬──────┘              └─────────────┘
+         │              │
+Responden│              │
+Healthcheck             │ Monitorea
+         │              │
+         │              │ ───────────────────────
+         │              ▼                        │
+         │       ┌─────────────┐                 ▼
+         │       │             │        ┌─────────────┐
+         └───────│  Worker 1   │        │             │
+                 │             │        │  Worker 2   │
+                 └─────────────┘        │             │
+                                        └─────────────┘
 ```
-This will generate a default `docker-compose.yaml` file with the default parameters.
-You can also specify various parameters to customize the generated Docker Compose file. Here is an example of how to use the script with different parameters for a production-like setup:
-```bash
-./docker_compose_generator.sh -c 10 -y 3 -n 4 -j 3 -r 3 -a 2 -b 2 -d 3 -e 2 -t 4 -m 3 -s 3 -v 2 -k production_network -q -o docker-compose-production.yaml
-```
-Or if you want to see the help message with all available options:
-```bash
-./docker_compose_generator.sh --help
-```
 
+## Arquitectura
 
+### Nodos
 
+1. **Workers**: Nodos que realizan las queries y usan la interfaz **SentinelBeacon** para comunicarse con el sentinela maestro.
+2. **Sentinelas**: Nodo de monitoreo que verifica la integridad de los workers através de una comunicación por socket. A la par los esclavos mmonitorean la integridad del maestro.
 
-### aio-pika vs pika: Performance & Trade-offs
-Performance Comparison
-Aio-pika is typically not significantly slower than pika when used in the right context. In fact, for applications already using asyncio (like yours), it often provides better overall performance.
+### Características del Diseño
 
-Individual operations: Pure synchronous pika might have slightly less overhead (5-10%) for individual operations
-Overall throughput: Aio-pika typically delivers better throughput in real-world scenarios by allowing your application to handle multiple operations concurrently without blocking
-Your boundary service is already using asyncio for socket operations, so aio-pika aligns better with your architecture.
+#### 1. Arquitectura Maestro-Esclavo
 
-Trade-offs with aio-pika
-Potential Downsides
-Learning curve: Async programming patterns can be more complex to understand and debug
-Maturity: Pika is RabbitMQ's official Python client with longer history and more examples
-Debugging: Async stacktraces can be harder to follow
-Dependencies: Adds an extra dependency (not just pika but also async support)
-Benefits for Your Case
-Integration: Seamlessly integrates with your existing asyncio code
-No blocking: Won't block your event loop during RabbitMQ operations
-Simplicity: Avoids complex thread management that would be needed with synchronous pika
-Scalability: Better handles concurrent connections and operations
-Recommendation
-Since your application is already built on asyncio (as shown in your main.py and socket handling), aio-pika is the better technical choice despite any minor overhead. Using synchronous pika would require complex thread management that would likely hurt performance and code quality more than any theoretical benefit from synchronous operations
+Los sentinelas se monitorean entre sí utilizando una arquitectura maestro-esclavo a través de una conexión por socket TCP:
 
+- Un sentinela actúa como maestro, responsable del monitoreo de todos los workers.
+- Los otros sentinelas actúan como esclavos, recibiendo los broadcast de health check del maestro.
+- Si algun esclavo falla, el sentinela maestro, lo detecta y lo revive.
+- Si el maestro falla, los esclavos lo detectan e inician una nueva elección de líder.
+- El nuevo maestro asume la responsabilidad de monitorear los workers y reinicia al sentinela maestro anterior
 
+#### 2. Algoritmo de Elección de líder (Bully)
 
-# IMPROVMENTS
+Se implementa un algoritmo tipo bully para la elección del maestro:
 
-## Improvements to the Worker Class
-### 1. Do not use sleep(1) in the main loop
-Understanding the sleep in the Worker's Main Loop
-You're right to question the sleep(1) in the main loop. This isn't an ideal pattern, but it's not necessarily wrong either.
+- Los sentinelas utilizan IDs únicos para determinar el liderazgo
+- El ID más alto es elegido como el líder.
+- Las elecciones se desencadenan cuando se detecta un fallo del maestro
 
-What's happening here
-This loop does two main things:
+## Detalles de Implementación
 
-Keeps the worker's main task alive
-Periodically yields control to the event loop (via await asyncio.sleep(1))
-Why this works
-The worker doesn't get stuck here because:
+### Estructura del Código
 
-The RabbitMQ consumption runs asynchronously: The self.rabbitmq.consume() call in _setup_rabbitmq() sets up asynchronous message handling. When messages arrive, they trigger your callback function without needing the main loop to do anything.
+#### 1. Clase Sentinel
 
-Event-driven architecture: Your consumer callback is registered with the RabbitMQ client and will be invoked whenever a message is received, independent of this loop.
+El servicio principal de monitoreo que:
 
-Yielding to the event loop: The await asyncio.sleep(1) releases control back to the event loop, allowing other tasks (like your message processing) to run.
+- Monitorea la salud de los workers
+- Participa en la elección del maestro
+- Reinicia workers y sentinelas fallidos
 
-Could it be better?
-Yes. While this pattern works, there are some improvements you could consider:
+Métodos principales:
 
-This approach:
+- `_check_worker_health(worker_host, worker_port)`: Verifica la salud del worker mediante conexión TCP
+- `restart_worker(worker_host)`: Utiliza la API de Docker para reiniciar contenedores de worker fallidos
+- `restart_sentinel(sentinel_hostname)`: Reinicia contenedores de sentinela fallidos
+- `_initiate_election()`: Inicia el proceso de elección de maestro
+- `_process_election_results()`: Determina el ganador de la elección y anuncia el nuevo maestro
 
-Avoids arbitrary polling intervals
-Is more efficient (no waking up every second)
-Responds immediately to shutdown signals
-But yes, your current implementation with the 1-second sleep is a common pattern and works fine for most use cases. The sleep is there to avoid busy-waiting (consuming 100% CPU) while still allowing the worker to check its shutdown flag periodically.
+#### 2. Clase SentinelBeacon
 
+Una interfaz importada en cada worker, el cuál recibe las conexiones del sentinela maestro y le contesta los health checks:
 
+- Escucha en un puerto designado
+- Responde a las solicitudes de verificación de salud de los sentinelas
 
-## System configuration options:
+Métodos principales:
 
-1. Minimal Configuration (Light Resource Usage)
-``` bash
-./docker_compose_generator.sh \
-  --clients 1 \
-  --output docker-compose-minimal.yaml \
-  --filter-by-year 1 \
-  --filter-by-country 1 \
-  --join-credits 1 \
-  --join-ratings 1 \
-  --count 1 \
-  --average-movies-by-rating 1 \
-  --max-min 1 \
-  --top 1
-```
-This configuration uses minimal resources with just one worker of each type and a single client.
+- `_run_sentinel_server()`: Ejecuta un servidor socket TCP para responder a los health checks.
+- `_handle_sentinel_client(client_socket, addr)`: Procesa solicitudes entrantes de verificación de salud.
 
-2. High Throughput for Movie Filtering
-``` bash
-./docker_compose_generator.sh \
-  --clients 2 \
-  --output docker-compose-filter-heavy.yaml \
-  --filter-by-year 4 \
-  --filter-by-country 4 \
-  --join-credits 2 \
-  --join-ratings 2 \
-  --count 2
-```
-This configuration focuses on scaling up the initial filtering stages, which can be helpful if you have many movies to process.
+#### 3. Protocolo de Comunicación
 
-3. Analytics-Focused Configuration
-``` bash
-./docker_compose_generator.sh \
-  --clients 2 \
-  --output docker-compose-analytics.yaml \
-  --filter-by-year 1 \
-  --filter-by-country 1 \
-  --join-credits 2 \
-  --join-ratings 2 \
-  --count 3 \
-  --average-movies-by-rating 2 \
-  --max-min 2 \
-  --top 3
-```
-This configuration puts more workers on the analytics stages like counting, averages, and top actors.
+Los sentinelas se comunican utilizando un protocolo de mensajería simple con tipos de mensajes:
 
-4. Include Sentiment Analysis
-``` bash
-./docker_compose_generator.sh \
-  --clients 2 \
-  --output docker-compose-sentiment.yaml \
-  --filter-by-year 1 \
-  --filter-by-country 1 \
-  --sentiment-analysis 3 \
-  --average-sentiment 3 \
-  --include-sentiment-analysis
-```
-This configuration enables sentiment analysis with multiple workers for processing movie reviews.
+- `ELECTION_START`: Inicia una elección de líder
+- `ELECTION_RESPONSE`: Respuesta a un anuncio de elección de líder
+- `LEADER_ANNOUNCEMENT`: Declara el maestro recién elegido
+- `LEADER_HEARTBEAT`: Mensaje periódico del maestro a los esclavos
+- `HEARTBEAT_ACK`: Confirmación de heartbeat de los esclavos
+- `ID_ANNOUNCE`: Notificación de la presencia e ID de un sentinela para presentarse entre ellos.
 
-5. Production-Like Balanced Configuration
-``` bash
-./docker_compose_generator.sh \
-  --clients 3 \
-  --output docker-compose-production.yaml \
-  --filter-by-year 3 \
-  --filter-by-country 3 \
-  --join-credits 3 \
-  --join-ratings 3 \
-  --count 6 \
-  --average-movies-by-rating 2 \
-  --max-min 2 \
-  --top 2 \
-  --average-sentiment 4 \
-  --include-sentiment-analysis
-```
-This represents a more production-like setup with balanced scaling across all components.
+### Monitoreo de Salud
 
+#### Verificaciones de Salud de Workers
 
+- Los sentinelas se conectan a los workers a través de un socket TCP (SentinelBeacon)
+- Cada worker expone un puerto específico configurado en el docker compose. El cuál acepta las conexiones del Sentinela maestro.
+- Los sentinelas envían un mensaje de heartbeat y esperan una respuesta.
+- Un fallo de conexión o tiempo de espera agotado indica que el worker no está saludable, y debe de ser reiniciado.
+  - Intenta reiniciar el container del worker utilizando la API de Docker.
 
+#### Verificaciones de Salud de Sentinelas
+
+- El maestro envía heartbeats periódicos a los sentinelas esclavos.
+- Los esclavos escuchan los heartbeats del maestro.
+- Si los heartbeats se detienen, los esclavos inician una nueva elección de líder.
+- El nuevo líder reinicia el sentinela caido (previo líder).
+
+### Implementación de los health checks
+
+- Monitoreo secuencial de los workers que tiene asignado.
+- Procesamiento concurrente de heartbeats de sentinela.
+- Operaciones de verificación de salud no bloqueantes para los sentinelas esclavos.
+
+## Configuración
+
+El sistema de tolerancia a fallos se configura a través de variables de entorno en el archivo Docker Compose:
+
+- `WORKER_HOSTS`: Lista de nombres de host de los workers a monitorear
+- `WORKER_PORTS`: Lista de puertos para verificaciones de salud de los workers
+- `CHECK_INTERVAL`: Frecuencia de las verificaciones de salud en segundos
+- `SERVICE_NAME`: Nombre del servicio sentinela (usado para descubrimiento)
+- `PEER_PORT`: Puerto para comunicación entre sentinelas
+- `RESTART_ATTEMPTS`: Número de verificaciones fallidas antes del reinicio
+- `RESTART_COOLDOWN`: Tiempo en segundos a esperar entre intentos de reinicio
+- `COMPOSE_PROJECT_NAME`: Nombre del proyecto Docker Compose
+
+## Conclusión
+
+Este sistema de tolerancia a fallos proporciona una solución robusta para mantener la disponibilidad del servicio en una aplicación distribuida.
+
+1. **Detecta y Recupera de Fallos**: El sistema puede detectar automáticamente y reiniciar workers fallidos, manteniendo la disponibilidad del servicio incluso durante fallos de componentes.
+
+2. **Elimina Puntos Únicos de Fallo**: A través de la arquitectura maestro-esclavo y el mecanismo de elección, el sistema de monitoreo es resiliente frente a fallos.
+
+3. **Asegura un Monitoreo Consistente**: El protocolo de elección de maestro garantiza que exactamente un sentinela sea responsable de las verificaciones de salud de los workers y su recuperación en cualquier momento.
+
+4. **Ofrece Flexibilidad de Despliegue**: El sistema actualmente utiliza a Docker para reiniciar los nodos caidos, pero dado que la detección no depende de Docker en sí, se puede desacoplar el uso de Docker a favor de otra tecnología.

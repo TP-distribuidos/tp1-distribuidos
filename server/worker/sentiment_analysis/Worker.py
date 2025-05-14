@@ -7,6 +7,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from transformers import pipeline
 from dotenv import load_dotenv
+from common.SentinelBeacon import SentinelBeacon
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +21,7 @@ logging.basicConfig(
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class SentimentWorker:
     def __init__(self, consumer_queue_name=CONSUMER_QUEUE, response_queue_name=PRODUCER_QUEUE):
@@ -27,6 +29,8 @@ class SentimentWorker:
         self.consumer_queue_name = consumer_queue_name
         self.response_queue_name = response_queue_name
         self.rabbitmq = RabbitMQClient()
+        
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         logging.info("Initializing sentiment analysis model...")
         # Load the sentiment analysis pipeline from transformers

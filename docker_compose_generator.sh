@@ -16,7 +16,8 @@ NUM_MAX_MIN_WORKERS=2
 NUM_SENTIMENT_WORKERS=2
 NUM_AVG_SENTIMENT_WORKERS=2
 NETWORK="tp_distribuidos"
-INCLUDE_Q5="false"  # Default: don't include Q5 nodes
+INCLUDE_Q5="false"
+SENTINEL_REPLICAS=2
 
 # Function to display usage information
 show_help() {
@@ -38,9 +39,10 @@ show_help() {
     echo "  -m, --max-min-workers NUM Specify number of max_min workers (default: 2)"
     echo "  -s, --sentiment-workers NUM Specify number of sentiment analysis workers (default: 2)"
     echo "  -v, --avg-sentiment-workers NUM Specify number of average sentiment workers (default: 2)"
-    echo "  -k, --network NAME     Specify Docker network name (default: tp_distribuidos, THIS IS STILL A WORK IN PROGRESS, IT WILL ALWAYS DEFAUTL TO tp_distribuidos)"
+    echo "  -k, --network NAME     Specify Docker network name (default: tp_distribuidos)"
     echo "  -q, --include-q5       Include Q5 sentiment analysis components (default: false)"
-    echo "  -h, --help            Display this help message and exit"
+    echo "  -S, --sentinel-replicas NUM Specify number of sentinel replicas per service (default: 2)"
+    echo "  -h, --help             Display this help message and exit"
     
     echo ""
     echo "Examples:"
@@ -90,6 +92,14 @@ while [[ $# -gt 0 ]]; do
             # Validate that the input is a positive integer
             if ! [[ "$NUM_CLIENTS" =~ ^[0-9]+$ ]] || [ "$NUM_CLIENTS" -lt 1 ]; then
                 echo "Error: Number of clients must be a positive integer."
+                exit 1
+            fi
+            shift 2
+            ;;
+        -S|--sentinel-replicas)
+            SENTINEL_REPLICAS="$2"
+            if ! [[ "$SENTINEL_REPLICAS" =~ ^[0-9]+$ ]] || [ "$SENTINEL_REPLICAS" -lt 1 ]; then
+                echo "Error: Number of sentinel replicas must be a positive integer."
                 exit 1
             fi
             shift 2
@@ -236,6 +246,7 @@ echo "  $NUM_MAX_MIN_WORKERS max_min workers"
 echo "  $NUM_SENTIMENT_WORKERS sentiment analysis workers"
 echo "  $NUM_AVG_SENTIMENT_WORKERS average sentiment workers"
 echo "  Include Q5 components: $INCLUDE_Q5"
+echo "  $SENTINEL_REPLICAS sentinel replicas per service"
 echo "  Network: $NETWORK (DEFAULTING to tp_distribuidos anyways because this is a WIP)"
 
 
@@ -262,7 +273,7 @@ echo "Generating Docker Compose file..."
 $PYTHON docker_compose_generator.py "$OUTPUT_FILE" "$NUM_CLIENTS" "$NUM_YEAR_WORKERS" "$NUM_COUNTRY_WORKERS" \
 "$NUM_JOIN_CREDITS_WORKERS" "$NUM_JOIN_RATINGS_WORKERS" "$AVG_RATING_SHARDS" "$AVG_RATING_REPLICAS" \
 "$COUNT_SHARDS" "$COUNT_WORKERS_PER_SHARD" "$NUM_TOP_WORKERS" "$NUM_MAX_MIN_WORKERS" \
-"$NUM_SENTIMENT_WORKERS" "$NUM_AVG_SENTIMENT_WORKERS" "$NETWORK" "$INCLUDE_Q5"
+"$NUM_SENTIMENT_WORKERS" "$NUM_AVG_SENTIMENT_WORKERS" "$NETWORK" "$INCLUDE_Q5" "$SENTINEL_REPLICAS"
 
 
 # Check if generation was successful

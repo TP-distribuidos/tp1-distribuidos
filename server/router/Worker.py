@@ -1,9 +1,13 @@
 import asyncio
 import logging
 import signal
+import os
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
+from common.SentinelBeacon import SentinelBeacon
 from load_balancer.factory import create_balancer
+
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class RouterWorker:
     def __init__(self, number_of_producer_workers, input_queue, output_queues, exchange_name, exchange_type="direct", balancer_type="shard_by_ascii"):
@@ -26,6 +30,8 @@ class RouterWorker:
         self.balancer = create_balancer(balancer_type, output_queues)
         self.running = False
         self.end_of_file_received = {}
+
+        self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -252,6 +258,9 @@ class RouterWorker:
         # Close RabbitMQ connection - create a task since this is called from a signal handler
         if hasattr(self, 'rabbit_client'):
             asyncio.create_task(self.rabbit_client.close())
+        # Shut down the sentinel beacon
+        if hasattr(self, 'sentinel_beacon'):
+            self.sentinel_beacon.shutdown()
 
     async def _send_disconnect_to_all_queues(self, client_id, query=None):
         """Send DISCONNECT marker to all output queues for a specific client ID"""

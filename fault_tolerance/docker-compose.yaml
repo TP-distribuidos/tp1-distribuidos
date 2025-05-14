@@ -55,7 +55,7 @@ services:
       - ./consumer:/app
       - ./rabbitmq:/app/rabbitmq
       - ./common:/app/common
-      - consumer_wal_data:/app/wal
+      - ./consumer/wal:/app/wal
 
   sentinel1:
     build:
@@ -100,8 +100,4 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock  # Give access to Docker socket
     deploy:
       replicas: 2
-
-volumes:
-  consumer_wal_data:
-    # Volumen persistente para el Write-Ahead Log del consumer
   

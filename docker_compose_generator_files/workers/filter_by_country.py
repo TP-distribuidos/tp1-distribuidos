@@ -26,7 +26,7 @@ def generate_filter_by_country_workers(num_workers=2, network=NETWORK):
     services = {}
     
     # Base port for sentinel monitoring
-    base_port = 9031
+    base_port = 9030
     
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
@@ -67,7 +67,7 @@ def get_worker_hosts_and_ports(num_workers=2):
     Returns:
         tuple: (list of hostnames, list of ports)
     """
-    base_port = 9031
+    base_port = 9030
     hosts = [f"filter_by_country_worker_{i}" for i in range(1, num_workers + 1)]
     ports = [base_port + (i - 1) * 10 for i in range(1, num_workers + 1)]
     

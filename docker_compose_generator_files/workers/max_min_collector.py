@@ -11,7 +11,7 @@ def generate_collector_max_min_worker(network=NETWORK):
         dict: Dictionary with collector_max_min_worker service configuration
     """
     # Set port for sentinel monitoring
-    worker_port = 9251
+    worker_port = 9250
     
     return {
         "collector_max_min_worker": {
@@ -45,4 +45,4 @@ def get_worker_host_and_port():
     Returns:
         tuple: (hostname, port)
     """
-    return "collector_max_min_worker", 9251
+    return "collector_max_min_worker", 9250

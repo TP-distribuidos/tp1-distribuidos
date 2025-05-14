@@ -104,7 +104,7 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2, netw
     queues = generate_worker_queue_names(num_shards, num_replicas)
     
     # Base port for sentinel monitoring
-    base_port = 9051
+    base_port = 9050
     
     # Create a worker for each queue
     for i, queue in enumerate(queues):
@@ -163,7 +163,7 @@ def get_worker_hosts_and_ports(num_shards=2, num_replicas=2):
     Returns:
         tuple: (list of hostnames, list of ports)
     """
-    base_port = 9051
+    base_port = 9050
     queues = generate_worker_queue_names(num_shards, num_replicas)
     hosts = queues
     ports = [base_port + i * 10 for i in range(len(queues))]

@@ -14,7 +14,7 @@ def generate_top_workers(num_workers=3, network=NETWORK):
     services = {}
     
     # Base port for sentinel monitoring
-    base_port = 9101
+    base_port = 9100
     
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
@@ -55,7 +55,7 @@ def get_worker_hosts_and_ports(num_workers=3):
     Returns:
         tuple: (list of hostnames, list of ports)
     """
-    base_port = 9101
+    base_port = 9100
     hosts = [f"top_worker_{i}" for i in range(1, num_workers + 1)]
     ports = [base_port + (i - 1) * 10 for i in range(1, num_workers + 1)]
     

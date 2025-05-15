@@ -3,7 +3,6 @@ import json
 import logging
 from pathlib import Path
 import shutil
-import time
 
 class WriteAheadLog:
     """
@@ -78,7 +77,6 @@ class WriteAheadLog:
             # Write everything in a single file operation
             with open(log_path, self.WRITE_MODE) as f:
                 # First line is status - write PROCESSING with padding to match COMPLETED length
-
                 status_line = f"{self.STATUS_PROCESSING}\n"
                 f.write(status_line)
                 
@@ -87,7 +85,7 @@ class WriteAheadLog:
                     if isinstance(data, dict):
                         # Handle dictionary by writing each key-value pair
                         for key, value in data.items():
-                            f.write(json.dumps({key: value}) + "\n")           
+                            f.write(json.dumps({key: value}) + "\n")
                     else:
                         # Process in chunks for large lists
                         chunk_size = self.LIST_CHUNK_SIZE  # Adjust based on expected data size
@@ -107,9 +105,7 @@ class WriteAheadLog:
                 
                 # Write COMPLETED status - same length as PROCESSING
                 f.write(f"{self.STATUS_COMPLETED}\n")
-                # logging.info(f"SLEEPING 5 seconds before writing to WAL for client {client_id}, operation {operation_id}")
-                # # Sleep for 5 seconds before writing to simulate slow I/O
-                # time.sleep(5) 
+                
                 # Go back to end of file
                 f.seek(end_pos)
                 

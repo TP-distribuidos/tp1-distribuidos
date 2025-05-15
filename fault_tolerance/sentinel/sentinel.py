@@ -403,15 +403,15 @@ class Sentinel:
                         worker_port = self.worker_ports[i]
                         
                         if self._check_worker_health(worker_host, worker_port):
-                            logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
+                            # logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
                             self.worker_unhealthy_counts[worker_host] = 0  # Reset counter if worker is healthy
                         else:
                             self.worker_unhealthy_counts[worker_host] += 1
-                            logging.error(f"\033[31mWorker {worker_host}:{worker_port} is unhealthy \033[33m(count: {self.worker_unhealthy_counts[worker_host]}/{RESTART_ATTEMPTS})\033[0m")
+                            # logging.error(f"\033[31mWorker {worker_host}:{worker_port} is unhealthy \033[33m(count: {self.worker_unhealthy_counts[worker_host]}/{RESTART_ATTEMPTS})\033[0m")
                             
                             # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
                             if self.worker_unhealthy_counts[worker_host] >= RESTART_ATTEMPTS:
-                                logging.warning(f"\033[31mWorker {worker_host} has been unhealthy for {self.worker_unhealthy_counts[worker_host]} consecutive checks. Attempting restart...\033[0m")
+                                # logging.warning(f"\033[31mWorker {worker_host} has been unhealthy for {self.worker_unhealthy_counts[worker_host]} consecutive checks. Attempting restart...\033[0m")
                                 restart_success = self.restart_worker(worker_host)
                                 if restart_success:
                                     logging.info(f"\033[34mRestart initiated \033[32msuccessfully\033[34m for \033[32m{worker_host}\033[34m. Resetting unhealthy counter and waiting for recovery.\033[0m")

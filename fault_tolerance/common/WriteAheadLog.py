@@ -20,20 +20,27 @@ class WriteAheadLog:
     WRITE_MODE = 'w'
     LOG_FILE_EXTENSION = '.log'
 
-    def __init__(self, base_dir="/app/wal", service_name=None):
+    def __init__(self, base_dir="/app/wal", service_name=None, parser=None):
         """
         Initialize the persistent log with a directory for storing log files.
         
         Args:
             base_dir (str): Base directory for storing log files
             service_name (str, optional): Name of the service using the log
+            parser (IParser, optional): Parser implementation for handling log data
         """
         if service_name:
             self.base_dir = Path(base_dir) / service_name
         else:
             self.base_dir = Path(base_dir)
-            
+
         self.base_dir.mkdir(exist_ok=True, parents=True)
+
+        if parser:
+            self.parser = parser
+        else:
+            raise ValueError("A parser implementing IParser interface must be provided")
+
         logging.info(f"WriteAheadLog initialized at {self.base_dir}")
         
     def _get_client_dir(self, client_id):
@@ -87,7 +94,7 @@ class WriteAheadLog:
                     if isinstance(data, dict):
                         # Handle dictionary by writing each key-value pair
                         for key, value in data.items():
-                            f.write(json.dumps({key: value}) + "\n")           
+                            f.write(json.dumps({key: value}) + "\n")
                     else:
                         # Process in chunks for large lists
                         chunk_size = self.LIST_CHUNK_SIZE  # Adjust based on expected data size
@@ -98,13 +105,13 @@ class WriteAheadLog:
                 else:
                     # Write as single JSON for non-iterable data
                     f.write(json.dumps(data) + "\n")
-                
+
                 # Remember current position at end of data
                 end_pos = f.tell()
-                
+
                 # Go back to beginning to update status
                 f.seek(0)
-                
+
                 # Write COMPLETED status - same length as PROCESSING
                 f.write(f"{self.STATUS_COMPLETED}\n")
                 # logging.info(f"SLEEPING 5 seconds before writing to WAL for client {client_id}, operation {operation_id}")
@@ -131,64 +138,27 @@ class WriteAheadLog:
                 
             return False
     
-    def get_data(self, client_id, operation_id=None):
+    def get_data(self, client_id):
         """
         Retrieve persisted data for a client.
         
         Args:
             client_id (str): Client identifier
-            operation_id (str, optional): Specific operation to retrieve
             
         Returns:
             dict/list or None: Retrieved data or None if no data found or not completed
         """
         client_dir = self._get_client_dir(client_id)
         
-        # If operation_id is specified, get that specific log
-        if operation_id:
-            log_path = client_dir / f"{operation_id}{self.LOG_FILE_EXTENSION}"
-            if not log_path.exists():
-                return None
-                
-            try:
-                with open(log_path, self.READ_MODE) as f:
-                    lines = f.readlines()
-                    
-                    # Check if log is complete
-                    if not lines or lines[0].strip() != self.STATUS_COMPLETED:
-                        return None
-                    
-                    # Process data lines (all lines except the status line)
-                    data_lines = lines[1:]
-                    
-                    # If single line, return as single object
-                    if len(data_lines) == 1:
-                        return json.loads(data_lines[0])
-                    
-                    # Otherwise, return as list of objects
-                    result = []
-                    for line in data_lines:
-                        if line.strip():  # Skip empty lines
-                            result.append(json.loads(line))
-                    return result
-                    
-            except Exception as e:
-                logging.error(f"Error reading log for {client_id}, operation {operation_id}: {e}")
-                return None
-        
-        # If no operation_id, collect all completed logs
-        all_data = []
+        all_data = {}
         for log_file in client_dir.glob(f"*{self.LOG_FILE_EXTENSION}"):
             try:
                 with open(log_file, self.READ_MODE) as f:
                     lines = f.readlines()
-                    if lines and lines[0].strip() == self.STATUS_COMPLETED:
-                        # Process data lines (all lines except the status line)
-                        data_lines = lines[1:]
-                        
-                        for line in data_lines:
-                            if line.strip():  # Skip empty lines
-                                all_data.append(json.loads(line))
+                    result = self.parser.parse(lines)
+                    batch_id, batch_data = result
+                    if batch_id is not None:
+                        all_data[batch_id] = batch_data
             except Exception as e:
                 logging.warning(f"Skipping invalid log {log_file}: {e}")
                 continue

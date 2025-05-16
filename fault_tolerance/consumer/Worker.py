@@ -10,6 +10,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
 from common.WriteAheadLog import WriteAheadLog
+from ConsumerParser import ConsumerParser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +33,7 @@ class ConsumerWorker:
         os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
         
         # Initialize Write-Ahead Log
-        self.wal = WriteAheadLog(service_name="consumer_worker")
+        self.wal = WriteAheadLog(service_name="consumer_worker", parser=ConsumerParser())
         # Recover any previous state
         self.wal.recover_state()  # This cleans up any incomplete logs
     
@@ -128,8 +129,8 @@ class ConsumerWorker:
                 
                 # logging.info(f"\033[92mMessage {batch} persisted to WAL, waiting 5s before processing...\033[0m")
                 # await asyncio.sleep(5)
-                
-                await self._write_to_file(deserialized_message)
+                if int(batch) == 10:
+                    await self._write_to_file(client_id)
                 
                 # logging.info(f"\033[95mMessage {batch} written to file, waiting 5s before NOT clearing data...\033[0m")
                 # await asyncio.sleep(5)
@@ -154,16 +155,15 @@ class ConsumerWorker:
             # Reject the message and requeue it
             await message.reject(requeue=True)
     
-    async def _write_to_file(self, message):
-        """Write message to output file"""
+    async def _write_to_file(self, client_id):
+        """Write client_id's messages to output file"""
         try:
-            # Format message for output - simplified format with no labels
-            formatted_message = f"--- Message {message.get('batch')} ---\n"
-            formatted_message += f"{message.get('content')}\n\n"
-            
+            data = self.wal.get_data(client_id)
+
             # Write to file (async)
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._write_to_file_sync, formatted_message)
+            await loop.run_in_executor(None, self._write_to_file_sync, str(data))
+            self.wal.clear_client_data(client_id)
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")
@@ -172,6 +172,7 @@ class ConsumerWorker:
         """Synchronous file write operation"""
         with open(OUTPUT_FILE, 'a') as f:
             f.write(data)
+            f.write("\n")
     
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

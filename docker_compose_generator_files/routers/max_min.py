@@ -45,7 +45,8 @@ def generate_max_min_router(num_avg_rating_workers, num_max_min_workers=2, netwo
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/wal/max_min_router:/app/wal"
             ],
             "networks": [network]
         }

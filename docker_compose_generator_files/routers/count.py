@@ -42,7 +42,8 @@ def generate_count_router(num_join_credits_workers=2, count_shards=2, count_work
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/wal/count_router:/app/wal"
             ],
             "networks": [network]
         }

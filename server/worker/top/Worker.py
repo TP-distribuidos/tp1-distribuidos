@@ -6,10 +6,10 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 import heapq
-import uuid
 from collections import defaultdict
+import uuid
 from common.SentinelBeacon import SentinelBeacon
-from common.WriteAheadLog import WriteAheadLog
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +44,6 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.wal = WriteAheadLog()
         self.client_data = {}
         self.top_n = TOP_N
         

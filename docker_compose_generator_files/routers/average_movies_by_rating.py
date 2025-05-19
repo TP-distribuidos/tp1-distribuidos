@@ -42,7 +42,8 @@ def generate_average_movies_by_rating_router(num_join_ratings_workers=2, avg_rat
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/wal/average_movies_by_rating_router:/app/wal"
             ],
             "networks": [network]
         }

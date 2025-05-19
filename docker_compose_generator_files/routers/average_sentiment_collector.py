@@ -36,7 +36,8 @@ def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, net
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/wal/average_sentiment_collector_router:/app/wal"
             ],
             "networks": [network]
         }

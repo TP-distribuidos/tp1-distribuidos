@@ -197,28 +197,29 @@ class Boundary:
                     csvs_received += 1
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
-
+                
+                operation_id = str(uuid.uuid4())
                 if csvs_received == MOVIES_CSV:
                     filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
                     # Send data for Q1 to the movies router
-                    prepared_data_q1 = self._addMetaData(client_id, filtered_data_q1)
+                    prepared_data_q1 = self._addMetaData(client_id, filtered_data_q1, operation_id=operation_id)
                     await self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
                     # Send data for Q5 to the reviews router
-                    prepared_data_q5 = self._addMetaData(client_id, filtered_data_q5)
+                    prepared_data_q5 = self._addMetaData(client_id, filtered_data_q5, operation_id=operation_id)
                     await self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
                 
                 elif csvs_received == CREDITS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q4)
                     filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = self._addMetaData(client_id, filtered_data)
+                    prepared_data = self._addMetaData(client_id, filtered_data, operation_id=operation_id)
                     await self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
                 
                 elif csvs_received == RATINGS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q3)
                     filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = self._addMetaData(client_id, filtered_data)
+                    prepared_data = self._addMetaData(client_id, filtered_data, operation_id=operation_id)
                     await self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                 
             except ConnectionError:
@@ -416,12 +417,13 @@ class Boundary:
         
         return result
   
-  def _addMetaData(self, client_id, data, is_eof_marker=False, is_disconnect=False):
+  def _addMetaData(self, client_id, data, is_eof_marker=False, is_disconnect=False, operation_id=None):
     message = {        
       "client_id": client_id,
       "data": data,
       "EOF_MARKER": is_eof_marker,
-      "DISCONNECT": is_disconnect
+      "DISCONNECT": is_disconnect,
+      "operation_id": operation_id
     }
     return message
   

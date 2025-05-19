@@ -148,6 +148,7 @@ class Worker:
             query = deserialized_message.get("query")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
             
             # Handle DISCONNECT notifications first
             if disconnect_marker:
@@ -174,15 +175,15 @@ class Worker:
                 data_eq_one_country, data_response_queue = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0])
+                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=operation_id)
                 if data_response_queue:
-                    await self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1])
+                    await self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=operation_id)
                     
             elif query == QUERY_GT_YEAR:
                 data_eq_one_country, _ = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0])
+                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=operation_id)
                     
             else:
                 logging.warning(f"Unknown query type: {query}, client ID: {client_id}")
@@ -221,7 +222,7 @@ class Worker:
 
         return projected_data
 
-    async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False):
+    async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
         """Send data to the eq_one_country queue in our exchange"""
         message = self._add_metadata(client_id, data, eof_marker)
         success = await self.rabbitmq.publish(
@@ -233,7 +234,7 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data to eq_one_country queue")
 
-    async def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1):
+    async def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
         """Send data to the response queue in our exchange"""
         message = self._add_metadata(client_id, data, query=query)
         success = await self.rabbitmq.publish(
@@ -245,12 +246,13 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data to response queue")
 
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Add metadata to the message"""
         message = {        
             "client_id": client_id,
             "EOF_MARKER": eof_marker,
             "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id,
             "data": data,
             "query": query,
         }

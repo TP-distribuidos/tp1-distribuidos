@@ -100,6 +100,7 @@ class SentimentWorker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
+            operation_id = deserialized_message.get("operation_id")
             
             if disconnect_marker:
                 response_message = self._add_metadata(
@@ -144,7 +145,8 @@ class SentimentWorker:
                 # Prepare response message using the standardized _add_metadata method
                 response_message = self._add_metadata(
                     client_id=client_id,
-                    data=processed_data
+                    data=processed_data,
+                    operation_id=operation_id
                 )
                 
                 # Send processed data to response queue
@@ -257,14 +259,15 @@ class SentimentWorker:
             logging.error(f"Error during sentiment analysis: {e}")
             return ("NEUTRAL", 0.5)
         
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Prepare the message to be sent to the output queue - standardized across workers"""
         message = {        
             "client_id": client_id,
             "data": data,
             "EOF_MARKER": eof_marker,
             "query": query,
-            "DISCONNECT": disconnect_marker
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
     

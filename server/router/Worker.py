@@ -138,6 +138,7 @@ class RouterWorker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             query = deserialized_message.get("query")
+            operation_id = deserialized_message.get("operation_id", None)
             
 
             if not client_id:
@@ -168,7 +169,8 @@ class RouterWorker:
             outgoing_message = {
                 "client_id": client_id,
                 "data": data,
-                "EOF_MARKER": eof_marker
+                "EOF_MARKER": eof_marker,
+                "operation_id": operation_id
             }
             if query:
                 outgoing_message["query"] = query

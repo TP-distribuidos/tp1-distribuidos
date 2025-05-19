@@ -6,6 +6,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -97,6 +98,7 @@ class Worker:
             data = deserialized_message.get("data", [])
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
                 await self.send_data(client_id, data, False, disconnect_marker=True)
@@ -107,6 +109,7 @@ class Worker:
 
             elif eof_marker:
                 logging.info(f"Received EOF marker for client_id '{client_id}'")
+                new_operation_id = str(uuid.uuid4())
                 
                 if client_id in self.client_data:
                     # Calculate final averages
@@ -124,7 +127,7 @@ class Worker:
                     }]
                     
                     # First: Send the data 
-                    await self.send_data(client_id, result, False, QUERY_5)
+                    await self.send_data(client_id, result, False, QUERY_5, operation_id=new_operation_id)
                     
                     # Second: Send message with EOF=True
                     await self.send_data(client_id, [], True, QUERY_5)
@@ -179,9 +182,9 @@ class Worker:
             logging.error(f"Error processing message: {e}")
             await message.reject(requeue=False)
     
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the producer queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker)
+        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
         success = await self.rabbitmq.publish_to_queue(
             queue_name=self.producer_queue_name,
             message=Serializer.serialize(message),
@@ -190,7 +193,7 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data with query '{query}' for client {client_id}")
     
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Prepare the message to be sent to the output queue - standardized across workers"""
         message = {        
             "client_id": client_id,
@@ -198,6 +201,7 @@ class Worker:
             "EOF_MARKER": eof_marker,
             "query": query,
             "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
     

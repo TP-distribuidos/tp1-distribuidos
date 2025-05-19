@@ -139,6 +139,7 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             query = deserialized_message.get("query", "")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
                 # Propagate DISCONNECT to downstream components
@@ -157,9 +158,9 @@ class Worker:
             if data:
                 data_eq_year, data_gt_year = self._filter_data(data)
                 if data_eq_year:
-                    await self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR)
+                    await self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=operation_id)
                 if data_gt_year:
-                    await self.send_data(client_id, data_gt_year, QUERY_GT_YEAR)
+                    await self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=operation_id)
             
             # Acknowledge message
             await message.ack()
@@ -179,9 +180,9 @@ class Worker:
             persistent=True
         )
 
-    async def send_data(self, client_id, data, query, eof_marker=False):
+    async def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
         """Send data to the router queue with query type in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query)
+        message = self._add_metadata(client_id, data, eof_marker, query, operation_id=operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
@@ -191,14 +192,15 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data with query type '{query}' to router queue")
 
-    def _add_metadata(self, client_id, data, eof_marker, query, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker, query, disconnect_marker=False, operation_id=None):
         """Add metadata including query type to the message"""
         message = {        
             "client_id": client_id,
             "data": data,
             "query": query,
             "EOF_MARKER": eof_marker,
-            "DISCONNECT": disconnect_marker
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
 

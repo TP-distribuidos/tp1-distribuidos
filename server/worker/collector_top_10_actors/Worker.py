@@ -7,6 +7,7 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import heapq
 from common.SentinelBeacon import SentinelBeacon
+import uuid
 
 
 logging.basicConfig(
@@ -140,6 +141,7 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
                 removed = self.client_data.pop(client_id, None)
@@ -150,7 +152,8 @@ class Worker:
                 # If we have data for this client, send it to router producer queue
                 if client_id in self.client_data:
                     top_actors = self._get_top_actors(client_id)
-                    await self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4)
+                    new_operation_id = str(uuid.uuid4())
+                    await self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
                     # Clean up client data after sending
                     del self.client_data[client_id]
                     logging.info(f"Sent top 10 actors for client {client_id} and cleaned up COLLECTOR")
@@ -216,12 +219,12 @@ class Worker:
         return top_actors
     
     
-    async def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None):
+    async def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
         """Send data to the specified router producer queue"""
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
             
-        message = self._add_metadata(client_id, data, eof_marker, query)
+        message = self._add_metadata(client_id, data, eof_marker, query, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -232,13 +235,14 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data to {queue_name} for client {client_id}")
 
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, operation_id=None):
         """Prepare the message to be sent to the output queue"""
         message = {        
             "client_id": client_id,
             "data": data,
             "EOF_MARKER": eof_marker,
             "query": query,
+            "operation_id": operation_id
         }
         return message
         

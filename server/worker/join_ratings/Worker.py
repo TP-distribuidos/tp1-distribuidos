@@ -6,6 +6,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,13 +215,14 @@ class Worker:
                 await self._finalize_client(client_id)
             
             elif data:
+                new_operation_id = str(uuid.uuid4())
                 if client_id in self.collected_data:
                     joined_data = self._join_data(
                         self.collected_data[client_id],
                         data
                     )
                     if joined_data:
-                        await self.send_data(client_id, joined_data)
+                        await self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
             await message.ack()
             
@@ -285,10 +287,10 @@ class Worker:
             logging.error(f"Error joining data: {e}")
             return []
 
-    async def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False):
+    async def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
         try:    
-            message = self._add_metadata(client_id, data, eof_marker, disconnect_marker=disconnect_marker)
+            message = self._add_metadata(client_id, data, eof_marker, disconnect_marker=disconnect_marker, operation_id=operation_id)
             success = await self.rabbitmq.publish(
                 exchange_name=self.exchange_name_producer,
                 routing_key=self.producer_queue_name,
@@ -301,14 +303,15 @@ class Worker:
             logging.error(f"Error sending data to output queue: {e}")
             raise e
 
-    def _add_metadata(self, client_id, data, eof_marker, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker, query=None, disconnect_marker=False, operation_id=None):
         """Prepare the message to be sent to the output queue"""
         message = {        
             "client_id": client_id,
             "data": data,
             "EOF_MARKER": eof_marker,
             "query": query,
-            "DISCONNECT": disconnect_marker
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
         

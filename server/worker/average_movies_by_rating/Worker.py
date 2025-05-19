@@ -7,6 +7,7 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import ast
 from common.SentinelBeacon import SentinelBeacon
+import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,6 +135,7 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
                 await self.send_data(client_id, data, False, disconnect_marker=True)
@@ -142,6 +144,7 @@ class Worker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
                 await self.send_data(client_id, data, True)
             elif data:
+                new_operation_id = str(uuid.uuid4())
                 self._update_averages(client_id, data)
                 # Transform dict of movies into a list of dicts with ID included
                 transformed_data = [
@@ -154,7 +157,7 @@ class Worker:
                     for movie_id, movie_data in self.averages[client_id].items()
                 ]
                 # Send the updated averages to the producer queue
-                await self.send_data(client_id, transformed_data)
+                await self.send_data(client_id, transformed_data, operation_id=new_operation_id)
             else:
                 logging.warning(f"\033[93mReceived message without data for client_id '{client_id}'\033[0m")
 
@@ -210,9 +213,9 @@ class Worker:
             }
 
 
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker)
+        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -224,14 +227,15 @@ class Worker:
 
 
     #TODO: move _add_metadata to Serializer
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Add metadata to the message"""
         message = {        
             "client_id": client_id,
             "EOF_MARKER": eof_marker,
             "data": data,
             "query": query,
-            "DISCONNECT": disconnect_marker
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
 

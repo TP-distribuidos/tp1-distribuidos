@@ -6,6 +6,7 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,6 +138,7 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             
             if client_id not in self.client_data:
@@ -222,13 +224,14 @@ class Worker:
         }]
         
         # Send the final results
-        await self._send_data(client_id, result, True)
+        new_operation_id = str(uuid.uuid4())
+        await self._send_data(client_id, result, True, new_operation_id)
     
-    async def _send_data(self, client_id, data, eof_marker=False):
+    async def _send_data(self, client_id, data, eof_marker=False, operation_id=None):
         """Send data to the response queue"""
         queue_name = self.producer_queue_name[0]
         
-        message = self._add_metadata(client_id, data, eof_marker, QUERY_5)
+        message = self._add_metadata(client_id, data, eof_marker, QUERY_5, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -239,13 +242,14 @@ class Worker:
         if not success:
             logging.error(f"Failed to send final sentiment data for client {client_id}")
 
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, operation_id=None):
         """Prepare the message to be sent to the output queue"""
         message = {        
             "client_id": client_id,
             "data": data,
             "EOF_MARKER": eof_marker,
             "query": query,
+            "operation_id": operation_id,
         }
         return message
         

@@ -138,6 +138,7 @@ class Worker:
             query = deserialized_message.get("query")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
                 await self.send_data(client_id, data, False, disconnect_marker=True)
@@ -155,7 +156,7 @@ class Worker:
                         self.participations[client_id][actor_name] = 0
                     self.participations[client_id][actor_name] += 1
                 parsed_data = self._parse_data(self.participations[client_id])
-                await self.send_data(client_id, parsed_data, False, query)
+                await self.send_data(client_id, parsed_data, False, query, operation_id=operation_id)
             else:
                 logging.warning(f"No data in message: {deserialized_message}")
 
@@ -175,9 +176,9 @@ class Worker:
             parsed_data.append({"name": actor, "count": count})
         return parsed_data
 
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker)
+        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -188,14 +189,15 @@ class Worker:
             logging.error(f"Failed to send data with query '{query}' to router queue")
 
     #TODO: move _add_metadata to Serializer
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Add metadata to the message"""
         message = {        
             "client_id": client_id,
             "EOF_MARKER": eof_marker,
             "data": data,
             "query": query,
-            "DISCONNECT": disconnect_marker
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id
         }
         return message
 

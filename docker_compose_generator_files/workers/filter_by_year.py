@@ -49,7 +49,8 @@ def generate_filter_by_year_workers(num_workers=2, network=NETWORK):
             "volumes": [
                 "./server/worker/filter_by_year:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/wal/filter_by_year_worker_{i}:/app/wal"
             ],
             "networks": [network]
         }

@@ -57,7 +57,8 @@ def generate_join_ratings_workers(num_workers=2, network=NETWORK):
             "volumes": [
                 "./server/worker/join_ratings:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/wal/join_ratings_worker_{i}:/app/wal"
             ],
             "networks": [network]
         }

@@ -32,7 +32,8 @@ def generate_collector_top_10_actors_worker(network=NETWORK):
             "volumes": [
                 "./server/worker/collector_top_10_actors:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/wal/collector_top_10_actors_worker:/app/wal"
             ],
             "networks": [network]
         }

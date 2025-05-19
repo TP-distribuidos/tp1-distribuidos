@@ -38,7 +38,8 @@ def generate_max_min_workers(num_workers=2, network=NETWORK):
             "volumes": [
                 "./server/worker/max_min:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/wal/max_min_worker_{i}:/app/wal"
             ],
             "networks": [network]
         }

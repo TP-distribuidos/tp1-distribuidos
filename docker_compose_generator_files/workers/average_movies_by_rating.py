@@ -131,7 +131,8 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2, netw
             "volumes": [
                 "./server/worker/average_movies_by_rating:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/wal/average_movies_by_rating_worker_{i}:/app/wal"
             ],
             "networks": [network]
         }

@@ -76,9 +76,33 @@ class ConsumerParser(IParser):
         if batch_id is None:
             return "No valid batch data found."
             
-        output = [f"Batch ID: {batch_id}", "-" * 40]
+        output = [f"Batch: {batch_id}", "-" * 40]
         
-        for key, value in sorted(batch_data.items()):
-            output.append(f"{key}: {value}")
-            
+        # Only include the content field, without the key name
+        if "content" in batch_data:
+            output.append(f"{batch_data['content']}")
+        
         return "\n".join(output)
+        
+    def format_multiple_batches(self, batches_dict):
+        """
+        Format multiple batches from a dictionary into a pretty string output.
+        
+        Args:
+            batches_dict: Dictionary mapping operation IDs to their data
+            
+        Returns:
+            str: A formatted string representation of all batches
+        """
+        if not batches_dict:
+            return "No batches found."
+            
+        formatted_outputs = []
+        
+        for operation_id, batch_data in batches_dict.items():
+            actual_batch_id = batch_data.get('batch')
+            if actual_batch_id is not None:
+                formatted_batch = self.format_output(actual_batch_id, batch_data)
+                formatted_outputs.append(formatted_batch)
+            
+        return "\n\n".join(formatted_outputs)

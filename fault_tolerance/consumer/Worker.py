@@ -130,10 +130,10 @@ class ConsumerWorker:
                 # logging.info(f"\033[92mMessage {batch} persisted to WAL, waiting 5s before processing...\033[0m")
                 # await asyncio.sleep(5)
                 if int(batch) == 10:
-                    await self._write_to_file(client_id)
+                    await self._write_to_file_from_ram(client_id)
                 
                 # logging.info(f"\033[95mMessage {batch} written to file, waiting 5s before NOT clearing data...\033[0m")
-                # await asyncio.sleep(5)
+                await asyncio.sleep(5)
 
                 # After successful processing, clean up WAL entry
                 # self.wal.clear_client_data(client_id)
@@ -154,23 +154,54 @@ class ConsumerWorker:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
             await message.reject(requeue=True)
-    
-    async def _write_to_file(self, client_id):
-        """Write client_id's messages to output file"""
-        try:
-            data = self.wal.get_data(client_id)
 
-            # Write to file (async)
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._write_to_file_sync, str(data))
-            self.wal.clear_client_data(client_id)
+    async def _write_to_file_from_ram(self, client_id):
+        """Write client_id's messages to output file using RAM cache"""
+        try:
+            # Dump the memory cache content for debugging
+            if client_id in self.wal.memory_cache:
+                logging.info(f"Memory cache keys before writing to file: {list(self.wal.memory_cache[client_id].keys())}")
+                
+                # Check if each batch has the 'batch' field
+                for op_id, batch_data in self.wal.memory_cache[client_id].items():
+                    if 'batch' in batch_data:
+                        logging.info(f"Operation {op_id} has batch: {batch_data['batch']}")
+                    else:
+                        logging.error(f"Operation {op_id} is missing 'batch' field: {batch_data}")
+            else:
+                logging.error(f"Client {client_id} not found in memory cache!")
+                
+            # Get data from in-memory cache instead of disk
+            # This now returns a formatted string ready for output
+            formatted_data = self.wal.get_data_ram(client_id)
+            if formatted_data:
+                # Write to file (async)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._write_to_file_sync, formatted_data)
+                logging.info(f"Wrote all batches to {OUTPUT_FILE}")
+                # self.wal.clear_client_data(client_id)
+            else:
+                logging.warning(f"No data found in RAM cache for client {client_id}")
             
         except Exception as e:
-            logging.error(f"Error writing to file: {e}")
+            logging.error(f"Error writing RAM data to file: {e}")
+    
+    # async def _write_to_file(self, client_id):
+    #     """Write client_id's messages to output file"""
+    #     try:
+    #         data = self.wal.get_data(client_id)
+
+    #         # Write to file (async)
+    #         loop = asyncio.get_running_loop()
+    #         await loop.run_in_executor(None, self._write_to_file_sync, str(data))
+    #         self.wal.clear_client_data(client_id)
+            
+    #     except Exception as e:
+    #         logging.error(f"Error writing to file: {e}")
     
     def _write_to_file_sync(self, data):
         """Synchronous file write operation"""
-        with open(OUTPUT_FILE, 'a') as f:
+        with open(OUTPUT_FILE, 'w') as f:  # Use 'w' mode to always write complete data
             f.write(data)
             f.write("\n")
     

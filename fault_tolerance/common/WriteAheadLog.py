@@ -41,7 +41,27 @@ class WriteAheadLog:
         else:
             raise ValueError("A parser implementing IParser interface must be provided")
 
+        # Initialize in-memory cache
+        self.memory_cache = {}
+        
+        # Load data from disk into memory during initialization
+        self._load_data_to_memory()
+
         logging.info(f"WriteAheadLog initialized at {self.base_dir}")
+    
+    def _load_data_to_memory(self):
+        """Load all existing data from disk into memory cache"""
+        recovered_data = self.recover_state()
+        self.memory_cache = recovered_data
+        logging.info(f"Loaded {len(self.memory_cache)} clients' data into memory cache: {self.memory_cache}")
+        
+        # Log each batch with its details for debugging
+        for client_id, client_data in self.memory_cache.items():
+            for op_id, batch_data in client_data.items():
+                batch_id = batch_data.get('batch')
+                logging.info(f"Recovered: Client: {client_id}, Operation: {op_id}, Batch: {batch_id}")
+                if batch_id is None:
+                    logging.error(f"Missing batch ID in operation {op_id}: {batch_data}")
         
     def _get_client_dir(self, client_id):
         """Get the directory for a specific client's logs"""
@@ -67,15 +87,33 @@ class WriteAheadLog:
         if operation_id is None:
             raise ValueError("operation_id must be provided")
             
+        # First check in-memory cache for already processed operations
+        if client_id in self.memory_cache and operation_id in self.memory_cache[client_id]:
+            logging.info(f"Data for client {client_id}, operation {operation_id} already in memory cache")
+            return True
+            
         log_path = client_dir / f"{operation_id}{self.LOG_FILE_EXTENSION}"
         
-        # Check if already processed
+        # If not in memory, check if already processed on disk
         if log_path.exists():
             try:
                 with open(log_path, self.READ_MODE) as f:
                     first_line = f.readline().strip()
                     if first_line == self.STATUS_COMPLETED:
-                        logging.info(f"Data for client {client_id}, operation {operation_id} already persisted")
+                        logging.info(f"Data for client {client_id}, operation {operation_id} already persisted to disk")
+                        
+                        # Also update the in-memory cache with this data
+                        if client_id not in self.memory_cache:
+                            self.memory_cache[client_id] = {}
+                        
+                        # Read the data from disk
+                        with open(log_path, self.READ_MODE) as f:
+                            lines = f.readlines()
+                            result = self.parser.parse(lines)
+                            batch_id, batch_data = result
+                            if batch_id is not None:
+                                self.memory_cache[client_id][operation_id] = batch_data
+                                
                         return True
             except Exception as e:
                 logging.warning(f"Failed to read existing log file: {e}")
@@ -124,6 +162,13 @@ class WriteAheadLog:
                 f.flush()
                 os.fsync(f.fileno())
             
+            # Update in-memory cache after successful disk write
+            # Initialize client data if it doesn't exist
+            if client_id not in self.memory_cache:
+                self.memory_cache[client_id] = {}
+            
+            # Use operation_id as the key in the memory cache for consistency with file storage
+            self.memory_cache[client_id][operation_id] = data
             return True
             
         except Exception as e:
@@ -239,7 +284,7 @@ class WriteAheadLog:
 
     def _recover_client_data(self, client_id, client_dir):
         """Helper method to recover data for a single client"""
-        client_data = []
+        client_data = {}
         
         # Process log files one by one
         for log_file in client_dir.glob(f"*{self.LOG_FILE_EXTENSION}"):
@@ -252,10 +297,27 @@ class WriteAheadLog:
                         logging.warning(f"Removed incomplete log file: {log_file}")
                         continue
                     
-                    # Process data lines
-                    for line in lines[1:]:
-                        if line.strip():  # Skip empty lines
-                            client_data.append(json.loads(line))
+                    # Use parser to process the log file
+                    result = self.parser.parse(lines)
+                    batch_id, batch_data = result
+                    
+                    # Use operation_id (file stem) as the key instead of batch_id
+                    operation_id = log_file.stem
+                    if batch_id is not None:
+                        # Make sure batch_id is included in the batch_data
+                        batch_data['batch'] = batch_id
+                        client_data[operation_id] = batch_data
+                        logging.info(f"Recovered batch {batch_id} for operation {operation_id}")
+                    else:
+                        # If no batch_id was found but we have data, try to get it from the data
+                        if 'batch' in batch_data:
+                            batch_id = batch_data['batch']
+                            client_data[operation_id] = batch_data
+                            logging.info(f"Recovered batch {batch_id} from data for operation {operation_id}")
+                        else:
+                            logging.warning(f"No batch ID found for operation {operation_id}")
+                            # Still store the data without a batch ID for completeness
+                            client_data[operation_id] = batch_data
             except Exception as e:
                 logging.warning(f"Error processing log {log_file}, removing: {e}")
                 self._safely_remove_file(log_file)
@@ -293,3 +355,19 @@ class WriteAheadLog:
             operations[operation_id] = is_completed
             
         return operations
+    
+    def get_data_ram(self, client_id):
+        """
+        Retrieve data for a client directly from in-memory cache for fast access.
+        Format the data properly using the parser.
+        
+        Args:
+            client_id (str): Client identifier
+            
+        Returns:
+            str: Properly formatted data ready for output, or None if no data found
+        """
+        if client_id in self.memory_cache:
+            # Let the parser handle the formatting of multiple batches
+            return self.parser.format_multiple_batches(self.memory_cache[client_id])
+        return None

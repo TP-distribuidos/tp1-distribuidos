@@ -9,8 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
+from ConsumerStateInterpreter import ConsumerStateInterpreter
 from common.WriteAheadLog import WriteAheadLog
-from ConsumerParser import ConsumerParser
+from common.FileSystemStorage import FileSystemStorage
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,11 +34,14 @@ class ConsumerWorker:
         # Create output directory if it doesn't exist
         os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
         
-        # Initialize Write-Ahead Log
-        self.wal = WriteAheadLog(service_name="consumer_worker", parser=ConsumerParser())
-        # Recover any previous state
-        self.wal.recover_state()  # This cleans up any incomplete logs
-    
+        # Initialize Data Persistance with Write-Ahead Log
+        self.data_persistance = WriteAheadLog(
+            state_interpreter=ConsumerStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="consumer_worker",
+            base_dir="/app/persistence"
+        )
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -125,7 +130,7 @@ class ConsumerWorker:
             # await asyncio.sleep(5)
             
             # Persist message to WAL before processing
-            if self.wal.save_data(client_id, deserialized_message, operation_id):
+            if self.data_persistance.persist(client_id, deserialized_message, operation_id):
                 
                 # logging.info(f"\033[92mMessage {batch} persisted to WAL, waiting 5s before processing...\033[0m")
                 # await asyncio.sleep(5)
@@ -136,7 +141,7 @@ class ConsumerWorker:
                 # await asyncio.sleep(5)
 
                 # After successful processing, clean up WAL entry
-                # self.wal.clear_client_data(client_id)
+                # self.data_persistance.clear(client_id)
                 
                 # logging.info(f"\033[33mMessage {batch} cleared from WAL, waiting 5s before acknowledging...\033[0m")
                 # await asyncio.sleep(5)
@@ -158,12 +163,12 @@ class ConsumerWorker:
     async def _write_to_file(self, client_id):
         """Write client_id's messages to output file"""
         try:
-            data = self.wal.get_data(client_id)
+            data = self.data_persistance.retrieve(client_id)
 
             # Write to file (async)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._write_to_file_sync, str(data))
-            self.wal.clear_client_data(client_id)
+            # self.data_persistance.clear(client_id)
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")

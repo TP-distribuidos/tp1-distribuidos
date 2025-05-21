@@ -1,295 +1,446 @@
-import os
 import json
 import logging
-from pathlib import Path
-import shutil
 import time
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional, List
 
-class WriteAheadLog:
+from common.DataPersistenceInterface import DataPersistenceInterface
+from common.StateInterpreterInterface import StateInterpreterInterface
+from common.StorageInterface import StorageInterface
+from common.FileSystemStorage import FileSystemStorage
+
+class WriteAheadLog(DataPersistenceInterface):
     """
-    Persistent logging system implementing Write-Ahead Log pattern.
-    Ensures data is durable and survives system crashes.
+    Write-Ahead Log implementation of the DataPersistence interface.
+    Provides durability through logging with checkpoint optimization.
     """
     
     STATUS_PROCESSING = "PROCESSING"
     STATUS_COMPLETED = "COMPLETED_"
-
-    LIST_CHUNK_SIZE = 1000
-
-    READ_MODE = 'r'
-    WRITE_MODE = 'w'
     LOG_FILE_EXTENSION = '.log'
-
-    def __init__(self, base_dir="/app/wal", service_name=None, parser=None):
+    CHECKPOINT_EXTENSION = '.checkpoint'
+    DEFAULT_LOG_COUNT_THRESHOLD = 3
+    DEFAULT_TIME_THRESHOLD = 3600  # 1 hour
+    
+    
+    def __init__(self, 
+                 state_interpreter: StateInterpreterInterface,
+                 storage: Optional[StorageInterface] = None,
+                 base_dir: str = "/app/persistence", 
+                 service_name: Optional[str] = None,
+                 log_count_threshold: int = DEFAULT_LOG_COUNT_THRESHOLD,
+                 time_threshold: int = DEFAULT_TIME_THRESHOLD):
         """
-        Initialize the persistent log with a directory for storing log files.
+        Initialize the Write-Ahead Log algorithm.
         
         Args:
-            base_dir (str): Base directory for storing log files
-            service_name (str, optional): Name of the service using the log
-            parser (IParser, optional): Parser implementation for handling log data
+            state_interpreter: Interpreter for data formatting/parsing
+            storage: Storage implementation (defaults to FileSystemStorage)
+            base_dir: Base directory for storing logs and checkpoints
+            service_name: Name of the service (for subdirectory)
+            log_count_threshold: Number of logs before checkpoint
+            time_threshold: Seconds between checkpoints
         """
+        # Initialize components
+        self.state_interpreter = state_interpreter
+        self.storage = storage if storage else FileSystemStorage()
+        
+        # Set up base directory
         if service_name:
             self.base_dir = Path(base_dir) / service_name
         else:
             self.base_dir = Path(base_dir)
-
-        self.base_dir.mkdir(exist_ok=True, parents=True)
-
-        if parser:
-            self.parser = parser
-        else:
-            raise ValueError("A parser implementing IParser interface must be provided")
-
-        logging.info(f"WriteAheadLog initialized at {self.base_dir}")
+            
+        self.storage.create_directory(self.base_dir)
         
-    def _get_client_dir(self, client_id):
+        # Checkpoint configuration
+        self.log_count_threshold = log_count_threshold
+        self.time_threshold = time_threshold
+        
+        # Checkpoint tracking
+        self.client_log_counts = {}  # Maps client_id -> log count since last checkpoint
+        self.last_checkpoint_time = {}  # Maps client_id -> timestamp of last checkpoint
+        
+        # Initialize tracking data
+        self._recover_tracking_info()
+        
+        logging.info(f"WriteAheadLog initialized at {self.base_dir}")
+    
+    def _get_client_dir(self, client_id: str) -> Path:
         """Get the directory for a specific client's logs"""
         client_dir = self.base_dir / str(client_id)
-        client_dir.mkdir(exist_ok=True, parents=True)
+        self.storage.create_directory(client_dir)
         return client_dir
     
-    def save_data(self, client_id, data, operation_id=None):
-        """
-        Save data with write-ahead logging to ensure durability.
-        
-        Args:
-            client_id (str): Client identifier
-            data (any): Data to be persisted (must be JSON serializable)
-            operation_id (str, optional): Unique identifier for this operation
-            
-        Returns:
-            bool: True if data was successfully persisted or already exists
-        """
+    def _get_latest_checkpoint_path(self, client_id: str) -> Optional[Path]:
+        """Get the path to the client's most recent checkpoint file"""
         client_dir = self._get_client_dir(client_id)
         
-        # Generate operation ID if not provided
-        if operation_id is None:
-            raise ValueError("operation_id must be provided")
+        # Find all checkpoint files
+        checkpoints = list(self.storage.list_files(client_dir, f"state_*{self.CHECKPOINT_EXTENSION}"))
+        
+        if not checkpoints:
+            return None
             
+        # Sort by timestamp (embedded in filename)
+        # Use the newest valid checkpoint
+        valid_checkpoints = []
+        for checkpoint in checkpoints:
+            try:
+                # Extract timestamp from filename (state_TIMESTAMP.checkpoint)
+                filename = checkpoint.name
+                timestamp_str = filename.replace("state_", "").replace(self.CHECKPOINT_EXTENSION, "")
+                timestamp = int(timestamp_str)
+                
+                # Verify the checkpoint isn't empty or corrupted
+                if self.storage.file_exists(checkpoint) and os.path.getsize(checkpoint) > 0:
+                    valid_checkpoints.append((timestamp, checkpoint))
+            except (ValueError, TypeError):
+                logging.warning(f"Invalid checkpoint filename format: {checkpoint}")
+                
+        if not valid_checkpoints:
+            return None
+            
+        # Get the most recent valid checkpoint
+        valid_checkpoints.sort(reverse=True)  # Sort by timestamp, newest first
+        return valid_checkpoints[0][1]  # Return the path
+    
+    def persist(self, client_id: str, data: Any, operation_id: str) -> bool:
+        """
+        Persist data using write-ahead logging.
+        
+        Args:
+            client_id: Client identifier
+            data: Data to persist
+            operation_id: Unique operation identifier
+            
+        Returns:
+            bool: True if successfully persisted
+        """
+        client_dir = self._get_client_dir(client_id)
+
         log_path = client_dir / f"{operation_id}{self.LOG_FILE_EXTENSION}"
         
         # Check if already processed
-        if log_path.exists():
+        if self.storage.file_exists(log_path):
             try:
-                with open(log_path, self.READ_MODE) as f:
-                    first_line = f.readline().strip()
-                    if first_line == self.STATUS_COMPLETED:
-                        logging.info(f"Data for client {client_id}, operation {operation_id} already persisted")
-                        return True
+                lines = self.storage.read_file_lines(log_path)
+                if lines and lines[0].strip() == self.STATUS_COMPLETED:
+                    logging.info(f"Data for client {client_id}, operation {operation_id} already persisted")
+                    return True
             except Exception as e:
                 logging.warning(f"Failed to read existing log file: {e}")
-                # File might be corrupted, continue with rewriting
+                # Continue with rewriting
         
         try:
-            # Write everything in a single file operation
-            with open(log_path, self.WRITE_MODE) as f:
-                # First line is status - write PROCESSING with padding to match COMPLETED length
+            # Check if we should create a checkpoint
+            self._check_checkpoint_needed(client_id)
 
-                status_line = f"{self.STATUS_PROCESSING}\n"
-                f.write(status_line)
+            # Format data using the interpreter
+            formatted_data = self.state_interpreter.format_data(data)
+
+            # First, write with PROCESSING status
+            content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
+            success = self.storage.write_file(log_path, content)
+            if not success:
+                return False
+
+            # Then, update to COMPLETED status
+            # We can use open_file directly to just update the first line
+            try:
+                with self.storage.open_file(log_path, 'r+') as f:
+                    f.write(self.STATUS_COMPLETED)
+                    f.flush()
+                    os.fsync(f.fileno())
                 
-                # Write data line by line if iterable, otherwise as single JSON
-                if isinstance(data, list) or isinstance(data, dict) and hasattr(data, '__iter__'):
-                    if isinstance(data, dict):
-                        # Handle dictionary by writing each key-value pair
-                        for key, value in data.items():
-                            f.write(json.dumps({key: value}) + "\n")
-                    else:
-                        # Process in chunks for large lists
-                        chunk_size = self.LIST_CHUNK_SIZE  # Adjust based on expected data size
-                        for i in range(0, len(data), chunk_size):
-                            chunk = data[i:i+chunk_size]
-                            for item in chunk:
-                                f.write(json.dumps(item) + "\n")
-                else:
-                    # Write as single JSON for non-iterable data
-                    f.write(json.dumps(data) + "\n")
-
-                # Remember current position at end of data
-                end_pos = f.tell()
-
-                # Go back to beginning to update status
-                f.seek(0)
-
-                # Write COMPLETED status - same length as PROCESSING
-                f.write(f"{self.STATUS_COMPLETED}\n")
-                # logging.info(f"SLEEPING 5 seconds before writing to WAL for client {client_id}, operation {operation_id}")
-                # # Sleep for 5 seconds before writing to simulate slow I/O
-                # time.sleep(5) 
-                # Go back to end of file
-                f.seek(end_pos)
+                # Update checkpoint tracking
+                self.client_log_counts[client_id] = self.client_log_counts.get(client_id, 0) + 1
+                return True
+            except Exception as e:
+                logging.error(f"Error updating status for {log_path}: {e}")
+                return False
                 
-                # Force flush to disk - only one sync operation
-                f.flush()
-                os.fsync(f.fileno())
-            
-            return True
-            
         except Exception as e:
             logging.error(f"Error persisting data for client {client_id}: {e}")
-            
-            # If the file is corrupted or incomplete, remove it
-            try:
-                if log_path.exists():
-                    os.remove(log_path)
-            except:
-                pass
-                
+            self.storage.delete_file(log_path)
             return False
     
-    def get_data(self, client_id):
+    def retrieve(self, client_id: str) -> Any:
         """
-        Retrieve persisted data for a client.
+        Retrieve data for a client by combining checkpoint and logs.
         
         Args:
-            client_id (str): Client identifier
+            client_id: Client identifier
             
         Returns:
-            dict/list or None: Retrieved data or None if no data found or not completed
+            Any: Combined data or None if not found
         """
         client_dir = self._get_client_dir(client_id)
+        checkpoint_path = self._get_latest_checkpoint_path(client_id)
         
-        all_data = {}
-        for log_file in client_dir.glob(f"*{self.LOG_FILE_EXTENSION}"):
+        # Start with checkpoint data if available
+        checkpoint_data = None
+        if checkpoint_path and self.storage.file_exists(checkpoint_path):
             try:
-                with open(log_file, self.READ_MODE) as f:
-                    lines = f.readlines()
-                    result = self.parser.parse(lines)
-                    batch_id, batch_data = result
-                    if batch_id is not None:
-                        all_data[batch_id] = batch_data
-            except Exception as e:
-                logging.warning(f"Skipping invalid log {log_file}: {e}")
-                continue
+                checkpoint_content = self.storage.read_file(checkpoint_path)
+                parsed_checkpoint = self.state_interpreter.parse_data(checkpoint_content)
                 
-        return all_data if all_data else None
+                # Handle different checkpoint formats
+                if isinstance(parsed_checkpoint, dict) and "data" in parsed_checkpoint:
+                    checkpoint_data = parsed_checkpoint["data"]
+                else:
+                    checkpoint_data = parsed_checkpoint
+                    
+            except Exception as e:
+                logging.warning(f"Error loading checkpoint {checkpoint_path} for client {client_id}: {e}")
+
+        # Process any log files
+        log_data = {}
+        for log_path in self.storage.list_files(client_dir, f"*{self.LOG_FILE_EXTENSION}"):
+            try:
+                lines = self.storage.read_file_lines(log_path)
+                
+                if not lines or lines[0].strip() != self.STATUS_COMPLETED:
+                    continue
+                
+                # Get log content (skip status line)
+                log_content = "".join(lines[1:])
+                
+                # Parse the content
+                parsed_data = self.state_interpreter.parse_data(log_content)
+                
+                # Store with operation ID
+                operation_id = log_path.stem
+                log_data[operation_id] = parsed_data
+                
+            except Exception as e:
+                logging.warning(f"Error processing log {log_path}: {e}")
+                continue
+        
+        # If no data found
+        if not log_data and checkpoint_data is None:
+            return None
+            
+        # If we only have a checkpoint
+        if not log_data:
+            return checkpoint_data
+            
+        # If we only have logs
+        if checkpoint_data is None:
+            return self.state_interpreter.merge_data(log_data)
+            
+        # If we have both checkpoint and logs
+        # First put checkpoint in the merged data
+        merged_data = {'checkpoint': checkpoint_data}
+        merged_data.update(log_data)
+        
+        # Let the interpreter merge everything
+        return self.state_interpreter.merge_data(merged_data)
     
-    def clear_client_data(self, client_id):
+    def clear(self, client_id: str) -> bool:
         """
-        Remove all persisted data for a client.
+        Clear all data for a client.
         
         Args:
-            client_id (str): Client identifier
+            client_id: Client identifier
             
         Returns:
-            bool: True if data was successfully cleared
+            bool: True if successfully cleared
         """
         client_dir = self._get_client_dir(client_id)
-        if not client_dir.exists():
-            return True
-            
+        
+        # Reset tracking info
+        self.client_log_counts.pop(client_id, None)
+        self.last_checkpoint_time.pop(client_id, None)
+        
         try:
-            shutil.rmtree(client_dir)
+            # Delete all files in the client directory
+            for file_path in self.storage.list_files(client_dir):
+                self.storage.delete_file(file_path)
             return True
         except Exception as e:
             logging.error(f"Error clearing data for client {client_id}: {e}")
             return False
     
-    def has_completed_operation(self, client_id, operation_id):
+    def _check_checkpoint_needed(self, client_id: str) -> None:
         """
-        Check if an operation has been completed for a client.
+        Check if a checkpoint is needed and create one if necessary.
         
         Args:
-            client_id (str): Client identifier
-            operation_id (str): Operation identifier
+            client_id: Client identifier
+        """
+        current_time = time.time()
+        log_count = self.client_log_counts.get(client_id, 0)
+        last_checkpoint = self.last_checkpoint_time.get(client_id, 0)
+        
+        time_elapsed = current_time - last_checkpoint
+        
+        if (log_count >= self.log_count_threshold) or \
+           (time_elapsed >= self.time_threshold and log_count > 0):
+            logging.info(f"Creating checkpoint for client {client_id}: {log_count} logs, {time_elapsed:.1f}s elapsed")
+            self._create_checkpoint(client_id)
+    
+    def _create_checkpoint(self, client_id: str) -> bool:
+        """
+        Create a checkpoint from logs for a client.
+        
+        Args:
+            client_id: Client identifier
             
         Returns:
-            bool: True if operation exists and is marked as COMPLETED
+            bool: True if checkpoint created successfully
+        """
+        # Get all logs
+        log_data = self._read_all_logs(client_id)
+        
+        if not log_data:
+            logging.info(f"No log data found for client {client_id}, skipping checkpoint")
+            return False
+        
+        merged_data = self.state_interpreter.merge_data(log_data)
+        
+        log_files_to_delete = list(log_data.keys())
+
+        # Include metadata in checkpoint about which logs were processed
+        checkpoint_with_manifest = {
+            "data": merged_data,
+            "processed_logs": log_files_to_delete
+        }
+        formatted_checkpoint = self.state_interpreter.format_data(checkpoint_with_manifest)
+        
+        # Save checkpoint
+        return self._save_checkpoint(client_id, formatted_checkpoint, log_files_to_delete)
+    
+    def _read_all_logs(self, client_id: str) -> Dict[str, Any]:
+        """
+        Read all logs for a client.
+        
+        Args:
+            client_id: Client identifier
+            
+        Returns:
+            Dict[str, Any]: Dictionary mapping operation IDs to parsed data
         """
         client_dir = self._get_client_dir(client_id)
-        log_path = client_dir / f"{operation_id}{self.LOG_FILE_EXTENSION}"
+        checkpoint_path = self._get_latest_checkpoint_path(client_id)
+        already_processed_logs = []
         
-        if not log_path.exists():
-            return False
+        # Get list of logs already processed in checkpoint
+        if checkpoint_path and self.storage.file_exists(checkpoint_path):
+            try:
+                checkpoint_content = self.storage.read_file(checkpoint_path)
+                checkpoint_data = self.state_interpreter.parse_data(checkpoint_content)
+                if isinstance(checkpoint_data, dict) and "processed_logs" in checkpoint_data:
+                    already_processed_logs = checkpoint_data["processed_logs"]
+            except Exception:
+                pass
+        
+        # Only process logs that weren't in the manifest
+        log_data = {}
+        for log_path in self.storage.list_files(client_dir, f"*{self.LOG_FILE_EXTENSION}"):
+            operation_id = log_path.stem
+            if operation_id in already_processed_logs:
+                continue
+            try:
+                lines = self.storage.read_file_lines(log_path)
+                
+                if not lines or lines[0].strip() != self.STATUS_COMPLETED:
+                    continue
+                
+                # Get log content (skip status line)
+                log_content = "".join(lines[1:])
+                
+                # Parse the content
+                parsed_data = self.state_interpreter.parse_data(log_content)
+                
+                # Store with operation ID
+                operation_id = log_path.stem
+                log_data[operation_id] = parsed_data
+                
+            except Exception as e:
+                logging.warning(f"Error processing log {log_path}: {e}")
+                
+        return log_data
+    
+    def _save_checkpoint(self, client_id: str, checkpoint_data: str, log_files_to_delete: List[str]) -> bool:
+        """
+        Save a checkpoint and clean up logs using the timestamp-based approach.
+        
+        Args:
+            client_id: Client identifier
+            checkpoint_data: Formatted checkpoint data
+            log_files_to_delete: List of log file names to delete
             
+        Returns:
+            bool: True if checkpoint saved successfully
+        """
+        client_dir = self._get_client_dir(client_id)
+        
+        # Generate a timestamped checkpoint filename
+        timestamp = int(time.time())
+        new_checkpoint_path = client_dir / f"state_{timestamp}{self.CHECKPOINT_EXTENSION}"
+        
         try:
-            with open(log_path, self.READ_MODE) as f:
-                first_line = f.readline().strip()
-                return first_line == self.STATUS_COMPLETED
-        except FileNotFoundError:
-            return False
-        except IOError as e:
-            logging.warning(f"IO error checking operation {operation_id}: {e}")
-            return False
+            # Write new checkpoint file
+            if not self.storage.write_file(new_checkpoint_path, checkpoint_data):
+                logging.error(f"Failed to write checkpoint file for client {client_id}")
+                return False
+            
+            # Find and delete any older checkpoint files
+            for old_checkpoint in self.storage.list_files(client_dir, f"state_*{self.CHECKPOINT_EXTENSION}"):
+                if old_checkpoint != new_checkpoint_path:
+                    logging.info(f"Removing old checkpoint: {old_checkpoint}")
+                    self.storage.delete_file(old_checkpoint)
+            
+            # Update tracking info
+            self.last_checkpoint_time[client_id] = timestamp
+            self.client_log_counts[client_id] = 0
+            
+            # Delete log files
+            for log_name in log_files_to_delete:
+                log_path = client_dir / f"{log_name}{self.LOG_FILE_EXTENSION}"
+                self.storage.delete_file(log_path)
+                
+            logging.info(f"Checkpoint created for client {client_id}, {len(log_files_to_delete)} logs processed")
+            return True
+            
         except Exception as e:
-            logging.error(f"Unexpected error checking operation {operation_id}: {e}")
+            logging.error(f"Error saving checkpoint for client {client_id}: {e}")
+            # Try to delete the new checkpoint if it was created but there was a subsequent error
+            if self.storage.file_exists(new_checkpoint_path):
+                self.storage.delete_file(new_checkpoint_path)
             return False
     
-    def recover_state(self):
-        """
-        Recover all completed operations from log files.
-        
-        Returns:
-            dict: Dictionary mapping client_ids to their recovered data
-        """
-        recovered_data = {}
-        
-        # Process client directory by client directory to limit memory usage
-        for client_dir in self.base_dir.glob("*"):
+    def _recover_tracking_info(self) -> None:
+        """Initialize checkpoint tracking information and clean up stale checkpoints"""
+        for client_dir in self.storage.list_files(self.base_dir):
             if not client_dir.is_dir():
                 continue
                 
             client_id = client_dir.name
-            client_data = self._recover_client_data(client_id, client_dir)
-            if client_data:
-                recovered_data[client_id] = client_data
-                    
-        return recovered_data
-
-    def _recover_client_data(self, client_id, client_dir):
-        """Helper method to recover data for a single client"""
-        client_data = []
-        
-        # Process log files one by one
-        for log_file in client_dir.glob(f"*{self.LOG_FILE_EXTENSION}"):
-            try:
-                with open(log_file, self.READ_MODE) as f:
-                    lines = f.readlines()
-                    
-                    if not lines or lines[0].strip() != self.STATUS_COMPLETED:
-                        self._safely_remove_file(log_file)
-                        logging.warning(f"Removed incomplete log file: {log_file}")
-                        continue
-                    
-                    # Process data lines
-                    for line in lines[1:]:
-                        if line.strip():  # Skip empty lines
-                            client_data.append(json.loads(line))
-            except Exception as e:
-                logging.warning(f"Error processing log {log_file}, removing: {e}")
-                self._safely_remove_file(log_file)
-        
-        return client_data
-
-    def _safely_remove_file(self, file_path):
-        """Safely remove a file with appropriate error handling"""
-        try:
-            if file_path.exists():
-                os.remove(file_path)
-                return True
-        except Exception as e:
-            logging.warning(f"Failed to remove file {file_path}: {e}")
-            return False
-
-    def list_operations(self, client_id):
-        """
-        List all operations stored for a client.
-        
-        Args:
-            client_id (str): Client identifier
             
-        Returns:
-            dict: Dictionary mapping operation IDs to their completion status
-        """
-        client_dir = self._get_client_dir(client_id)
-        if not client_dir.exists():
-            return {}
+            # Find the latest valid checkpoint and clean up any others
+            latest_checkpoint = self._get_latest_checkpoint_path(client_id)
             
-        operations = {}
-        for log_file in client_dir.glob(f"*{self.LOG_FILE_EXTENSION}"):
-            operation_id = log_file.stem  # Get filename without extension
-            is_completed = self.has_completed_operation(client_id, operation_id)
-            operations[operation_id] = is_completed
+            # Delete any other checkpoints
+            for checkpoint in self.storage.list_files(client_dir, f"state_*{self.CHECKPOINT_EXTENSION}"):
+                if checkpoint != latest_checkpoint:
+                    logging.info(f"Removing stale checkpoint during recovery: {checkpoint}")
+                    self.storage.delete_file(checkpoint)
             
-        return operations
+            # Count logs
+            log_count = len(list(self.storage.list_files(client_dir, f"*{self.LOG_FILE_EXTENSION}")))
+            self.client_log_counts[client_id] = log_count
+            
+            # Get checkpoint timestamp
+            if latest_checkpoint and self.storage.file_exists(latest_checkpoint):
+                try:
+                    # Extract timestamp from filename
+                    filename = latest_checkpoint.name
+                    timestamp_str = filename.replace("state_", "").replace(self.CHECKPOINT_EXTENSION, "")
+                    self.last_checkpoint_time[client_id] = int(timestamp_str)
+                except Exception:
+                    self.last_checkpoint_time[client_id] = 0
+            else:
+                self.last_checkpoint_time[client_id] = 0

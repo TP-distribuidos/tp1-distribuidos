@@ -45,7 +45,6 @@ services:
       - CONSUMER_QUEUE=test_queue
       - SENTINEL_PORT=9002
       - OUTPUT_FILE=/app/output/received_messages.txt
-      - WAL_DIR=/app/wal
     ports:
       - "9002:9002"
     depends_on:
@@ -55,7 +54,7 @@ services:
       - ./consumer:/app
       - ./rabbitmq:/app/rabbitmq
       - ./common:/app/common
-      - ./consumer/wal:/app/wal
+      - ./consumer/persistence:/app/persistence
 
   sentinel1:
     build:

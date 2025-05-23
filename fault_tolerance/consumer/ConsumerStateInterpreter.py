@@ -103,22 +103,29 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
     
     def merge_data(self, data_entries: Dict[str, Any]) -> Any:
         """
-        Merge multiple data entries into a single state.
-        Used for checkpointing or combining multiple logs.
+        Merge multiple data entries into a single state, accumulating numeric content values.
         
         Args:
             data_entries: Dictionary mapping entry IDs to their data
             
         Returns:
-            Any: Merged data representing combined state
+            Any: Merged data representing combined state with accumulated content
         """
         merged_data = {}
         seen_batches = set()
+        content_sum = 0  # Initialize accumulator for content
         
         # Handle special case for checkpoint data
         if "checkpoint" in data_entries:
             checkpoint_data = data_entries.pop("checkpoint")
             merged_data.update(checkpoint_data)
+            
+            # Add checkpoint content to sum if it exists
+            if "content" in checkpoint_data:
+                try:
+                    content_sum += float(checkpoint_data["content"])
+                except (ValueError, TypeError):
+                    pass  # Skip if content is not numeric
             
             # Collect batch IDs from checkpoint
             if "_batch_id" in checkpoint_data:
@@ -137,10 +144,20 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
             if "_batch_id" in entry_data:
                 seen_batches.add(entry_data["_batch_id"])
                 
-            # Update merged data with this entry's data
+            # Add content to sum if it exists
+            if "content" in entry_data:
+                try:
+                    content_sum += float(entry_data["content"])
+                except (ValueError, TypeError):
+                    pass  # Skip if content is not numeric
+                
+            # Update merged data with this entry's data (except content)
             for key, value in entry_data.items():
-                if key != "_batch_id":  # Don't duplicate batch IDs in the output
+                if key != "_batch_id" and key != "content":  # Don't copy content or batch IDs
                     merged_data[key] = value
+        
+        # Store the accumulated content sum
+        merged_data["content"] = content_sum
         
         # Store all seen batches as a list
         if seen_batches:

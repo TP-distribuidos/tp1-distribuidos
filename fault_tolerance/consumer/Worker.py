@@ -168,7 +168,7 @@ class ConsumerWorker:
             # Write to file (async)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._write_to_file_sync, str(data))
-            # self.data_persistance.clear(client_id)
+            self.data_persistance.clear(client_id)
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")

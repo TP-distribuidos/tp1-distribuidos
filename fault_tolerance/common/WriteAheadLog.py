@@ -1,4 +1,4 @@
-import json
+import time
 import logging
 import time
 import os
@@ -146,6 +146,9 @@ class WriteAheadLog(DataPersistenceInterface):
             if not success:
                 return False
 
+            logging.info("TEST POINT 1: Kill process now to test recovery of PROCESSING state logs")
+            time.sleep(5)  # Wait for manual testing
+
             # Then, update to COMPLETED status
             # We can use open_file directly to just update the first line
             try:
@@ -153,6 +156,9 @@ class WriteAheadLog(DataPersistenceInterface):
                     f.write(self.STATUS_COMPLETED)
                     f.flush()
                     os.fsync(f.fileno())
+                
+                logging.info("TEST POINT 2: Kill process now to test recovery after log completion")
+                time.sleep(5)  # Wait for manual testing
                 
                 # Update checkpoint tracking
                 self.client_log_counts[client_id] = self.client_log_counts.get(client_id, 0) + 1
@@ -253,7 +259,7 @@ class WriteAheadLog(DataPersistenceInterface):
         # Reset tracking info
         self.client_log_counts.pop(client_id, None)
         self.last_checkpoint_time.pop(client_id, None)
-        
+                
         try:
             # Delete all files in the client directory
             for file_path in self.storage.list_files(client_dir):
@@ -283,7 +289,7 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def _create_checkpoint(self, client_id: str) -> bool:
         """
-        Create a checkpoint from logs for a client.
+        Create a checkpoint by merging existing checkpoint and new logs.
         
         Args:
             client_id: Client identifier
@@ -291,14 +297,36 @@ class WriteAheadLog(DataPersistenceInterface):
         Returns:
             bool: True if checkpoint created successfully
         """
-        # Get all logs
+        # Get current checkpoint data if it exists
+        checkpoint_path = self._get_latest_checkpoint_path(client_id)
+        checkpoint_data = None
+        
+        if checkpoint_path and self.storage.file_exists(checkpoint_path):
+            try:
+                checkpoint_content = self.storage.read_file(checkpoint_path)
+                parsed_checkpoint = self.state_interpreter.parse_data(checkpoint_content)
+                if isinstance(parsed_checkpoint, dict) and "data" in parsed_checkpoint:
+                    checkpoint_data = parsed_checkpoint["data"]
+                else:
+                    checkpoint_data = parsed_checkpoint
+            except Exception as e:
+                logging.warning(f"Error reading existing checkpoint for {client_id}: {e}")
+        
+        # Get all new logs
         log_data = self._read_all_logs(client_id)
         
-        if not log_data:
-            logging.info(f"No log data found for client {client_id}, skipping checkpoint")
+        if not log_data and checkpoint_data is None:
+            logging.info(f"No data found for client {client_id}, skipping checkpoint")
             return False
         
-        merged_data = self.state_interpreter.merge_data(log_data)
+        # Merge checkpoint with logs
+        if checkpoint_data is None:
+            merged_data = self.state_interpreter.merge_data(log_data)
+        else:
+            # Include checkpoint in the merge
+            data_to_merge = {'checkpoint': checkpoint_data}
+            data_to_merge.update(log_data)
+            merged_data = self.state_interpreter.merge_data(data_to_merge)
         
         log_files_to_delete = list(log_data.keys())
 
@@ -387,6 +415,10 @@ class WriteAheadLog(DataPersistenceInterface):
                 logging.error(f"Failed to write checkpoint file for client {client_id}")
                 return False
             
+            logging.info("TEST POINT 3: Kill process now to test checkpoint creation before old checkpoint deletion")
+            time.sleep(5)  # Wait for manual testing
+        
+            
             # Find and delete any older checkpoint files
             for old_checkpoint in self.storage.list_files(client_dir, f"state_*{self.CHECKPOINT_EXTENSION}"):
                 if old_checkpoint != new_checkpoint_path:
@@ -397,6 +429,9 @@ class WriteAheadLog(DataPersistenceInterface):
             self.last_checkpoint_time[client_id] = timestamp
             self.client_log_counts[client_id] = 0
             
+            logging.info("TEST POINT 4: Kill process now to test recovery with new checkpoint but undeleted logs")
+            time.sleep(5)  # Wait for manual testing
+
             # Delete log files
             for log_name in log_files_to_delete:
                 log_path = client_dir / f"{log_name}{self.LOG_FILE_EXTENSION}"
@@ -412,35 +447,82 @@ class WriteAheadLog(DataPersistenceInterface):
                 self.storage.delete_file(new_checkpoint_path)
             return False
     
+    def _clean_checkpoint_logs(self, client_dir: Path, checkpoint_path: Path) -> None:
+        """
+        Clean up logs that are associated with a specific checkpoint.
+        
+        Args:
+            client_dir: Directory containing the logs
+            checkpoint_path: Path to the checkpoint file
+        """
+        try:
+            # Read the checkpoint to get its processed logs
+            checkpoint_content = self.storage.read_file(checkpoint_path)
+            checkpoint_data = self.state_interpreter.parse_data(checkpoint_content)
+            if isinstance(checkpoint_data, dict) and "processed_logs" in checkpoint_data:
+                # Delete any logs that were processed in this checkpoint
+                for log_name in checkpoint_data["processed_logs"]:
+                    log_path = client_dir / f"{log_name}{self.LOG_FILE_EXTENSION}"
+                    if self.storage.file_exists(log_path):
+                        logging.info(f"Removing processed log during recovery: {log_path}")
+                        self.storage.delete_file(log_path)
+        except Exception as e:
+            logging.error(f"Error cleaning logs for checkpoint {checkpoint_path}: {e}")
+
     def _recover_tracking_info(self) -> None:
-        """Initialize checkpoint tracking information and clean up stale checkpoints"""
+        """Initialize checkpoint tracking information and clean up stale checkpoints/logs"""
         for client_dir in self.storage.list_files(self.base_dir):
             if not client_dir.is_dir():
                 continue
                 
             client_id = client_dir.name
+            logging.info(f"Starting recovery for client {client_id}")
             
-            # Find the latest valid checkpoint and clean up any others
-            latest_checkpoint = self._get_latest_checkpoint_path(client_id)
-            
-            # Delete any other checkpoints
+            # Get all checkpoints sorted by timestamp (newest first)
+            checkpoints = []
             for checkpoint in self.storage.list_files(client_dir, f"state_*{self.CHECKPOINT_EXTENSION}"):
-                if checkpoint != latest_checkpoint:
-                    logging.info(f"Removing stale checkpoint during recovery: {checkpoint}")
-                    self.storage.delete_file(checkpoint)
+                try:
+                    # Extract timestamp from filename
+                    filename = checkpoint.name
+                    timestamp_str = filename.replace("state_", "").replace(self.CHECKPOINT_EXTENSION, "")
+                    timestamp = int(timestamp_str)
+                    if self.storage.file_exists(checkpoint) and os.path.getsize(checkpoint) > 0:
+                        checkpoints.append((timestamp, checkpoint))
+                except (ValueError, TypeError):
+                    logging.warning(f"Invalid checkpoint filename format: {checkpoint}")
             
-            # Count logs
+            # Sort checkpoints by timestamp (newest first)
+            checkpoints.sort(reverse=True)
+            
+            if not checkpoints:
+                # No checkpoints found, just count logs
+                logging.info(f"No checkpoints found for client {client_id}")
+                log_count = len(list(self.storage.list_files(client_dir, f"*{self.LOG_FILE_EXTENSION}")))
+                self.client_log_counts[client_id] = log_count
+                self.last_checkpoint_time[client_id] = 0
+                continue
+            
+            # Process the newest checkpoint
+            newest_timestamp, newest_checkpoint = checkpoints[0]
+            logging.info(f"Found latest checkpoint for client {client_id}: {newest_checkpoint}")
+            
+            # Clean up logs associated with the newest checkpoint
+            self._clean_checkpoint_logs(client_dir, newest_checkpoint)
+            
+            # Delete any older checkpoints and their associated logs
+            for _, old_checkpoint in checkpoints[1:]:
+                logging.info(f"Processing old checkpoint for removal: {old_checkpoint}")
+                # First clean up its logs
+                self._clean_checkpoint_logs(client_dir, old_checkpoint)
+                # Then delete the checkpoint itself
+                logging.info(f"Removing old checkpoint: {old_checkpoint}")
+                self.storage.delete_file(old_checkpoint)
+            
+            # Update tracking info
+            self.last_checkpoint_time[client_id] = newest_timestamp
+            
+            # Count remaining logs (these are logs created after the newest checkpoint)
             log_count = len(list(self.storage.list_files(client_dir, f"*{self.LOG_FILE_EXTENSION}")))
             self.client_log_counts[client_id] = log_count
             
-            # Get checkpoint timestamp
-            if latest_checkpoint and self.storage.file_exists(latest_checkpoint):
-                try:
-                    # Extract timestamp from filename
-                    filename = latest_checkpoint.name
-                    timestamp_str = filename.replace("state_", "").replace(self.CHECKPOINT_EXTENSION, "")
-                    self.last_checkpoint_time[client_id] = int(timestamp_str)
-                except Exception:
-                    self.last_checkpoint_time[client_id] = 0
-            else:
-                self.last_checkpoint_time[client_id] = 0
+            logging.info(f"Recovery completed for client {client_id}. Found {log_count} new logs after checkpoint")

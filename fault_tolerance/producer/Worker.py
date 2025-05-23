@@ -102,7 +102,7 @@ class ProducerWorker:
             message = {
                 "batch": batch_number,
                 "timestamp": time.time(),
-                "content": lorem.paragraph()
+                "content": 1
             }
             
             # Send the message

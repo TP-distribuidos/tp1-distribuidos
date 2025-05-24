@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
 from typing import Dict, Any, List
-from fault_tolerance.common.StateInterpreterInterface import StateInterpreterInterface
+from common.data_persistance.StateInterpreterInterface import StateInterpreterInterface
 
 class TopStateInterpreter(StateInterpreterInterface):
     """

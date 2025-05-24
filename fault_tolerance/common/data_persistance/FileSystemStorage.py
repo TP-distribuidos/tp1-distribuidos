@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from typing import List, Union, BinaryIO, TextIO
 import logging
-from common.StorageInterface import StorageInterface
+from common.data_persistance.StorageInterface import StorageInterface
 
 class FileSystemStorage(StorageInterface):
     """

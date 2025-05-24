@@ -1,5 +1,5 @@
 import json
-from common.StateInterpreterInterface import StateInterpreterInterface
+from common.data_persistance.StateInterpreterInterface import StateInterpreterInterface
 from typing import Any, Dict
 
 class ConsumerStateInterpreter(StateInterpreterInterface):
@@ -37,14 +37,28 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         
         # Handle dictionaries (most common case)
         if isinstance(data, dict):
-            for key, value in data.items():
-                formatted_lines.append(json.dumps({key: value}))
+            # Make a copy to avoid modifying the original
+            data_copy = data.copy()
+            
+            # Ensure batch is consistently stored as a string
+            if 'batch' in data_copy and data_copy['batch'] is not None:
+                data_copy['batch'] = str(data_copy['batch'])
+                
+            # Store the full dictionary as one JSON object
+            formatted_lines.append(json.dumps(data_copy))
         # Handle lists of items
         elif isinstance(data, list):
+            # Store each item as a separate line
             for item in data:
-                formatted_lines.append(json.dumps(item))
+                if isinstance(item, dict) and 'batch' in item and item['batch'] is not None:
+                    item_copy = item.copy()
+                    item_copy['batch'] = str(item_copy['batch'])
+                    formatted_lines.append(json.dumps(item_copy))
+                else:
+                    formatted_lines.append(json.dumps(item))
         # Handle single items
         else:
+            # For any other type, just JSON serialize it
             formatted_lines.append(json.dumps(data))
             
         return "\n".join(formatted_lines)
@@ -62,9 +76,13 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         # First try to parse as a single JSON object (checkpoint case)
         try:
             data = json.loads(content)
-            if isinstance(data, dict) and "data" in data and "processed_logs" in data:
-                # This is a checkpoint, return the entire checkpoint data
-                return data
+            if isinstance(data, dict):
+                # Handle new checkpoint format
+                if "data" in data and isinstance(data["data"], str) and "processed_batch_ids" in data:
+                    return data
+                # Handle old checkpoint format
+                elif "data" in data and "processed_logs" in data:
+                    return data
         except json.JSONDecodeError:
             # Not a single JSON object, continue with line-by-line parsing
             pass
@@ -85,7 +103,10 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 if isinstance(item, dict):
                     # Extract batch ID if present
                     if "batch" in item:
-                        batch_id = item["batch"]
+                        # Ensure batch is stored as a string for consistency
+                        batch_id = str(item["batch"])
+                        item = item.copy()  # Make a copy to avoid modifying the original
+                        item["batch"] = batch_id
                     
                     # Add all items to parsed data
                     for key, value in item.items():
@@ -104,46 +125,89 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
     def merge_data(self, data_entries: Dict[str, Any]) -> Any:
         """
         Merge multiple data entries into a single state.
-        Used for checkpointing or combining multiple logs.
+        Used for checkpointing or combining logs.
         
         Args:
             data_entries: Dictionary mapping entry IDs to their data
             
         Returns:
-            Any: Merged data representing combined state
+            Any: Merged data representing combined state - focused on complete lorem ipsum
         """
-        merged_data = {}
-        seen_batches = set()
+        # New format: We'll store the complete sequences of lorem text as one unit
+        # and track the processed batch IDs separately
+        processed_batch_ids = set()
+        batch_contents = {}
+        full_content = ""
         
-        # Handle special case for checkpoint data
-        if "checkpoint" in data_entries:
-            checkpoint_data = data_entries.pop("checkpoint")
-            merged_data.update(checkpoint_data)
-            
-            # Collect batch IDs from checkpoint
-            if "_batch_id" in checkpoint_data:
-                seen_batches.add(checkpoint_data["_batch_id"])
+        # Check if we already have a full content entry from a previous checkpoint
+        if "_full_content_entry" in data_entries:
+            entry = data_entries.get("_full_content_entry")
+            if isinstance(entry, dict) and "content" in entry:
+                full_content = entry.get("content", "")
+                
+        # Check for processed batch IDs from a previous checkpoint
+        if "_processed_batch_ids" in data_entries:
+            batch_id_list = data_entries.get("_processed_batch_ids")
+            if isinstance(batch_id_list, list):
+                for batch_id in batch_id_list:
+                    processed_batch_ids.add(str(batch_id))
         
-        # Process all other entries
+        # Process all regular entries
         for op_id, entry_data in data_entries.items():
-            if not entry_data:
+            # Skip special fields
+            if op_id in ("_full_content_entry", "_processed_batch_ids"):
                 continue
                 
-            # Skip batches we've already processed
-            if "_batch_id" in entry_data and entry_data["_batch_id"] in seen_batches:
+            if not isinstance(entry_data, dict) or not entry_data:
                 continue
                 
-            # Add this batch to seen batches
-            if "_batch_id" in entry_data:
-                seen_batches.add(entry_data["_batch_id"])
+            # Track batch information
+            batch = entry_data.get("batch")
+            if batch:
+                # Convert batch to int if it's a digit string
+                batch_int = batch
+                if isinstance(batch, str) and batch.isdigit():
+                    batch_int = int(batch)
                 
-            # Update merged data with this entry's data
-            for key, value in entry_data.items():
-                if key != "_batch_id":  # Don't duplicate batch IDs in the output
-                    merged_data[key] = value
+                # Save the processed batch ID
+                processed_batch_ids.add(str(batch))
+                
+                # Save content by batch number for ordering
+                content = entry_data.get("content", "")
+                if content and content != "Part of combined content":
+                    batch_contents[batch_int] = content
         
-        # Store all seen batches as a list
-        if seen_batches:
-            merged_data["_batch_ids"] = list(seen_batches)
+        # Combine content in correct batch order
+        if batch_contents:
+            sorted_batches = sorted(batch_contents.keys())
+            combined_content = ""
+            for batch in sorted_batches:
+                combined_content += batch_contents[batch] + " "
+            full_content = combined_content.strip()
+        
+        # Construct the new merged data format
+        merged_data = {}
+        
+        # Store each entry by operation ID as before (needed for WAL operations)
+        for op_id, entry_data in data_entries.items():
+            merged_data[op_id] = entry_data
+            
+        # Add our new summary fields
+        merged_data["_processed_batch_ids"] = list(processed_batch_ids)
+        merged_data["_full_content"] = full_content
+        
+        # Add legacy fields for backward compatibility
+        batch_ids = []
+        for id in processed_batch_ids:
+            try:
+                if isinstance(id, str) and id.isdigit():
+                    batch_ids.append(int(id))
+                elif isinstance(id, int):
+                    batch_ids.append(id)
+            except (ValueError, TypeError):
+                pass
+        
+        if batch_ids:
+            merged_data["_last_batch"] = max(batch_ids)
             
         return merged_data

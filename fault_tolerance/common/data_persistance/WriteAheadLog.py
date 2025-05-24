@@ -15,9 +15,10 @@ class WriteAheadLog(DataPersistenceInterface):
     
     This class implements a durable logging mechanism that:
     1. Writes data to log files before processing
-    2. Keeps all logs for transparency and debugging
-    3. Creates checkpoints after every 3 logs
-    4. Provides recovery capabilities
+    2. Creates checkpoints after every 3 logs
+    3. Combines checkpoint with new logs for better efficiency
+    4. Deletes old logs and checkpoints after incorporating them into a new checkpoint
+    5. Provides recovery capabilities
     
     It uses:
     - StateInterpreterInterface for formatting/parsing data
@@ -105,7 +106,8 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def _create_checkpoint(self, client_id: str) -> bool:
         """
-        Create a checkpoint for a client by merging all existing logs.
+        Create a checkpoint for a client by merging the latest checkpoint (if any) with recent logs.
+        The old checkpoint is deleted after successful creation of the new one.
         
         Args:
             client_id: Client identifier
@@ -116,15 +118,47 @@ class WriteAheadLog(DataPersistenceInterface):
         client_dir = self._get_client_dir(client_id)
         
         try:
+            # Get latest checkpoint (if any)
+            latest_checkpoint = self._get_latest_checkpoint(client_dir)
+            
             # Get all log files
             log_files = self._get_all_logs(client_dir)
             if not log_files:
                 logging.warning(f"No logs found for client {client_id}, skipping checkpoint creation")
                 return False
-                
-            # Load all log entries
-            log_entries = []
             
+            # Items to merge - will include checkpoint data and logs
+            merge_items = []
+            
+            # First, try to get the latest checkpoint data if it exists
+            if latest_checkpoint:
+                try:
+                    # Read checkpoint content
+                    content = self.storage.read_file(latest_checkpoint)
+                    
+                    # Skip the status line
+                    content_lines = content.splitlines()
+                    if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
+                        # Parse the checkpoint data
+                        checkpoint_content = "\n".join(content_lines[1:])
+                        parsed_data = self.state_interpreter.parse_data(checkpoint_content)
+                        
+                        # Handle both checkpoint formats
+                        if isinstance(parsed_data, dict):
+                            # New format with direct messages_id and content
+                            if "messages_id" in parsed_data and "content" in parsed_data:
+                                merge_items.append(parsed_data)
+                                logging.info(f"Found existing checkpoint {latest_checkpoint.name} with {len(parsed_data.get('messages_id', []))} messages")
+                            # Legacy format with data wrapper
+                            elif "data" in parsed_data:
+                                checkpoint_data = parsed_data["data"]
+                                if isinstance(checkpoint_data, dict):
+                                    merge_items.append(checkpoint_data)
+                                    logging.info(f"Found existing checkpoint {latest_checkpoint.name} with {len(checkpoint_data.get('messages_id', []))} messages (legacy format)")
+                except Exception as e:
+                    logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
+            
+            # Process the new log entries
             for log_file in log_files:
                 try:
                     # Read the log content
@@ -139,13 +173,15 @@ class WriteAheadLog(DataPersistenceInterface):
                     if len(content_lines) > 1:
                         data_content = "\n".join(content_lines[1:])
                         parsed_data = self.state_interpreter.parse_data(data_content)
-                        # Add to log entries
-                        log_entries.append(parsed_data)
+                        # Add to merge items
+                        merge_items.append(parsed_data)
+                        logging.debug(f"Added log {log_file.name} to checkpoint for client {client_id}")
                 except Exception as e:
                     logging.warning(f"Error processing log file {log_file} for checkpoint: {e}")
                     
-            # If no valid logs, skip checkpoint
-            if not log_entries:
+            # If no valid items to merge, skip checkpoint
+            if not merge_items:
+                logging.warning(f"No valid items to merge for checkpoint, client {client_id}")
                 return False
                 
             # Create checkpoint
@@ -153,22 +189,34 @@ class WriteAheadLog(DataPersistenceInterface):
             checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
             
             # Use state interpreter to create merged representation
-            merged_data = self.state_interpreter.merge_data(log_entries)
+            merged_data = self.state_interpreter.merge_data(merge_items)
             
-            # Format the checkpoint data - only include merged data
-            formatted_data = self.state_interpreter.format_data({
-                "data": merged_data
-            })
+            # Format the checkpoint data - directly use the merged data without any wrapper
+            formatted_data = self.state_interpreter.format_data(merged_data)
             
             # Write checkpoint file
             checkpoint_content = f"{self.STATUS_COMPLETED}\n{formatted_data}"
             success = self.storage.write_file(checkpoint_path, checkpoint_content)
             
             if success:
-                logging.info(f"Created checkpoint for client {client_id} with {len(log_entries)} log entries")
+                logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(merge_items)} items")
                 
-                # Do not delete logs to keep all history for debugging
-                logging.info(f"Keeping all logs for client {client_id} for debugging purposes")
+                # Delete old checkpoint since we've incorporated its data into the new one
+                if latest_checkpoint:
+                    try:
+                        self.storage.delete_file(latest_checkpoint)
+                        logging.info(f"Deleted old checkpoint {latest_checkpoint.name}")
+                    except Exception as e:
+                        logging.warning(f"Error deleting old checkpoint {latest_checkpoint}: {e}")
+                
+                # Now clean up log files that are included in the checkpoint
+                # This is safe because their data is now in the checkpoint
+                for log_file in log_files:
+                    try:
+                        self.storage.delete_file(log_file)
+                        logging.info(f"Deleted log file {log_file.name} after checkpoint creation")
+                    except Exception as e:
+                        logging.warning(f"Error deleting log file {log_file}: {e}")
                 
                 return True
             else:
@@ -291,24 +339,38 @@ class WriteAheadLog(DataPersistenceInterface):
                 if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
                     # Parse the checkpoint data
                     checkpoint_content = "\n".join(content_lines[1:])
-                    parsed_data = self.state_interpreter.parse_data(checkpoint_content)
+                    checkpoint_data = self.state_interpreter.parse_data(checkpoint_content)
                     
-                    # Extract data from checkpoint
-                    if isinstance(parsed_data, dict):
-                        if "data" in parsed_data:
-                            checkpoint_data = parsed_data["data"]
-                            if isinstance(checkpoint_data, dict):
+                    # Extract data from checkpoint (may or may not have data wrapper)
+                    if isinstance(checkpoint_data, dict):
+                        # Handle both checkpoint formats - with or without data wrapper
+                        if "data" in checkpoint_data:
+                            # Legacy format with data wrapper
+                            inner_data = checkpoint_data["data"]
+                            if isinstance(inner_data, dict):
                                 # Store checkpoint data with special key
-                                all_data["_checkpoint_data"] = checkpoint_data
+                                all_data["_checkpoint_data"] = inner_data
                                 
                                 # Add checkpoint filename key to help identify it in logs
                                 checkpoint_name = latest_checkpoint.name
-                                all_data[checkpoint_name] = {"data": checkpoint_data}
+                                all_data[checkpoint_name] = {"data": inner_data}
+                                logging.debug(f"Retrieved legacy format checkpoint {checkpoint_name}")
+                        elif "messages_id" in checkpoint_data and "content" in checkpoint_data:
+                            # New format without data wrapper
+                            # Store checkpoint data with special key
+                            all_data["_checkpoint_data"] = checkpoint_data
+                            
+                            # Add checkpoint filename key to help identify it in logs
+                            checkpoint_name = latest_checkpoint.name
+                            all_data[checkpoint_name] = checkpoint_data
+                            logging.debug(f"Retrieved new format checkpoint {checkpoint_name}")
             except Exception as e:
                 logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
         
-        # Get all log files
+        # Get all log files - since we delete logs after checkpoint creation,
+        # all logs in the directory are newer than the latest checkpoint
         log_files = self._get_all_logs(client_dir)
+        logging.debug(f"Found {len(log_files)} log files for client {client_id}")
         
         # Process each log file
         for log_file in log_files:
@@ -330,11 +392,16 @@ class WriteAheadLog(DataPersistenceInterface):
                     data_content = "\n".join(content_lines[1:])
                     parsed_data = self.state_interpreter.parse_data(data_content)
                     all_data[operation_id] = parsed_data
+                    logging.debug(f"Retrieved log {file_name}")
             except Exception as e:
                 logging.warning(f"Error processing log file {log_file}: {e}")
         
         # If all_data is empty, return None
-        return all_data if all_data else None
+        if not all_data:
+            logging.info(f"No data found for client {client_id}")
+            return None
+            
+        return all_data
     
     def clear(self, client_id: str) -> bool:
         """

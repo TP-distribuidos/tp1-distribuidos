@@ -191,18 +191,37 @@ class ConsumerWorker:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(message.body)
             
-            # Log the received message
-            batch = deserialized_message.get('batch')  # Still handle 'batch' from producer
-            message_id = batch  # Use batch as message_id
+            # Get message ID - handle both batch and message_id fields for compatibility
+            message_id = deserialized_message.get('message_id')
+            if message_id is None:
+                # If message_id is not present, try batch for backward compatibility
+                message_id = deserialized_message.get('batch')
+            
+            # Ensure we have a message ID
+            if message_id is None:
+                logging.warning("Message received without message_id or batch field, generating random ID")
+                message_id = str(int(time.time() * 1000))  # Use timestamp as fallback
+                
+            # Convert message_id to string for consistent handling
+            message_id = str(message_id)
+            
             logging.info(f"Received message - Message ID: {message_id}")
-
+            
             client_id = "default"  # Using single client_id for this example
             
             # Log the message structure for debugging
             logging.info(f"Message content length: {len(str(deserialized_message.get('content', '')))}")
             
-            # Persist message to WAL before processing (WAL will convert batch to message_id)
-            if self.data_persistance.persist(client_id, deserialized_message, message_id):
+            # Create a copy of the message to avoid modifying the original
+            message_to_persist = deserialized_message.copy()
+            
+            # Ensure message_id is set in the persisted data
+            if 'message_id' not in message_to_persist and 'batch' in message_to_persist:
+                # WAL will convert batch to message_id internally, but we set it here for clarity
+                message_to_persist['message_id'] = message_to_persist['batch']
+            
+            # Persist message to WAL
+            if self.data_persistance.persist(client_id, message_to_persist, message_id):
                 logging.info(f"Message {message_id} successfully persisted to WAL")
                 
                 # If this is message_id 10, write all data to file
@@ -247,21 +266,39 @@ class ConsumerWorker:
             # Check for checkpoint data first
             combined_content = ""
             
-            # Look for checkpoint data with content
-            for op_id, entry in data.items():
-                if isinstance(entry, dict):
-                    # Direct checkpoint data in _checkpoint_data
-                    if op_id == "_checkpoint_data" and "content" in entry:
-                        combined_content = entry.get("content", "")
-                        logging.info(f"Found checkpoint content with length {len(combined_content)}")
-                        break
-                    # Check for data from checkpoint operations in the data field
-                    if op_id.startswith(self.data_persistance.CHECKPOINT_PREFIX) and isinstance(entry, dict) and "data" in entry:
-                        checkpoint_data = entry.get("data")
-                        if isinstance(checkpoint_data, dict) and "content" in checkpoint_data:
-                            combined_content = checkpoint_data.get("content", "")
-                            logging.info(f"Found checkpoint content with length {len(combined_content)}")
-                            break
+            # First check for special checkpoint key
+            if "_checkpoint_data" in data:
+                checkpoint_entry = data["_checkpoint_data"]
+                if isinstance(checkpoint_entry, dict):
+                    # New format
+                    if "messages_id" in checkpoint_entry and "content" in checkpoint_entry:
+                        message_ids = checkpoint_entry.get("messages_id", [])
+                        message_count = len(message_ids)
+                        combined_content = checkpoint_entry.get("content", "")
+                        logging.info(f"Found checkpoint with {message_count} messages and content length {len(combined_content)}")
+                        
+            # If still no content, look through other checkpoint entries
+            if not combined_content:
+                for op_id, entry in data.items():
+                    if isinstance(entry, dict):
+                        # Check for checkpoint files - both old and new formats
+                        if op_id.startswith("checkpoint_"):
+                            # Legacy format with data wrapper
+                            if "data" in entry and isinstance(entry["data"], dict):
+                                checkpoint_data = entry["data"]
+                                if "messages_id" in checkpoint_data and "content" in checkpoint_data:
+                                    message_ids = checkpoint_data.get("messages_id", [])
+                                    message_count = len(message_ids)
+                                    combined_content = checkpoint_data.get("content", "")
+                                    logging.info(f"Found legacy checkpoint with {message_count} messages and content length {len(combined_content)}")
+                                    break
+                            # New format without wrapper
+                            elif "messages_id" in entry and "content" in entry:
+                                message_ids = entry.get("messages_id", [])
+                                message_count = len(message_ids)
+                                combined_content = entry.get("content", "")
+                                logging.info(f"Found checkpoint with {message_count} messages and content length {len(combined_content)}")
+                                break
             
             # If no combined content from checkpoint, create it from messages
             if not combined_content:
@@ -303,13 +340,20 @@ class ConsumerWorker:
                 # Build combined content in message_id order
                 logging.info("Building combined content from individual messages")
                 
-                # Sort unique message IDs to combine in order
+                # Get unique, sorted message IDs for proper order
                 unique_ids = sorted(set(message_ids))
+                message_count = len(unique_ids)
+                
+                # Combine the content in message_id order
                 for msg_id in unique_ids:
-                    if msg_id in message_contents:
-                        combined_content += message_contents[msg_id] + " "
+                    content = message_contents.get(msg_id, "")
+                    if content:
+                        if combined_content:
+                            combined_content += " "
+                        combined_content += content
+                
                 combined_content = combined_content.strip()
-                logging.info(f"Built combined content with length {len(combined_content)}")
+                logging.info(f"Built combined content from {message_count} messages with length {len(combined_content)}")
             
             # Format text with line breaks every ~100 characters for readability
             formatted_text = self._format_text_with_linebreaks(combined_content, 100)
@@ -335,33 +379,20 @@ class ConsumerWorker:
             logging.error(f"Error writing to file: {e}")
     
     def _format_text_with_linebreaks(self, text, line_length=100):
-        """Format text with line breaks for readability"""
-        words = text.split()
-        lines = []
-        current_line = []
-        current_length = 0
+        """Format text with line breaks after each full stop (period)"""
+        # Replace all periods that are followed by a space with a period and newline
+        # This preserves periods inside words (like numbers) and won't create newlines there
+        formatted_text = text.replace('. ', '.\n')
         
-        for word in words:
-            # Include space before word except for first word in line
-            word_length = len(word)
-            space_length = 1 if current_line else 0
+        # Handle the case where the text ends with a period without a space after it
+        if formatted_text and formatted_text[-1] == '.' and not formatted_text.endswith('.\n'):
+            formatted_text += '\n'
             
-            # If adding this word would exceed line length, start a new line
-            if current_length + space_length + word_length > line_length and current_line:
-                lines.append(" ".join(current_line))
-                current_line = [word]
-                current_length = word_length
-            else:
-                if current_line:  # Not the first word in the line
-                    current_length += space_length
-                current_line.append(word)
-                current_length += word_length
+        # Make sure there are no empty lines
+        lines = [line for line in formatted_text.split('\n') if line.strip()]
         
-        # Add the last line if it has content
-        if current_line:
-            lines.append(" ".join(current_line))
-            
-        return "\n".join(lines)
+        logging.info(f"Formatted text with {len(lines)} sentences")
+        return '\n'.join(lines)
     
     def _write_to_file_sync(self, data):
         """Synchronous file write operation"""

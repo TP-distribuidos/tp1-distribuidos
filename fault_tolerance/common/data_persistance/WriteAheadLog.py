@@ -153,11 +153,7 @@ class WriteAheadLog(DataPersistenceInterface):
             checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
             
             # Use state interpreter to create merged representation
-            if hasattr(self.state_interpreter, 'merge_checkpoint_data'):
-                merged_data = self.state_interpreter.merge_checkpoint_data(log_entries)
-            else:
-                # Fall back to merge_data if merge_checkpoint_data doesn't exist
-                merged_data = self.state_interpreter.merge_data(log_entries)
+            merged_data = self.state_interpreter.merge_data(log_entries)
             
             # Format the checkpoint data - only include merged data
             formatted_data = self.state_interpreter.format_data({

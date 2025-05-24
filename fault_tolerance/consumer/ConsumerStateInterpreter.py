@@ -135,22 +135,44 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
             
         return parsed_data
     
-    def merge_checkpoint_data(self, log_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def merge_data(self, data_entries: Any) -> Any:
         """
-        Merge multiple log entries into a checkpoint.
-        This method is called by the WAL when creating a checkpoint.
+        Merge multiple data entries into a single state.
+        This method handles both direct list inputs (checkpoint creation) 
+        and dictionary inputs (retrieval/combining).
         
         Args:
-            log_entries: List of log entry data dictionaries
+            data_entries: Either a list of log entries or a dictionary mapping IDs to entries
             
         Returns:
-            Dict[str, Any]: Merged data suitable for checkpoint storage
+            Dict[str, Any]: Merged data suitable for storage
         """
+        # Handle dictionary input by converting to list of entries
+        if isinstance(data_entries, dict):
+            # For dictionary data, extract relevant entries
+            log_entries = []
+            for op_id, entry in data_entries.items():
+                if isinstance(entry, dict):
+                    # Check if this is a checkpoint with content and messages_id
+                    if op_id == "_checkpoint_data":
+                        if "content" in entry and "messages_id" in entry:
+                            return entry  # Just return the checkpoint data directly
+                    else:
+                        log_entries.append(entry)
+            
+            # Use the extracted log entries for merging
+            data_entries = log_entries
+        
+        # At this point, data_entries should be a list of entries
+        if not isinstance(data_entries, list):
+            logging.warning(f"Expected list of entries, got {type(data_entries)}")
+            return {"messages_id": [], "content": ""}
+        
         # Track message IDs and content
         message_ids = []
         content_by_id = {}
         
-        for entry in log_entries:
+        for entry in data_entries:
             # Extract message_id
             msg_id = None
             if "message_id" in entry:
@@ -194,33 +216,3 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         }
         
         return checkpoint_data
-    
-    def merge_data(self, data_entries: Any) -> Any:
-        """
-        Merge multiple data entries into a single state.
-        This is a wrapper around merge_checkpoint_data to maintain interface compatibility.
-        
-        Args:
-            data_entries: Either a list of entries or dictionary of entries
-            
-        Returns:
-            Any: Merged data representing combined state
-        """
-        # Handle both dictionary mapping and list of log entries
-        if isinstance(data_entries, list):
-            return self.merge_checkpoint_data(data_entries)
-        
-        # For dictionary data, convert to list of entries first
-        log_entries = []
-        for op_id, entry in data_entries.items():
-            if isinstance(entry, dict):
-                # Skip special entries but extract checkpoint data if present
-                if op_id == "_checkpoint_data":
-                    # If we have a checkpoint, its content should be prioritized
-                    if "content" in entry and "messages_id" in entry:
-                        return entry  # Just return the checkpoint data directly
-                else:
-                    log_entries.append(entry)
-        
-        # Process as a list of log entries
-        return self.merge_checkpoint_data(log_entries)

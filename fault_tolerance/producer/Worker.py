@@ -24,11 +24,20 @@ SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9001))
 NUM_BATCHES = 10
 BATCH_INTERVAL = 2  # seconds
 
+# File to store sent messages for verification
+PRODUCER_LOG_FILE = "/app/output/producer_log.txt"
+
 class ProducerWorker:
     def __init__(self, producer_queue=PRODUCER_QUEUE):
         self._running = True
         self.producer_queue = producer_queue
         self.rabbitmq = RabbitMQClient()
+        
+        # Create output directory for log file
+        os.makedirs(os.path.dirname(PRODUCER_LOG_FILE), exist_ok=True)
+        
+        # Clear previous log file at startup
+        open(PRODUCER_LOG_FILE, 'w').close()
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -98,12 +107,21 @@ class ProducerWorker:
     async def _send_batch(self, batch_number):
         """Send a batch of messages"""
         try:
-            # Generate a lorem ipsum message for this batch
+            # Generate a shorter lorem ipsum message for this batch
+            # Use a sentence instead of a paragraph, or limit paragraph size
+            content = lorem.sentence()  # Just a single sentence
+            logging.info(f"CONTENT: {content}")
+
             message = {
                 "batch": batch_number,
                 "timestamp": time.time(),
-                "content": lorem.paragraph()
+                "content": content
             }
+            
+            # Log the message to file
+            with open(PRODUCER_LOG_FILE, 'a') as f:
+                f.write(f"--- BATCH {batch_number} ---\n")
+                f.write(f"{content}\n\n")
             
             # Send the message
             success = await self.rabbitmq.publish_to_queue(
@@ -116,8 +134,33 @@ class ProducerWorker:
             else:
                 logging.info(f"Sent batch {batch_number} message")
             
+            # If this is the final batch, also write a combined version
+            if batch_number == NUM_BATCHES:
+                self._write_combined_log()
+            
         except Exception as e:
             logging.error(f"Error sending messages: {e}")
+    
+    def _write_combined_log(self):
+        """Write combined log of all messages sent"""
+        try:
+            # Read individual batch entries
+            with open(PRODUCER_LOG_FILE, 'r') as f:
+                content = f.read()
+            
+            # Extract and combine content from batches
+            import re
+            batches = re.findall(r'--- BATCH \d+ ---\n(.*?)\n\n', content, re.DOTALL)
+            combined = " ".join(batches)
+            
+            # Append combined content to the log file
+            with open(PRODUCER_LOG_FILE, 'a') as f:
+                f.write("\n\n--- COMBINED CONTENT ---\n")
+                f.write(combined)
+                
+            logging.info(f"Wrote combined message log to {PRODUCER_LOG_FILE}")
+        except Exception as e:
+            logging.error(f"Error writing combined log: {e}")
     
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

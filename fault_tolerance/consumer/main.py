@@ -32,16 +32,32 @@ async def shutdown(signal, worker, loop):
     # Stop the worker gracefully
     worker._running = False
     
+    try:
+        # Call worker cleanup explicitly
+        await worker.cleanup()
+    except Exception as e:
+        logging.error(f"Error during worker cleanup: {e}")
+    
     # Give tasks time to complete
     await asyncio.sleep(0.5)
     
-    # Stop remaining tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
+    try:
+        # Stop remaining tasks
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if tasks:
+            logging.info(f"Cancelling {len(tasks)} remaining tasks")
+            for task in tasks:
+                task.cancel()
+            
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logging.error(f"Error during task cleanup: {e}")
     
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
+    # Stop the event loop
+    try:
+        loop.stop()
+    except Exception as e:
+        logging.error(f"Error stopping event loop: {e}")
 
 if __name__ == "__main__":
     try:

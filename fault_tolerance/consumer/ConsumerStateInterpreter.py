@@ -27,12 +27,7 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         Returns:
             str: Formatted data ready for storage
         """
-        # Special handling for checkpoint data
-        if isinstance(data, dict) and "data" in data and "processed_logs" in data:
-            # This is a checkpoint manifest, serialize it as a single JSON object
-            return json.dumps(data)
-        
-        # For regular log entries, format as JSON strings, one per line
+        # For regular log entries, format as JSON strings
         formatted_lines = []
         
         # Handle dictionaries (most common case)
@@ -73,21 +68,6 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         Returns:
             Any: Parsed data as a dictionary
         """
-        # First try to parse as a single JSON object (checkpoint case)
-        try:
-            data = json.loads(content)
-            if isinstance(data, dict):
-                # Handle new checkpoint format
-                if "data" in data and isinstance(data["data"], str) and "processed_batch_ids" in data:
-                    return data
-                # Handle old checkpoint format
-                elif "data" in data and "processed_logs" in data:
-                    return data
-        except json.JSONDecodeError:
-            # Not a single JSON object, continue with line-by-line parsing
-            pass
-        
-        # Normal line-by-line parsing for log entries
         parsed_data = {}
         batch_id = None
         
@@ -125,7 +105,7 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
     def merge_data(self, data_entries: Dict[str, Any]) -> Any:
         """
         Merge multiple data entries into a single state.
-        Used for checkpointing or combining logs.
+        Used for combining logs.
         
         Args:
             data_entries: Dictionary mapping entry IDs to their data
@@ -133,38 +113,18 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         Returns:
             Any: Merged data representing combined state - focused on complete lorem ipsum
         """
-        # New format: We'll store the complete sequences of lorem text as one unit
-        # and track the processed batch IDs separately
-        processed_batch_ids = set()
         batch_contents = {}
-        full_content = ""
+        processed_batch_ids = set()
         
-        # Check if we already have a full content entry from a previous checkpoint
-        if "_full_content_entry" in data_entries:
-            entry = data_entries.get("_full_content_entry")
-            if isinstance(entry, dict) and "content" in entry:
-                full_content = entry.get("content", "")
-                
-        # Check for processed batch IDs from a previous checkpoint
-        if "_processed_batch_ids" in data_entries:
-            batch_id_list = data_entries.get("_processed_batch_ids")
-            if isinstance(batch_id_list, list):
-                for batch_id in batch_id_list:
-                    processed_batch_ids.add(str(batch_id))
-        
-        # Process all regular entries
+        # Process all entries
         for op_id, entry_data in data_entries.items():
-            # Skip special fields
-            if op_id in ("_full_content_entry", "_processed_batch_ids"):
-                continue
-                
             if not isinstance(entry_data, dict) or not entry_data:
                 continue
                 
             # Track batch information
             batch = entry_data.get("batch")
             if batch:
-                # Convert batch to int if it's a digit string
+                # Convert batch to int if it's a digit string for ordering
                 batch_int = batch
                 if isinstance(batch, str) and batch.isdigit():
                     batch_int = int(batch)
@@ -174,29 +134,29 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 
                 # Save content by batch number for ordering
                 content = entry_data.get("content", "")
-                if content and content != "Part of combined content":
+                if content:
                     batch_contents[batch_int] = content
         
         # Combine content in correct batch order
+        combined_content = ""
         if batch_contents:
             sorted_batches = sorted(batch_contents.keys())
-            combined_content = ""
             for batch in sorted_batches:
                 combined_content += batch_contents[batch] + " "
-            full_content = combined_content.strip()
+            combined_content = combined_content.strip()
         
-        # Construct the new merged data format
+        # Construct the merged data
         merged_data = {}
         
-        # Store each entry by operation ID as before (needed for WAL operations)
+        # Store each entry by operation ID
         for op_id, entry_data in data_entries.items():
             merged_data[op_id] = entry_data
             
-        # Add our new summary fields
+        # Add our summary fields
         merged_data["_processed_batch_ids"] = list(processed_batch_ids)
-        merged_data["_full_content"] = full_content
+        merged_data["_combined_content"] = combined_content
         
-        # Add legacy fields for backward compatibility
+        # Track last batch number
         batch_ids = []
         for id in processed_batch_ids:
             try:

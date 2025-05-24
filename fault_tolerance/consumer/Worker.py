@@ -36,8 +36,32 @@ class ConsumerWorker:
         self.consumer_queue = consumer_queue
         self.rabbitmq = RabbitMQClient()
         
-        # Create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        # Create output directory if it doesn't exist and ensure it has proper permissions
+        output_dir = os.path.dirname(OUTPUT_FILE)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            # Set permissions to ensure we can write to this directory
+            if os.path.exists(output_dir):
+                os.chmod(output_dir, 0o755)  # rwxr-xr-x
+        except Exception as e:
+            logging.warning(f"Could not set permissions on output directory: {e}")
+        
+        # Clear the output file when starting
+        try:
+            logging.info(f"Clearing output file: {OUTPUT_FILE}")
+            with open(OUTPUT_FILE, 'w') as f:
+                f.write("")  # Clear the file
+                f.flush()
+                os.fsync(f.fileno())  # Ensure write is committed to disk
+            logging.info("Output file cleared")
+        except Exception as e:
+            logging.error(f"Error clearing output file: {e}")
+            # Try to create an empty file
+            try:
+                open(OUTPUT_FILE, 'a').close()
+                logging.info(f"Created empty output file at {OUTPUT_FILE}")
+            except Exception as e2:
+                logging.error(f"Failed to create output file: {e2}")
         
         # Initialize Data Persistance with Write-Ahead Log
         self.data_persistance = WriteAheadLog(
@@ -58,18 +82,24 @@ class ConsumerWorker:
         recovered_data = self.data_persistance.recover_state()
         if recovered_data:
             logging.info(f"Recovered data for {len(recovered_data)} clients")
-            # Process any pending data from previous runs
+            # We'll store client IDs that need processing
+            clients_to_process = []
+            
+            # Identify clients with batch 10 messages that need to be written
             for client_id, data in recovered_data.items():
                 if data:
                     # Check if we have any batch 10 messages that need to be written
                     for op_id, entry in data.items():
-                        if isinstance(entry, dict) and entry.get('batch') == 10:
-                            loop = asyncio.get_event_loop()
-                            loop.create_task(self._write_to_file(client_id))
+                        if isinstance(entry, dict) and entry.get('batch') == '10':
+                            clients_to_process.append(client_id)
                             break
-
+            
+            # We'll process these clients during the run method
+            self.clients_to_process = clients_to_process
+            if clients_to_process:
+                logging.info(f"Found {len(clients_to_process)} clients with batch 10 messages to process")
+        
         logging.info(f"Consumer Worker initialized to consume from queue '{consumer_queue}'")
-    
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -80,6 +110,15 @@ class ConsumerWorker:
                 return False
             
             logging.info(f"Consumer Worker running and consuming from queue '{self.consumer_queue}'")
+            
+            # Process any pending client data from previous runs
+            if hasattr(self, 'clients_to_process') and self.clients_to_process:
+                logging.info(f"Processing {len(self.clients_to_process)} clients with pending data")
+                for client_id in self.clients_to_process:
+                    try:
+                        await self._write_to_file(client_id)
+                    except Exception as e:
+                        logging.error(f"Error processing pending data for client {client_id}: {e}")
             
             # Keep the worker running until shutdown is triggered
             while self._running:
@@ -93,6 +132,21 @@ class ConsumerWorker:
     async def cleanup(self):
         """Clean up resources properly"""
         logging.info("Cleaning up resources...")
+        # Cancel all pending tasks that might be using the event loop
+        try:
+            # Don't cancel the current task (cleanup itself)
+            current_task = asyncio.current_task()
+            tasks = [t for t in asyncio.all_tasks() if t is not current_task]
+            if tasks:
+                logging.info(f"Cancelling {len(tasks)} pending tasks")
+                for task in tasks:
+                    task.cancel()
+                # Give them a chance to clean up
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logging.error(f"Error cancelling tasks during cleanup: {e}")
+        
+        # Close RabbitMQ connection
         if hasattr(self, 'rabbitmq'):
             try:
                 await self.rabbitmq.close()
@@ -140,8 +194,8 @@ class ConsumerWorker:
 
             client_id = "default"  # Using single client_id for this example
             
-            # Use batch as operation_id (the WAL will handle internal IDs)
-            logging.info(f"Processing message {batch}")
+            # Log the message structure for debugging
+            logging.info(f"Message content length: {len(str(deserialized_message.get('content', '')))}")
             
             # Persist message to WAL before processing
             if self.data_persistance.persist(client_id, deserialized_message, batch):
@@ -159,19 +213,10 @@ class ConsumerWorker:
                 except (ValueError, TypeError) as e:
                     logging.warning(f"Error processing batch {batch}: {e}")
                     logging.info(f"Message with non-numeric batch {batch} processed")
-                    
-                # Note: Not clearing data to allow for recovery testing
-
-                # After successful processing, clean up WAL entry
-                # self.data_persistance.clear(client_id)
-                
-                # logging.info(f"\033[33mMessage {batch} cleared from WAL, waiting 5s before acknowledging...\033[0m")
-                # await asyncio.sleep(5)
                 
                 # Acknowledge message
                 await message.ack()
-                # logging.info(f"\033[91mMessage {batch} acknowledged, waiting 5s before processing next message...\033[0m")
-                # await asyncio.sleep(5)
+                
             else:
                 # WAL persistence failed
                 logging.error(f"Failed to persist message {batch} to WAL")
@@ -192,59 +237,64 @@ class ConsumerWorker:
                 
             logging.info(f"Writing data to file for client {client_id}")
             
+            # Debug log for available keys
+            logging.info(f"Data keys available: {', '.join(data.keys())}")
+            
             # We'll collect all batch content in order
             batch_contents = {}
             batch_nums = []
             
-            # First check if we have a full_content_entry from a checkpoint
-            full_content = ""
-            if "_full_content_entry" in data:
-                full_content = data["_full_content_entry"].get("content", "")
-            
-            # Also collect individual messages
+            # Collect content from each log entry
             for op_id, entry in data.items():
-                # Skip the synthetic entry
-                if op_id == "_full_content_entry":
-                    continue
-                    
                 # Only process entries that are message dictionaries
                 if isinstance(entry, dict) and 'batch' in entry and 'content' in entry:
                     batch_num = entry.get('batch')
+                    content = entry.get('content', '')
+                    
                     try:
                         # Try to convert batch number to int for proper ordering
                         if isinstance(batch_num, str) and batch_num.isdigit():
                             batch_num = int(batch_num)
-                        batch_contents[batch_num] = entry.get('content', '')
+                        batch_contents[batch_num] = content
                         batch_nums.append(batch_num)
+                        logging.debug(f"Added content for batch {batch_num} with length {len(content)}")
                     except (ValueError, TypeError):
                         # If batch can't be interpreted as a number, use it as a string
-                        batch_contents[batch_num] = entry.get('content', '')
+                        batch_contents[batch_num] = content
                         batch_nums.append(batch_num)
+                        logging.debug(f"Added content for non-numeric batch {batch_num}")
             
-            # If we don't have full content from the checkpoint, build it from individual messages
-            if not full_content:
-                # Sort unique batch numbers to combine in order
-                unique_batches = sorted(set(batch_nums))
-                combined_content = ""
-                for batch in unique_batches:
-                    if batch in batch_contents:
-                        combined_content += batch_contents[batch] + " "
-                full_content = combined_content.strip()
+            # Build the combined content from individual messages
+            logging.info("Building combined content from individual messages")
+            
+            # Sort unique batch numbers to combine in order
+            unique_batches = sorted(set(batch_nums))
+            combined_content = ""
+            for batch in unique_batches:
+                if batch in batch_contents:
+                    combined_content += batch_contents[batch] + " "
+            combined_content = combined_content.strip()
+            logging.info(f"Built combined content with length {len(combined_content)}")
             
             # Format text with line breaks every ~100 characters for readability
-            formatted_text = self._format_text_with_linebreaks(full_content, 100)
+            formatted_text = self._format_text_with_linebreaks(combined_content, 100)
             
             # Write to file (async)
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._write_to_file_sync, formatted_text)
+            try:
+                # Try to get the running loop, and handle the case where there's no loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self._write_to_file_sync, formatted_text)
+                except RuntimeError:
+                    # If there's no running event loop, perform synchronous write
+                    logging.info("No running event loop, performing synchronous write")
+                    self._write_to_file_sync(formatted_text)
+            except Exception as e:
+                logging.error(f"Error during file write operation: {e}")
+                # Fall back to synchronous write
+                self._write_to_file_sync(formatted_text)
             
             logging.info(f"Successfully wrote lorem text to file")
-            
-            # Clear all logs and checkpoints from persistence folder for this client
-            # Commented out to allow for recovery testing - uncomment to enable cleanup after writing
-            # logging.info(f"Cleaning up persistence data for client {client_id}")
-            # self.data_persistance.clear(client_id)
-            # logging.info(f"Persistence data cleared for client {client_id}")
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")
@@ -280,7 +330,7 @@ class ConsumerWorker:
     
     def _write_to_file_sync(self, data):
         """Synchronous file write operation"""
-        with open(OUTPUT_FILE, 'a') as f:
+        with open(OUTPUT_FILE, 'w') as f:  # Using 'w' to overwrite instead of append
             f.write(data)
             f.write("\n\n")
             f.flush()

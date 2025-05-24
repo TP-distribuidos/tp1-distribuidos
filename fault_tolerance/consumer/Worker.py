@@ -85,19 +85,22 @@ class ConsumerWorker:
             # We'll store client IDs that need processing
             clients_to_process = []
             
-            # Identify clients with batch 10 messages that need to be written
+            # Identify clients with message_id 10 messages that need to be written
             for client_id, data in recovered_data.items():
                 if data:
-                    # Check if we have any batch 10 messages that need to be written
+                    # Check if we have any message_id 10 messages that need to be written
                     for op_id, entry in data.items():
-                        if isinstance(entry, dict) and entry.get('batch') == '10':
+                        if isinstance(entry, dict) and (
+                            entry.get('message_id') == '10' or 
+                            entry.get('batch') == '10'  # Legacy support
+                        ):
                             clients_to_process.append(client_id)
                             break
             
             # We'll process these clients during the run method
             self.clients_to_process = clients_to_process
             if clients_to_process:
-                logging.info(f"Found {len(clients_to_process)} clients with batch 10 messages to process")
+                logging.info(f"Found {len(clients_to_process)} clients with message_id 10 messages to process")
         
         logging.info(f"Consumer Worker initialized to consume from queue '{consumer_queue}'")
     
@@ -189,37 +192,38 @@ class ConsumerWorker:
             deserialized_message = Serializer.deserialize(message.body)
             
             # Log the received message
-            batch = deserialized_message.get('batch')
-            logging.info(f"Received message - Batch: {batch}")
+            batch = deserialized_message.get('batch')  # Still handle 'batch' from producer
+            message_id = batch  # Use batch as message_id
+            logging.info(f"Received message - Message ID: {message_id}")
 
             client_id = "default"  # Using single client_id for this example
             
             # Log the message structure for debugging
             logging.info(f"Message content length: {len(str(deserialized_message.get('content', '')))}")
             
-            # Persist message to WAL before processing
-            if self.data_persistance.persist(client_id, deserialized_message, batch):
-                logging.info(f"Message {batch} successfully persisted to WAL")
+            # Persist message to WAL before processing (WAL will convert batch to message_id)
+            if self.data_persistance.persist(client_id, deserialized_message, message_id):
+                logging.info(f"Message {message_id} successfully persisted to WAL")
                 
-                # If this is batch 10, write all data to file
+                # If this is message_id 10, write all data to file
                 try:
-                    batch_num = int(batch) if isinstance(batch, str) else batch
-                    if batch and batch_num == 10:
-                        logging.info(f"Found batch 10 message, writing all data to file")
+                    msg_num = int(message_id) if isinstance(message_id, str) else message_id
+                    if message_id and msg_num == 10:
+                        logging.info(f"Found message_id 10 message, writing all data to file")
                         await self._write_to_file(client_id)
-                        logging.info(f"Successfully processed batch 10 message")
+                        logging.info(f"Successfully processed message_id 10 message")
                     else:
-                        logging.info(f"Message {batch} processed (not batch 10)")
+                        logging.info(f"Message {message_id} processed (not message_id 10)")
                 except (ValueError, TypeError) as e:
-                    logging.warning(f"Error processing batch {batch}: {e}")
-                    logging.info(f"Message with non-numeric batch {batch} processed")
+                    logging.warning(f"Error processing message_id {message_id}: {e}")
+                    logging.info(f"Message with non-numeric message_id {message_id} processed")
                 
                 # Acknowledge message
                 await message.ack()
                 
             else:
                 # WAL persistence failed
-                logging.error(f"Failed to persist message {batch} to WAL")
+                logging.error(f"Failed to persist message {message_id} to WAL")
                 await message.reject(requeue=True)
             
         except Exception as e:
@@ -240,41 +244,72 @@ class ConsumerWorker:
             # Debug log for available keys
             logging.info(f"Data keys available: {', '.join(data.keys())}")
             
-            # We'll collect all batch content in order
-            batch_contents = {}
-            batch_nums = []
-            
-            # Collect content from each log entry
-            for op_id, entry in data.items():
-                # Only process entries that are message dictionaries
-                if isinstance(entry, dict) and 'batch' in entry and 'content' in entry:
-                    batch_num = entry.get('batch')
-                    content = entry.get('content', '')
-                    
-                    try:
-                        # Try to convert batch number to int for proper ordering
-                        if isinstance(batch_num, str) and batch_num.isdigit():
-                            batch_num = int(batch_num)
-                        batch_contents[batch_num] = content
-                        batch_nums.append(batch_num)
-                        logging.debug(f"Added content for batch {batch_num} with length {len(content)}")
-                    except (ValueError, TypeError):
-                        # If batch can't be interpreted as a number, use it as a string
-                        batch_contents[batch_num] = content
-                        batch_nums.append(batch_num)
-                        logging.debug(f"Added content for non-numeric batch {batch_num}")
-            
-            # Build the combined content from individual messages
-            logging.info("Building combined content from individual messages")
-            
-            # Sort unique batch numbers to combine in order
-            unique_batches = sorted(set(batch_nums))
+            # Check for checkpoint data first
             combined_content = ""
-            for batch in unique_batches:
-                if batch in batch_contents:
-                    combined_content += batch_contents[batch] + " "
-            combined_content = combined_content.strip()
-            logging.info(f"Built combined content with length {len(combined_content)}")
+            
+            # Look for checkpoint data with content
+            for op_id, entry in data.items():
+                if isinstance(entry, dict):
+                    # Direct checkpoint data in _checkpoint_data
+                    if op_id == "_checkpoint_data" and "content" in entry:
+                        combined_content = entry.get("content", "")
+                        logging.info(f"Found checkpoint content with length {len(combined_content)}")
+                        break
+                    # Check for data from checkpoint operations in the data field
+                    if op_id.startswith(self.data_persistance.CHECKPOINT_PREFIX) and isinstance(entry, dict) and "data" in entry:
+                        checkpoint_data = entry.get("data")
+                        if isinstance(checkpoint_data, dict) and "content" in checkpoint_data:
+                            combined_content = checkpoint_data.get("content", "")
+                            logging.info(f"Found checkpoint content with length {len(combined_content)}")
+                            break
+            
+            # If no combined content from checkpoint, create it from messages
+            if not combined_content:
+                # We'll collect all message content in order
+                message_contents = {}
+                message_ids = []
+                
+                # Collect content from each log entry
+                for op_id, entry in data.items():
+                    # Only process entries that are message dictionaries
+                    if not isinstance(entry, dict):
+                        continue
+                        
+                    # Look for message_id and content
+                    msg_id = None
+                    if "message_id" in entry:
+                        msg_id = entry.get("message_id")
+                    elif "_message_id" in entry:
+                        msg_id = entry.get("_message_id")
+                    elif "batch" in entry:  # Legacy support
+                        msg_id = entry.get("batch")
+                        
+                    if msg_id and "content" in entry:
+                        content = entry.get("content", "")
+                        if not content:
+                            continue
+                            
+                        try:
+                            # Try to convert message ID to int for proper ordering
+                            if isinstance(msg_id, str) and msg_id.isdigit():
+                                msg_id = int(msg_id)
+                            message_contents[msg_id] = content
+                            message_ids.append(msg_id)
+                        except (ValueError, TypeError):
+                            # If message_id can't be interpreted as a number, use it as a string
+                            message_contents[msg_id] = content
+                            message_ids.append(msg_id)
+                
+                # Build combined content in message_id order
+                logging.info("Building combined content from individual messages")
+                
+                # Sort unique message IDs to combine in order
+                unique_ids = sorted(set(message_ids))
+                for msg_id in unique_ids:
+                    if msg_id in message_contents:
+                        combined_content += message_contents[msg_id] + " "
+                combined_content = combined_content.strip()
+                logging.info(f"Built combined content with length {len(combined_content)}")
             
             # Format text with line breaks every ~100 characters for readability
             formatted_text = self._format_text_with_linebreaks(combined_content, 100)

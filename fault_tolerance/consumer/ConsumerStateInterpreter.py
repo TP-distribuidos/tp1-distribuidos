@@ -1,10 +1,11 @@
 import json
+import logging
 from common.data_persistance.StateInterpreterInterface import StateInterpreterInterface
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 class ConsumerStateInterpreter(StateInterpreterInterface):
     """
-    State interpreter for consumer data, handling batch information.
+    State interpreter for consumer data, handling message information.
     Implements the StateInterpreterInterface.
     """
     
@@ -27,6 +28,11 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         Returns:
             str: Formatted data ready for storage
         """
+        # Special handling for checkpoint data
+        if isinstance(data, dict) and "data" in data:
+            # This is a checkpoint manifest, serialize it as a single JSON object
+            return json.dumps(data)
+        
         # For regular log entries, format as JSON strings
         formatted_lines = []
         
@@ -35,9 +41,13 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
             # Make a copy to avoid modifying the original
             data_copy = data.copy()
             
-            # Ensure batch is consistently stored as a string
-            if 'batch' in data_copy and data_copy['batch'] is not None:
-                data_copy['batch'] = str(data_copy['batch'])
+            # Ensure message_id is consistently stored as a string
+            if 'message_id' in data_copy and data_copy['message_id'] is not None:
+                data_copy['message_id'] = str(data_copy['message_id'])
+            # Handle legacy batch field if it still exists
+            elif 'batch' in data_copy and data_copy['batch'] is not None:
+                data_copy['message_id'] = str(data_copy['batch'])
+                data_copy.pop('batch', None)
                 
             # Store the full dictionary as one JSON object
             formatted_lines.append(json.dumps(data_copy))
@@ -45,9 +55,15 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         elif isinstance(data, list):
             # Store each item as a separate line
             for item in data:
-                if isinstance(item, dict) and 'batch' in item and item['batch'] is not None:
+                if isinstance(item, dict):
                     item_copy = item.copy()
-                    item_copy['batch'] = str(item_copy['batch'])
+                    # Handle message_id
+                    if 'message_id' in item_copy and item_copy['message_id'] is not None:
+                        item_copy['message_id'] = str(item_copy['message_id'])
+                    # Handle legacy batch field
+                    elif 'batch' in item_copy and item_copy['batch'] is not None:
+                        item_copy['message_id'] = str(item_copy['batch'])
+                        item_copy.pop('batch', None)
                     formatted_lines.append(json.dumps(item_copy))
                 else:
                     formatted_lines.append(json.dumps(item))
@@ -68,8 +84,20 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         Returns:
             Any: Parsed data as a dictionary
         """
+        # First try to parse as a single JSON object (checkpoint case)
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                # Handle checkpoint format
+                if "data" in data:
+                    return data
+        except json.JSONDecodeError:
+            # Not a single JSON object, continue with line-by-line parsing
+            pass
+        
+        # Normal line-by-line parsing for log entries
         parsed_data = {}
-        batch_id = None
+        message_id = None
         
         # Split content into lines and process each one
         lines = content.strip().split("\n")
@@ -81,12 +109,17 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 item = json.loads(line)
                 
                 if isinstance(item, dict):
-                    # Extract batch ID if present
-                    if "batch" in item:
-                        # Ensure batch is stored as a string for consistency
-                        batch_id = str(item["batch"])
+                    # Extract message ID if present
+                    if "message_id" in item:
+                        message_id = str(item["message_id"])
                         item = item.copy()  # Make a copy to avoid modifying the original
-                        item["batch"] = batch_id
+                        item["message_id"] = message_id
+                    # Handle legacy batch field
+                    elif "batch" in item:
+                        message_id = str(item["batch"])
+                        item = item.copy()  # Make a copy to avoid modifying the original
+                        item["message_id"] = message_id
+                        item.pop("batch", None)
                     
                     # Add all items to parsed data
                     for key, value in item.items():
@@ -96,78 +129,98 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 # Skip invalid lines
                 continue
                 
-        # Add batch ID as a special field if found
-        if batch_id is not None:
-            parsed_data["_batch_id"] = batch_id
+        # Add message ID as a special field if found
+        if message_id is not None:
+            parsed_data["_message_id"] = message_id
             
         return parsed_data
     
-    def merge_data(self, data_entries: Dict[str, Any]) -> Any:
+    def merge_checkpoint_data(self, log_entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Merge multiple data entries into a single state.
-        Used for combining logs.
+        Merge multiple log entries into a checkpoint.
+        This method is called by the WAL when creating a checkpoint.
         
         Args:
-            data_entries: Dictionary mapping entry IDs to their data
+            log_entries: List of log entry data dictionaries
             
         Returns:
-            Any: Merged data representing combined state - focused on complete lorem ipsum
+            Dict[str, Any]: Merged data suitable for checkpoint storage
         """
-        batch_contents = {}
-        processed_batch_ids = set()
+        # Track message IDs and content
+        message_ids = []
+        content_by_id = {}
         
-        # Process all entries
-        for op_id, entry_data in data_entries.items():
-            if not isinstance(entry_data, dict) or not entry_data:
-                continue
-                
-            # Track batch information
-            batch = entry_data.get("batch")
-            if batch:
-                # Convert batch to int if it's a digit string for ordering
-                batch_int = batch
-                if isinstance(batch, str) and batch.isdigit():
-                    batch_int = int(batch)
-                
-                # Save the processed batch ID
-                processed_batch_ids.add(str(batch))
-                
-                # Save content by batch number for ordering
-                content = entry_data.get("content", "")
-                if content:
-                    batch_contents[batch_int] = content
+        for entry in log_entries:
+            # Extract message_id
+            msg_id = None
+            if "message_id" in entry:
+                msg_id = entry["message_id"]
+            elif "_message_id" in entry:
+                msg_id = entry["_message_id"]
+            elif "batch" in entry:  # Legacy support
+                msg_id = entry["batch"]
+            
+            if msg_id:
+                try:
+                    # Try to convert to int for sorting if it's a digit string
+                    if isinstance(msg_id, str) and msg_id.isdigit():
+                        int_id = int(msg_id)
+                    else:
+                        int_id = msg_id
+                    
+                    # Store message ID and content
+                    message_ids.append(str(msg_id))
+                    
+                    # Get content if available
+                    content = entry.get("content", "")
+                    if content:
+                        content_by_id[int_id] = content
+                except (ValueError, TypeError):
+                    # Handle non-numeric IDs
+                    message_ids.append(str(msg_id))
+                    content_by_id[msg_id] = entry.get("content", "")
         
-        # Combine content in correct batch order
+        # Combine content in correct order (sorted by message_id)
+        sorted_ids = sorted(content_by_id.keys())
         combined_content = ""
-        if batch_contents:
-            sorted_batches = sorted(batch_contents.keys())
-            for batch in sorted_batches:
-                combined_content += batch_contents[batch] + " "
-            combined_content = combined_content.strip()
+        for id in sorted_ids:
+            combined_content += content_by_id[id] + " "
+        combined_content = combined_content.strip()
         
-        # Construct the merged data
-        merged_data = {}
+        # Create checkpoint data
+        checkpoint_data = {
+            "messages_id": message_ids,
+            "content": combined_content
+        }
         
-        # Store each entry by operation ID
-        for op_id, entry_data in data_entries.items():
-            merged_data[op_id] = entry_data
+        return checkpoint_data
+    
+    def merge_data(self, data_entries: Any) -> Any:
+        """
+        Merge multiple data entries into a single state.
+        This is a wrapper around merge_checkpoint_data to maintain interface compatibility.
+        
+        Args:
+            data_entries: Either a list of entries or dictionary of entries
             
-        # Add our summary fields
-        merged_data["_processed_batch_ids"] = list(processed_batch_ids)
-        merged_data["_combined_content"] = combined_content
+        Returns:
+            Any: Merged data representing combined state
+        """
+        # Handle both dictionary mapping and list of log entries
+        if isinstance(data_entries, list):
+            return self.merge_checkpoint_data(data_entries)
         
-        # Track last batch number
-        batch_ids = []
-        for id in processed_batch_ids:
-            try:
-                if isinstance(id, str) and id.isdigit():
-                    batch_ids.append(int(id))
-                elif isinstance(id, int):
-                    batch_ids.append(id)
-            except (ValueError, TypeError):
-                pass
+        # For dictionary data, convert to list of entries first
+        log_entries = []
+        for op_id, entry in data_entries.items():
+            if isinstance(entry, dict):
+                # Skip special entries but extract checkpoint data if present
+                if op_id == "_checkpoint_data":
+                    # If we have a checkpoint, its content should be prioritized
+                    if "content" in entry and "messages_id" in entry:
+                        return entry  # Just return the checkpoint data directly
+                else:
+                    log_entries.append(entry)
         
-        if batch_ids:
-            merged_data["_last_batch"] = max(batch_ids)
-            
-        return merged_data
+        # Process as a list of log entries
+        return self.merge_checkpoint_data(log_entries)

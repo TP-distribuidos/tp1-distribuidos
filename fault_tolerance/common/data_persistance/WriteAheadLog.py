@@ -11,12 +11,13 @@ from common.data_persistance.StateInterpreterInterface import StateInterpreterIn
 
 class WriteAheadLog(DataPersistenceInterface):
     """
-    Simplified Write-Ahead Log implementation of the DataPersistenceInterface.
+    Write-Ahead Log implementation of the DataPersistenceInterface.
     
     This class implements a durable logging mechanism that:
     1. Writes data to log files before processing
     2. Keeps all logs for transparency and debugging
-    3. Provides recovery capabilities
+    3. Creates checkpoints after every 3 logs
+    4. Provides recovery capabilities
     
     It uses:
     - StateInterpreterInterface for formatting/parsing data
@@ -26,10 +27,15 @@ class WriteAheadLog(DataPersistenceInterface):
     # File extensions and prefixes
     LOG_PREFIX = "log_"
     LOG_EXTENSION = ".log"
+    CHECKPOINT_PREFIX = "checkpoint_"
+    CHECKPOINT_EXTENSION = ".log"
     
     # Status indicators
     STATUS_PROCESSING = "PROCESSING"
     STATUS_COMPLETED = "COMPLETED"
+    
+    # Checkpoint threshold
+    CHECKPOINT_THRESHOLD = 3  # Create checkpoint after every 3 logs
 
     def __init__(self, 
                  state_interpreter: StateInterpreterInterface,
@@ -48,6 +54,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.state_interpreter = state_interpreter
         self.storage = storage
         self.service_name = service_name
+        self.log_count = {}  # Dictionary to track log count per client_id
         
         # Set up the base directory for this service
         self.base_dir = Path(base_dir)
@@ -66,10 +73,115 @@ class WriteAheadLog(DataPersistenceInterface):
         """Get the path for a log file based on operation ID"""
         return client_dir / f"{self.LOG_PREFIX}{operation_id}{self.LOG_EXTENSION}"
     
+    def _get_checkpoint_file_path(self, client_dir: Path, timestamp: str) -> Path:
+        """Get the path for a checkpoint file"""
+        return client_dir / f"{self.CHECKPOINT_PREFIX}{timestamp}{self.CHECKPOINT_EXTENSION}"
+    
     def _get_all_logs(self, client_dir: Path) -> List[Path]:
         """Get all log files for a client"""
         pattern = f"{self.LOG_PREFIX}*{self.LOG_EXTENSION}"
         return self.storage.list_files(client_dir, pattern)
+    
+    def _get_all_checkpoints(self, client_dir: Path) -> List[Path]:
+        """Get all checkpoint files for a client"""
+        pattern = f"{self.CHECKPOINT_PREFIX}*{self.CHECKPOINT_EXTENSION}"
+        return self.storage.list_files(client_dir, pattern)
+    
+    def _get_latest_checkpoint(self, client_dir: Path) -> Optional[Path]:
+        """Get the most recent checkpoint file"""
+        checkpoint_files = self._get_all_checkpoints(client_dir)
+        
+        if not checkpoint_files:
+            return None
+            
+        # Sort by timestamp in filename (descending)
+        checkpoint_files.sort(reverse=True)
+        return checkpoint_files[0]
+    
+    def _count_logs(self, client_dir: Path) -> int:
+        """Count the number of log files for a client"""
+        logs = self._get_all_logs(client_dir)
+        return len(logs)
+    
+    def _create_checkpoint(self, client_id: str) -> bool:
+        """
+        Create a checkpoint for a client by merging all existing logs.
+        
+        Args:
+            client_id: Client identifier
+            
+        Returns:
+            bool: True if checkpoint created successfully
+        """
+        client_dir = self._get_client_dir(client_id)
+        
+        try:
+            # Get all log files
+            log_files = self._get_all_logs(client_dir)
+            if not log_files:
+                logging.warning(f"No logs found for client {client_id}, skipping checkpoint creation")
+                return False
+                
+            # Load all log entries
+            log_entries = []
+            
+            for log_file in log_files:
+                try:
+                    # Read the log content
+                    content = self.storage.read_file(log_file)
+                    
+                    # Skip processing logs
+                    content_lines = content.splitlines()
+                    if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
+                        continue
+                    
+                    # Parse data from content (skip status line)
+                    if len(content_lines) > 1:
+                        data_content = "\n".join(content_lines[1:])
+                        parsed_data = self.state_interpreter.parse_data(data_content)
+                        # Add to log entries
+                        log_entries.append(parsed_data)
+                except Exception as e:
+                    logging.warning(f"Error processing log file {log_file} for checkpoint: {e}")
+                    
+            # If no valid logs, skip checkpoint
+            if not log_entries:
+                return False
+                
+            # Create checkpoint
+            timestamp = str(int(time.time() * 1000))  # millisecond precision
+            checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
+            
+            # Use state interpreter to create merged representation
+            if hasattr(self.state_interpreter, 'merge_checkpoint_data'):
+                merged_data = self.state_interpreter.merge_checkpoint_data(log_entries)
+            else:
+                # Fall back to merge_data if merge_checkpoint_data doesn't exist
+                merged_data = self.state_interpreter.merge_data(log_entries)
+            
+            # Format the checkpoint data - only include merged data
+            formatted_data = self.state_interpreter.format_data({
+                "data": merged_data
+            })
+            
+            # Write checkpoint file
+            checkpoint_content = f"{self.STATUS_COMPLETED}\n{formatted_data}"
+            success = self.storage.write_file(checkpoint_path, checkpoint_content)
+            
+            if success:
+                logging.info(f"Created checkpoint for client {client_id} with {len(log_entries)} log entries")
+                
+                # Do not delete logs to keep all history for debugging
+                logging.info(f"Keeping all logs for client {client_id} for debugging purposes")
+                
+                return True
+            else:
+                logging.error(f"Failed to write checkpoint file for client {client_id}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error creating checkpoint for client {client_id}: {e}")
+            return False
     
     def persist(self, client_id: str, data: Any, operation_id: str) -> bool:
         """
@@ -90,9 +202,13 @@ class WriteAheadLog(DataPersistenceInterface):
         client_dir = self._get_client_dir(client_id)
         log_file_path = self._get_log_file_path(client_dir, internal_id)
         
+        # Convert batch to message_id in data
+        if isinstance(data, dict) and 'batch' in data and 'message_id' not in data:
+            data = data.copy()  # Make a copy to avoid modifying the original
+            data['message_id'] = data.pop('batch')  # Replace batch with message_id
+            
         # Add the operation_id to data for reference
         if isinstance(data, dict):
-            data = data.copy()  # Make a copy to avoid modifying the original
             data['_external_operation_id'] = operation_id
         
         # Check if already processed
@@ -125,6 +241,21 @@ class WriteAheadLog(DataPersistenceInterface):
                 return False
             
             logging.info(f"Successfully persisted log for operation {operation_id}")
+            
+            # Initialize client log count if not exists
+            if client_id not in self.log_count:
+                self.log_count[client_id] = 0
+                
+            # Increment log count for this client
+            self.log_count[client_id] += 1
+            
+            # Check if we need to create a checkpoint
+            if self.log_count[client_id] >= self.CHECKPOINT_THRESHOLD:
+                logging.info(f"Log count {self.log_count[client_id]} reached threshold {self.CHECKPOINT_THRESHOLD}, creating checkpoint")
+                self._create_checkpoint(client_id)
+                # Reset log count after checkpoint creation
+                self.log_count[client_id] = 0
+            
             return True
             
         except Exception as e:
@@ -136,7 +267,10 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def retrieve(self, client_id: str) -> Any:
         """
-        Retrieve data for a client by processing all log files.
+        Retrieve data for a client.
+        
+        This method combines data from the latest checkpoint (if any)
+        and all subsequent log files to provide the most up-to-date view.
         
         Args:
             client_id: Client identifier
@@ -149,9 +283,36 @@ class WriteAheadLog(DataPersistenceInterface):
         # Data storage
         all_data = {}
         
+        # Try to get the latest checkpoint
+        latest_checkpoint = self._get_latest_checkpoint(client_dir)
+        if latest_checkpoint:
+            try:
+                # Read checkpoint content
+                content = self.storage.read_file(latest_checkpoint)
+                
+                # Skip the status line
+                content_lines = content.splitlines()
+                if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
+                    # Parse the checkpoint data
+                    checkpoint_content = "\n".join(content_lines[1:])
+                    parsed_data = self.state_interpreter.parse_data(checkpoint_content)
+                    
+                    # Extract data from checkpoint
+                    if isinstance(parsed_data, dict):
+                        if "data" in parsed_data:
+                            checkpoint_data = parsed_data["data"]
+                            if isinstance(checkpoint_data, dict):
+                                # Store checkpoint data with special key
+                                all_data["_checkpoint_data"] = checkpoint_data
+                                
+                                # Add checkpoint filename key to help identify it in logs
+                                checkpoint_name = latest_checkpoint.name
+                                all_data[checkpoint_name] = {"data": checkpoint_data}
+            except Exception as e:
+                logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
+        
         # Get all log files
         log_files = self._get_all_logs(client_dir)
-        logging.info(f"Found {len(log_files)} log files for client {client_id}")
         
         # Process each log file
         for log_file in log_files:
@@ -163,10 +324,9 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Read the log content
                 content = self.storage.read_file(log_file)
                 
-                # Skip processing logs that are not completed
+                # Skip processing logs
                 content_lines = content.splitlines()
                 if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
-                    logging.info(f"Skipping incomplete log: {log_file}")
                     continue
                 
                 # Parse data from content (skip status line)
@@ -174,7 +334,6 @@ class WriteAheadLog(DataPersistenceInterface):
                     data_content = "\n".join(content_lines[1:])
                     parsed_data = self.state_interpreter.parse_data(data_content)
                     all_data[operation_id] = parsed_data
-                    logging.debug(f"Processed log for operation {operation_id}")
             except Exception as e:
                 logging.warning(f"Error processing log file {log_file}: {e}")
         
@@ -206,7 +365,7 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def recover_state(self) -> Dict[str, Any]:
         """
-        Recover all completed operations from log files.
+        Recover all completed operations from log files and checkpoints.
         
         Returns:
             Dict[str, Any]: Dictionary mapping client_ids to their recovered data

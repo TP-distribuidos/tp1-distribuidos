@@ -81,17 +81,13 @@ class WriteAheadLog(DataPersistenceInterface):
                 if Path(item).is_dir():
                     client_dirs.append(item)
             
-            logging.info(f"Found {len(client_dirs)} client directories for loading state")
-            
-            # Process each client directory
+            logging.info(f"Found {len(client_dirs)} client directories for loading state")                # Process each client directory
             for client_dir in client_dirs:
                 client_id = Path(client_dir).name
                 
                 # Initialize client data structures if not exists
                 if client_id not in self.processed_ids:
                     self.processed_ids[client_id] = set()
-                if client_id not in self.log_count:
-                    self.log_count[client_id] = 0
                 
                 # Get the latest checkpoint for this client
                 # Get all checkpoints and filter for valid ones
@@ -151,21 +147,6 @@ class WriteAheadLog(DataPersistenceInterface):
                                 for msg_id in message_ids:
                                     self.processed_ids[client_id].add(str(msg_id))
                                 
-                                # Extract log_count from checkpoint metadata
-                                if "_metadata" in checkpoint_data and isinstance(checkpoint_data["_metadata"], dict):
-                                    if "log_count" in checkpoint_data["_metadata"]:
-                                        log_count = checkpoint_data["_metadata"]["log_count"]
-                                        self.log_count[client_id] = log_count
-                                        logging.info(f"Restored log_count {log_count} from checkpoint metadata for client {client_id}")
-                                # Legacy format with data wrapper
-                                elif "data" in checkpoint_data and isinstance(checkpoint_data["data"], dict):
-                                    inner_data = checkpoint_data["data"]
-                                    if "_metadata" in inner_data and isinstance(inner_data["_metadata"], dict):
-                                        if "log_count" in inner_data["_metadata"]:
-                                            log_count = inner_data["_metadata"]["log_count"]
-                                            self.log_count[client_id] = log_count
-                                            logging.info(f"Restored log_count {log_count} from checkpoint metadata for client {client_id}")
-                                
                                 logging.info(f"Loaded {len(message_ids)} processed message IDs from checkpoint for client {client_id}")
                     except Exception as e:
                         logging.error(f"Error loading processed IDs from checkpoint for client {client_id}: {e}")
@@ -203,12 +184,13 @@ class WriteAheadLog(DataPersistenceInterface):
                     except Exception as e:
                         logging.warning(f"Error processing log file {log_file} for processed IDs: {e}")
                 
-                # Only update log count based on current log files if it wasn't 
-                # already loaded from checkpoint metadata
-                if client_id not in self.log_count or self.log_count[client_id] == 0:
-                    log_file_count = len(log_files)
+                # Update the log count based on the actual number of log files
+                log_file_count = len(log_files)
+                if client_id not in self.log_count:
                     self.log_count[client_id] = log_file_count
-                    logging.info(f"Set log_count to {log_file_count} based on existing log files for client {client_id}")
+                else:
+                    self.log_count[client_id] = log_file_count
+                logging.info(f"Set log_count to {log_file_count} based on existing log files for client {client_id}")
                 
                 logging.info(f"Client {client_id} has {len(self.processed_ids[client_id])} " +
                              f"processed message IDs and log count {self.log_count[client_id]}")
@@ -388,12 +370,11 @@ class WriteAheadLog(DataPersistenceInterface):
             # Create a WAL-specific checkpoint structure with:
             # 1. Business data from the merge
             # 2. WAL-tracked message IDs
-            # 3. WAL metadata (log_count, timestamp)
+            # 3. WAL metadata (timestamp only - no log_count as we count files directly)
             checkpoint_structure = {
                 "content": merged_business_data.get("content", ""),
                 "messages_id": sorted(list(all_message_ids)),  # WAL's responsibility to track these
                 "_metadata": {
-                    "log_count": self.log_count.get(client_id, 0),
                     "timestamp": timestamp
                 }
             }
@@ -510,18 +491,15 @@ class WriteAheadLog(DataPersistenceInterface):
             # Successfully persisted - update tracking information
             self.processed_ids[client_id].add(message_id)
             
-            # Manage log count and checkpoint creation
-            if client_id not in self.log_count:
-                self.log_count[client_id] = 0
-            
-            self.log_count[client_id] += 1
+            # Get the current log count based on actual files
+            log_files = self._get_all_logs(client_dir)
+            self.log_count[client_id] = len(log_files)
             logging.info(f"Successfully persisted log for operation {operation_id}, log count: {self.log_count[client_id]}")
             
             # Create a checkpoint if we've reached the threshold
             if self.log_count[client_id] >= self.CHECKPOINT_THRESHOLD:
                 logging.info(f"Creating checkpoint after reaching threshold of {self.CHECKPOINT_THRESHOLD} logs")
                 self._create_checkpoint(client_id)
-                self.log_count[client_id] = 0
             
             return True
         
@@ -688,10 +666,7 @@ class WriteAheadLog(DataPersistenceInterface):
                 self.processed_ids[client_id] = set()
                 logging.info(f"Cleared {processed_count} processed message IDs for client {client_id}")
             
-            # Reset log count for this client
-            if client_id in self.log_count:
-                self.log_count[client_id] = 0
-                logging.info(f"Reset log count for client {client_id}")
+            # The log_count will be automatically 0 on next access since we're counting actual files
                 
             return True
         except Exception as e:

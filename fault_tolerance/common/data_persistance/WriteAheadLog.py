@@ -65,11 +65,12 @@ class WriteAheadLog(DataPersistenceInterface):
         # Set up logging
         logging.info(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
         
+        # Clean up any redundant logs (logs whose message IDs are already in checkpoints)
+        self._cleanup_redundant_logs()
+        
         # Load the processed message IDs and log counts from checkpoints
         self._load_processed_ids_and_log_counts()
         
-        # Clean up any redundant logs (logs whose message IDs are already in checkpoints)
-        self._cleanup_redundant_logs()
         
     def _load_processed_ids_and_log_counts(self):
         """

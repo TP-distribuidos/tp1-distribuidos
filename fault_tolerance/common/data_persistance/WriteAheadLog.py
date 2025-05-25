@@ -354,8 +354,7 @@ class WriteAheadLog(DataPersistenceInterface):
             # Create checkpoint using a two-phase approach
             timestamp = str(int(time.time() * 1000))  # millisecond precision
             
-            # Phase 1: Create a temporary checkpoint file
-            temp_checkpoint_path = self._get_checkpoint_file_path(client_dir, f"temp_{timestamp}")
+            # Create the checkpoint file path
             checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
             
             # Use state interpreter to create merged representation
@@ -374,29 +373,19 @@ class WriteAheadLog(DataPersistenceInterface):
             # Format the checkpoint data - directly use the merged data without any wrapper
             formatted_data = self.state_interpreter.format_data(merged_data)
             
-            # Phase 1: Write to temporary checkpoint file first
-            # Use PROCESSING status to indicate incomplete checkpoint
-            temp_checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
-            success = self.storage.write_file(temp_checkpoint_path, temp_checkpoint_content)
+            # Write the checkpoint file with PROCESSING status initially
+            checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
+            success = self.storage.write_file(checkpoint_path, checkpoint_content)
             
             if not success:
-                logging.error(f"Failed to write temporary checkpoint file for client {client_id}")
+                logging.error(f"Failed to write checkpoint file for client {client_id}")
                 return False
                 
-            # Phase 2: Now that temp file is written, create the final checkpoint file
-            checkpoint_content = f"{self.STATUS_COMPLETED}\n{formatted_data}"
-            success = self.storage.write_file(checkpoint_path, checkpoint_content)
+            # Update just the status line to COMPLETED - more efficient than rewriting the whole file
+            success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
                 logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(merge_items)} items")
-                
-                # Phase 3: Clean up - delete temporary file now that final checkpoint is ready
-                try:
-                    self.storage.delete_file(temp_checkpoint_path)
-                    logging.debug(f"Deleted temporary checkpoint file {temp_checkpoint_path.name}")
-                except Exception as e:
-                    logging.warning(f"Error deleting temporary checkpoint {temp_checkpoint_path}: {e}")
-                    # Continue with cleanup even if temp file deletion fails
                 
                 # Delete old checkpoint since we've incorporated its data into the new one
                 if latest_checkpoint:
@@ -411,7 +400,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 for log_file in log_files:
                     try:
                         self.storage.delete_file(log_file)
-                        logging.info(f"Deleted log file {log_file.name} after checkpoint creation")
                     except Exception as e:
                         logging.warning(f"Error deleting log file {log_file}: {e}")
                 
@@ -419,14 +407,7 @@ class WriteAheadLog(DataPersistenceInterface):
             else:
                 logging.error(f"Failed to write checkpoint file for client {client_id}")
                 
-                # Clean up the temporary file if the final write failed
-                try:
-                    if self.storage.file_exists(temp_checkpoint_path):
-                        self.storage.delete_file(temp_checkpoint_path)
-                        logging.debug(f"Deleted temporary checkpoint file after final checkpoint creation failed")
-                except Exception as e:
-                    logging.warning(f"Error cleaning up temporary checkpoint file: {e}")
-                    
+                # No cleanup needed as we're overwriting the same file
                 return False
                 
         except Exception as e:
@@ -658,7 +639,7 @@ class WriteAheadLog(DataPersistenceInterface):
                         "content": content  # Each message contains the full content for now
                     }
                 
-                logging.info(f"Created consolidated view with {len(message_ids)} messages")
+                logging.info(f"HERE {consolidated_view}")
                 return consolidated_view
             
             # Fallback - if the consolidated structure isn't as expected, return all data

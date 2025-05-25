@@ -155,3 +155,17 @@ class StorageInterface(abc.ABC):
             IOError: If open operation fails
         """
         pass
+        
+    @abc.abstractmethod
+    def update_first_line(self, path: Path, new_content: str) -> bool:
+        """
+        Update only the first line of a file, preserving the rest of the content
+        
+        Args:
+            path: Path to the file
+            new_content: New content for the first line (without newline)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass

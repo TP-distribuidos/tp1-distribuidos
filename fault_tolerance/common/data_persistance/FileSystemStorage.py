@@ -104,3 +104,32 @@ class FileSystemStorage(StorageInterface):
         except Exception as e:
             logging.error(f"Error opening file {path}: {e}")
             raise
+            
+    def update_first_line(self, path: Path, new_content: str) -> bool:
+        """Update only the first line of a file, preserving the rest of the content"""
+        if not self.file_exists(path):
+            logging.error(f"Cannot update first line of non-existent file {path}")
+            return False
+            
+        try:
+            # Read all content from the file
+            with open(path, 'r') as file:
+                lines = file.readlines()
+                
+            if not lines:
+                logging.warning(f"File {path} is empty, cannot update first line")
+                return False
+                
+            # Replace only the first line, ensuring it has a newline
+            lines[0] = new_content + '\n'
+            
+            # Write all lines back to the file
+            with open(path, 'w') as file:
+                file.writelines(lines)
+                file.flush()
+                os.fsync(file.fileno())
+                
+            return True
+        except Exception as e:
+            logging.error(f"Error updating first line of file {path}: {e}")
+            return False

@@ -88,14 +88,27 @@ class ConsumerWorker:
             # Identify clients with message_id 10 messages that need to be written
             for client_id, data in recovered_data.items():
                 if data:
-                    # Check if we have any message_id 10 messages that need to be written
-                    for op_id, entry in data.items():
-                        if isinstance(entry, dict) and (
-                            entry.get('message_id') == '10' or 
-                            entry.get('batch') == '10'  # Legacy support
-                        ):
-                            clients_to_process.append(client_id)
-                            break
+                    found_message10 = False
+                    message10_count = 0
+                    
+                    # Iterate through entries looking for message_id 10
+                    for key, entry in data.items():
+                        if isinstance(entry, dict):
+                            # Look for message_id or batch field using a generic approach
+                            for id_field in ['message_id', 'batch']:
+                                if id_field in entry:
+                                    msg_id = entry.get(id_field)
+                                    
+                                    # Check if this is message_id 10
+                                    if msg_id == '10' or msg_id == 10:
+                                        if not found_message10:
+                                            clients_to_process.append(client_id)
+                                            found_message10 = True
+                                        message10_count += 1
+                                        break
+                    
+                    if found_message10:
+                        logging.info(f"Found client {client_id} with {message10_count} 'message_id 10' entries")
             
             # We'll process these clients during the run method
             self.clients_to_process = clients_to_process
@@ -191,15 +204,16 @@ class ConsumerWorker:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(message.body)
             
-            # Get message ID - handle both batch and message_id fields for compatibility
-            message_id = deserialized_message.get('message_id')
-            if message_id is None:
-                # If message_id is not present, try batch for backward compatibility
-                message_id = deserialized_message.get('batch')
+            # Extract message ID with fallbacks for compatibility
+            message_id = None
+            for id_field in ['message_id', 'batch']:
+                if id_field in deserialized_message:
+                    message_id = deserialized_message.get(id_field)
+                    break
             
-            # Ensure we have a message ID
+            # Generate a message ID if none exists
             if message_id is None:
-                logging.warning("Message received without message_id or batch field, generating random ID")
+                logging.warning("Message received without ID field, generating one")
                 message_id = str(int(time.time() * 1000))  # Use timestamp as fallback
                 
             # Convert message_id to string for consistent handling
@@ -210,31 +224,29 @@ class ConsumerWorker:
             client_id = "default"  # Using single client_id for this example
             
             # Log the message structure for debugging
-            logging.info(f"Message content length: {len(str(deserialized_message.get('content', '')))}")
+            content_len = len(str(deserialized_message.get('content', '')))
+            logging.info(f"Message content length: {content_len}")
             
-            # Create a copy of the message to avoid modifying the original
+            # Create a normalized copy of the message
             message_to_persist = deserialized_message.copy()
             
-            # Ensure message_id is set in the persisted data
-            if 'message_id' not in message_to_persist and 'batch' in message_to_persist:
-                # WAL will convert batch to message_id internally, but we set it here for clarity
-                message_to_persist['message_id'] = message_to_persist['batch']
+            # Ensure message_id is consistently set
+            message_to_persist['message_id'] = message_id
             
-            # Persist message to WAL
+            # Persist message to WAL - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, message_to_persist, message_id):
                 logging.info(f"Message {message_id} successfully persisted to WAL")
                 
                 # If this is message_id 10, write all data to file
                 try:
-                    msg_num = int(message_id) if isinstance(message_id, str) else message_id
-                    if message_id and msg_num == 10:
-                        logging.info(f"Found message_id 10 message, writing all data to file")
+                    msg_num = int(message_id) 
+                    if msg_num == 10:
+                        logging.info(f"Found message_id 10, writing all data to file")
                         await self._write_to_file(client_id)
-                        logging.info(f"Successfully processed message_id 10 message")
+                        logging.info(f"Successfully processed message_id 10")
                     else:
                         logging.info(f"Message {message_id} processed (not message_id 10)")
                 except (ValueError, TypeError) as e:
-                    logging.warning(f"Error processing message_id {message_id}: {e}")
                     logging.info(f"Message with non-numeric message_id {message_id} processed")
                 
                 # Acknowledge message
@@ -253,6 +265,7 @@ class ConsumerWorker:
     async def _write_to_file(self, client_id):
         """Write client_id's messages to output file"""
         try:
+            # Retrieve consolidated data from the persistence layer
             data = self.data_persistance.retrieve(client_id)
             if not data:
                 logging.info(f"No data to write for client {client_id}")
@@ -260,123 +273,101 @@ class ConsumerWorker:
                 
             logging.info(f"Writing data to file for client {client_id}")
             
-            # Debug log for available keys
-            logging.info(f"Data keys available: {', '.join(data.keys())}")
-            
-            # Check for checkpoint data first
-            combined_content = ""
-            
-            # First check for special checkpoint key
-            if "_checkpoint_data" in data:
-                checkpoint_entry = data["_checkpoint_data"]
-                if isinstance(checkpoint_entry, dict):
-                    # New format
-                    if "messages_id" in checkpoint_entry and "content" in checkpoint_entry:
-                        message_ids = checkpoint_entry.get("messages_id", [])
-                        message_count = len(message_ids)
-                        combined_content = checkpoint_entry.get("content", "")
-                        logging.info(f"Found checkpoint with {message_count} messages and content length {len(combined_content)}")
-                        
-            # If still no content, look through other checkpoint entries
-            if not combined_content:
-                for op_id, entry in data.items():
-                    if isinstance(entry, dict):
-                        # Check for checkpoint files - both old and new formats
-                        if op_id.startswith("checkpoint_"):
-                            # Legacy format with data wrapper
-                            if "data" in entry and isinstance(entry["data"], dict):
-                                checkpoint_data = entry["data"]
-                                if "messages_id" in checkpoint_data and "content" in checkpoint_data:
-                                    message_ids = checkpoint_data.get("messages_id", [])
-                                    message_count = len(message_ids)
-                                    combined_content = checkpoint_data.get("content", "")
-                                    logging.info(f"Found legacy checkpoint with {message_count} messages and content length {len(combined_content)}")
-                                    break
-                            # New format without wrapper
-                            elif "messages_id" in entry and "content" in entry:
-                                message_ids = entry.get("messages_id", [])
-                                message_count = len(message_ids)
-                                combined_content = entry.get("content", "")
-                                logging.info(f"Found checkpoint with {message_count} messages and content length {len(combined_content)}")
-                                break
-            
-            # If no combined content from checkpoint, create it from messages
-            if not combined_content:
-                # We'll collect all message content in order
-                message_contents = {}
-                message_ids = []
-                
-                # Collect content from each log entry
-                for op_id, entry in data.items():
-                    # Only process entries that are message dictionaries
-                    if not isinstance(entry, dict):
-                        continue
-                        
-                    # Look for message_id and content
-                    msg_id = None
-                    if "message_id" in entry:
-                        msg_id = entry.get("message_id")
-                    elif "_message_id" in entry:
-                        msg_id = entry.get("_message_id")
-                    elif "batch" in entry:  # Legacy support
-                        msg_id = entry.get("batch")
-                        
-                    if msg_id and "content" in entry:
-                        content = entry.get("content", "")
-                        if not content:
-                            continue
-                            
-                        try:
-                            # Try to convert message ID to int for proper ordering
-                            if isinstance(msg_id, str) and msg_id.isdigit():
-                                msg_id = int(msg_id)
-                            message_contents[msg_id] = content
-                            message_ids.append(msg_id)
-                        except (ValueError, TypeError):
-                            # If message_id can't be interpreted as a number, use it as a string
-                            message_contents[msg_id] = content
-                            message_ids.append(msg_id)
-                
-                # Build combined content in message_id order
-                logging.info("Building combined content from individual messages")
-                
-                # Get unique, sorted message IDs for proper order
-                unique_ids = sorted(set(message_ids))
-                message_count = len(unique_ids)
-                
-                # Combine the content in message_id order
-                for msg_id in unique_ids:
-                    content = message_contents.get(msg_id, "")
+            # Check for consolidated data from the WAL
+            if isinstance(data, dict) and "_consolidated_data" in data:
+                consolidated = data.get("_consolidated_data")
+                if isinstance(consolidated, dict) and "content" in consolidated:
+                    # We have pre-consolidated content from the WAL
+                    content = consolidated.get("content", "")
                     if content:
-                        if combined_content:
-                            combined_content += " "
-                        combined_content += content
-                
-                combined_content = combined_content.strip()
-                logging.info(f"Built combined content from {message_count} messages with length {len(combined_content)}")
+                        message_count = len(consolidated.get("messages_id", []))
+                        logging.info(f"Using pre-consolidated content from WAL with {message_count} messages")
+                        # Format text with line breaks for readability
+                        formatted_text = self._format_text_with_linebreaks(content, 100)
+                        
+                        # Write to file
+                        await self._write_formatted_text(formatted_text)
+                        logging.info(f"Successfully wrote consolidated text from WAL to file")
+                        return
             
-            # Format text with line breaks every ~100 characters for readability
+            # If we don't have pre-consolidated content, extract it ourselves
+            message_contents = {}
+            
+            # Process all entries from the persistence layer
+            for key, entry in data.items():
+                # Skip special keys and non-dictionary entries
+                if not isinstance(entry, dict) or key.startswith("_"):
+                    continue
+                
+                # Extract content and message_id without assuming specific internal structure
+                content = entry.get("content")
+                
+                # Extract message_id with fallbacks for compatibility
+                msg_id = None
+                for id_field in ["message_id", "_message_id", "batch"]:
+                    if id_field in entry:
+                        msg_id = entry.get(id_field)
+                        break
+                
+                # If key is numeric and we don't have a message_id, use the key
+                if msg_id is None and isinstance(key, str) and key.isdigit():
+                    msg_id = key
+                
+                # Store content with its message_id for ordering
+                if content and msg_id is not None:
+                    # Try to normalize message ID for proper sorting
+                    try:
+                        if isinstance(msg_id, str) and msg_id.isdigit():
+                            msg_id = int(msg_id)
+                    except (ValueError, TypeError):
+                        # Keep as is if conversion fails
+                        pass
+                    
+                    # Store the content
+                    message_contents[msg_id] = content
+            
+            # If we found no valid content, exit
+            if not message_contents:
+                logging.info(f"No valid message content found for client {client_id}")
+                return
+                
+            # Build combined content in message_id order
+            logging.info(f"Building combined content from {len(message_contents)} messages")
+            
+            # Sort message IDs for ordered processing
+            sorted_ids = sorted(message_contents.keys())
+            
+            # Combine message content in order
+            combined_content = " ".join(message_contents[msg_id] for msg_id in sorted_ids if message_contents[msg_id])
+            combined_content = combined_content.strip()
+            
+            logging.info(f"Built combined content with length {len(combined_content)}")
+            
+            # Format text with line breaks for readability
             formatted_text = self._format_text_with_linebreaks(combined_content, 100)
             
-            # Write to file (async)
-            try:
-                # Try to get the running loop, and handle the case where there's no loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, self._write_to_file_sync, formatted_text)
-                except RuntimeError:
-                    # If there's no running event loop, perform synchronous write
-                    logging.info("No running event loop, performing synchronous write")
-                    self._write_to_file_sync(formatted_text)
-            except Exception as e:
-                logging.error(f"Error during file write operation: {e}")
-                # Fall back to synchronous write
-                self._write_to_file_sync(formatted_text)
-            
+            # Write to file
+            await self._write_formatted_text(formatted_text)
             logging.info(f"Successfully wrote lorem text to file")
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")
+    
+    async def _write_formatted_text(self, formatted_text):
+        """Write formatted text to file with proper error handling"""
+        try:
+            # Try to get the running loop, and handle the case where there's no loop
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._write_to_file_sync, formatted_text)
+            except RuntimeError:
+                # If there's no running event loop, perform synchronous write
+                logging.info("No running event loop, performing synchronous write")
+                self._write_to_file_sync(formatted_text)
+        except Exception as e:
+            logging.error(f"Error during file write operation: {e}")
+            # Fall back to synchronous write
+            self._write_to_file_sync(formatted_text)
     
     def _format_text_with_linebreaks(self, text, line_length=100):
         """Format text with line breaks after each full stop (period)"""

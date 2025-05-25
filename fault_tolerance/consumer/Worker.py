@@ -288,6 +288,8 @@ class ConsumerWorker:
                         # Write to file
                         await self._write_formatted_text(formatted_text)
                         logging.info(f"Successfully wrote consolidated text from WAL to file")
+                        
+                        self.data_persistance.clear(client_id)
                         return
             
             # If we don't have pre-consolidated content, extract it ourselves
@@ -349,6 +351,9 @@ class ConsumerWorker:
             # Write to file
             await self._write_formatted_text(formatted_text)
             logging.info(f"Successfully wrote lorem text to file")
+            
+            # No longer clearing WAL data - keeping it for improved fault tolerance
+            logging.info(f"Keeping WAL data for client {client_id} for fault tolerance")
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")

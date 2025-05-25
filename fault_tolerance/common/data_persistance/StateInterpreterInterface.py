@@ -11,11 +11,22 @@ class StateInterpreterInterface(abc.ABC):
         """
         Format data for storage.
         
+        IMPORTANT: This method MUST return a JSON string representing a dictionary 
+        with exactly these two keys:
+        - "data": Contains the business data to be stored
+        - "_wal_metadata": An empty dict (or with custom metadata) that WAL will populate
+        
+        Example:
+        {
+            "data": your_business_data,
+            "_wal_metadata": {}
+        }
+        
         Args:
-            data: Data to format
+            data: Business data to format
             
         Returns:
-            str: Formatted data from worker to for DataPersistance class
+            str: JSON string with the required structure
         """
         pass
     

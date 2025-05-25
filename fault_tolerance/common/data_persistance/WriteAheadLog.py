@@ -268,11 +268,6 @@ class WriteAheadLog(DataPersistenceInterface):
         # No valid completed checkpoints found
         return None
     
-    def _count_logs(self, client_dir: Path) -> int:
-        """Count the number of log files for a client"""
-        logs = self._get_all_logs(client_dir)
-        return len(logs)
-    
     def _create_checkpoint(self, client_id: str) -> bool:
         """
         Create a checkpoint for a client by merging the latest checkpoint (if any) with recent logs.
@@ -461,7 +456,7 @@ class WriteAheadLog(DataPersistenceInterface):
         Args:
             client_id: Client identifier
             data: Business data to persist (domain-specific)
-            operation_id: External ID used for reference
+            operation_id: External ID used for reference (used as message_id for deduplication)
             
         Returns:
             bool: True if successfully persisted
@@ -484,92 +479,64 @@ class WriteAheadLog(DataPersistenceInterface):
         if message_id in self.processed_ids[client_id]:
             logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping")
             return True
-            
-        # Check if there's an existing log file for this operation
-        if self.storage.file_exists(log_file_path):
-            try:
-                content = self.storage.read_file(log_file_path)
-                if content.startswith(self.STATUS_COMPLETED):
-                    logging.info(f"Data for client {client_id}, operation {operation_id} already persisted")
-                    
-                    # Add to processed IDs
-                    self.processed_ids[client_id].add(message_id)
-                    return True
-            except Exception as e:
-                logging.warning(f"Failed to read existing log file: {e}")
-                # Continue with rewriting
         
         try:
             # Let the state interpreter format the data as a string representation
+            # The format_data method MUST return a JSON string representing a dictionary with data and _wal_metadata fields
             intermediate_data = self.state_interpreter.format_data(data)
-            logging.debug(f"Formatted data for client {client_id}, operation {operation_id}")
             
-            # Create WAL record with metadata
-            try:
-                # Parse the intermediate data to add WAL metadata
-                parsed_data = json.loads(intermediate_data)
+            # Parse the intermediate data and add WAL-specific metadata
+            parsed_data = json.loads(intermediate_data)
+            
+            # Validate the contract with StateInterpreter
+            if not isinstance(parsed_data, dict) or "data" not in parsed_data or "_wal_metadata" not in parsed_data:
+                raise ValueError(f"StateInterpreter.format_data must return a JSON string with 'data' and '_wal_metadata' fields")
                 
-                # Validate the expected structure from StateInterpreter
-                if isinstance(parsed_data, dict):
-                    # Handle checkpoint data structure (special case)
-                    if "messages_id" in parsed_data and "content" in parsed_data:
-                        # Checkpoint data should be preserved as-is
-                        formatted_data = intermediate_data
-                    # Handle standard WAL structure
-                    elif "data" in parsed_data and "_wal_metadata" in parsed_data:
-                        # Add WAL-specific metadata
-                        parsed_data["_wal_metadata"]["timestamp"] = timestamp
-                        parsed_data["_wal_metadata"]["message_id"] = message_id
-                        formatted_data = json.dumps(parsed_data)
-                    else:
-                        # Unexpected format - rely on StateInterpreter to handle this
-                        logging.warning(f"Unexpected data format from StateInterpreter")
-                        formatted_data = intermediate_data
-                else:
-                    # Non-dict structure - use as-is
-                    formatted_data = intermediate_data
-            except json.JSONDecodeError as e:
-                # If not valid JSON, log warning and use as-is
-                logging.warning(f"StateInterpreter returned non-JSON data: {e}")
-                formatted_data = intermediate_data
+            # Add WAL metadata (timestamp and message_id for deduplication)
+            parsed_data["_wal_metadata"]["timestamp"] = timestamp
+            parsed_data["_wal_metadata"]["message_id"] = message_id
+            formatted_data = json.dumps(parsed_data)
             
-            # Create log content with status header
+            # Two-phase commit approach:
+            # 1. Write with PROCESSING status
             log_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
-            
-            # Write the log file (first phase)
-            success = self.storage.write_file(log_file_path, log_content)
-            if not success:
+            if not self.storage.write_file(log_file_path, log_content):
                 return False
                 
-            # Update the status to COMPLETED (second phase) - use update_first_line for efficiency
-            success = self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED)
-            if not success:
+            # 2. Update status to COMPLETED
+            if not self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED):
                 return False
             
-            logging.info(f"Successfully persisted log for operation {operation_id}")
-            
-            # Add the message ID to the set of processed IDs
+            # Successfully persisted - update tracking information
             self.processed_ids[client_id].add(message_id)
-            logging.debug(f"Added message ID {message_id} to processed IDs for client {client_id}")
             
-            # Initialize client log count if not exists
+            # Manage log count and checkpoint creation
             if client_id not in self.log_count:
                 self.log_count[client_id] = 0
-                
-            # Increment log count for this client
-            self.log_count[client_id] += 1
             
-            # Check if we need to create a checkpoint
+            self.log_count[client_id] += 1
+            logging.info(f"Successfully persisted log for operation {operation_id}, log count: {self.log_count[client_id]}")
+            
+            # Create a checkpoint if we've reached the threshold
             if self.log_count[client_id] >= self.CHECKPOINT_THRESHOLD:
+                logging.info(f"Creating checkpoint after reaching threshold of {self.CHECKPOINT_THRESHOLD} logs")
                 self._create_checkpoint(client_id)
-                # Reset log count after checkpoint creation
                 self.log_count[client_id] = 0
             
             return True
+        
+        except json.JSONDecodeError as e:
+            logging.error(f"StateInterpreter.format_data returned invalid JSON for client {client_id}: {e}")
+            raise ValueError("StateInterpreter must return valid JSON") from e
+        
+        except ValueError as e:
+            # Re-raise contract violations from the StateInterpreter
+            logging.error(f"Contract violation with StateInterpreter: {e}")
+            raise
             
         except Exception as e:
             logging.error(f"Error persisting data for client {client_id}: {e}")
-            # Try to remove the file if it exists and is corrupted
+            # Clean up any partial writes
             if self.storage.file_exists(log_file_path):
                 self.storage.delete_file(log_file_path)
             return False

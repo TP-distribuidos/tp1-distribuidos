@@ -269,8 +269,7 @@ class ConsumerWorker:
                     await self._write_formatted_text(formatted_text)
                     logging.info(f"Successfully wrote text to file, length: {len(content)}")
                     
-                    # No longer clearing WAL data - keeping it for improved fault tolerance
-                    logging.info(f"Keeping WAL data for client {client_id} for fault tolerance")
+                    self.data_persistance.clear(client_id)
                     return
             
             # If we get here, the data structure wasn't as expected

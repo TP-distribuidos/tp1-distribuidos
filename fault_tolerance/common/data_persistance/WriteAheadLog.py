@@ -560,19 +560,13 @@ class WriteAheadLog(DataPersistenceInterface):
                             # Legacy format with data wrapper
                             inner_data = checkpoint_data["data"]
                             if isinstance(inner_data, dict):
-                                # Store checkpoint data with special key
-                                all_data["_checkpoint_data"] = inner_data
-                                
-                                # Add checkpoint filename key to help identify it in logs
+                                # Store checkpoint with filename as key
                                 checkpoint_name = latest_checkpoint.name
                                 all_data[checkpoint_name] = {"data": inner_data}
                                 logging.debug(f"Retrieved legacy format checkpoint {checkpoint_name}")
                         elif "messages_id" in checkpoint_data and "content" in checkpoint_data:
                             # New format without data wrapper
-                            # Store checkpoint data with special key
-                            all_data["_checkpoint_data"] = checkpoint_data
-                            
-                            # Add checkpoint filename key to help identify it in logs
+                            # Store checkpoint with filename as key
                             checkpoint_name = latest_checkpoint.name
                             all_data[checkpoint_name] = checkpoint_data
                             logging.debug(f"Retrieved new format checkpoint {checkpoint_name}")
@@ -587,9 +581,8 @@ class WriteAheadLog(DataPersistenceInterface):
         # Process each log file
         for log_file in log_files:
             try:
-                # Extract operation ID from filename
+                # Get the log filename
                 file_name = log_file.name
-                operation_id = file_name[len(self.LOG_PREFIX):-len(self.LOG_EXTENSION)]
                 
                 # Read the log content
                 content = self.storage.read_file(log_file)
@@ -603,7 +596,8 @@ class WriteAheadLog(DataPersistenceInterface):
                 if len(content_lines) > 1:
                     data_content = "\n".join(content_lines[1:])
                     parsed_data = self.state_interpreter.parse_data(data_content)
-                    all_data[operation_id] = parsed_data
+                    # Store with the original filename as key
+                    all_data[file_name] = parsed_data
                     logging.debug(f"Retrieved log {file_name}")
             except Exception as e:
                 logging.warning(f"Error processing log file {log_file}: {e}")
@@ -612,7 +606,7 @@ class WriteAheadLog(DataPersistenceInterface):
         if not all_data:
             logging.info(f"No data found for client {client_id}")
             return None
-        
+        logging.info(f"HEREE {all_data}")
         # IMPORTANT: Create a consolidated view before returning
         # This performs a just-in-time consolidation of all data
         try:
@@ -620,29 +614,13 @@ class WriteAheadLog(DataPersistenceInterface):
             logging.info(f"Consolidating data from checkpoint and {len(log_files)} logs for client {client_id}")
             consolidated_data = self.state_interpreter.merge_data(all_data)
             
-            # Create a structure optimized for client consumption
-            consolidated_view = {}
+            logging.info(f"HEREE2 {consolidated_data}")
+            # Just return the consolidated data directly
+            if consolidated_data:
+                logging.info(f"Successfully consolidated data for client {client_id}")
+                return consolidated_data
             
-            # Include messages in the consolidated view with message_id as the key
-            if isinstance(consolidated_data, dict) and "messages_id" in consolidated_data:
-                message_ids = consolidated_data.get("messages_id", [])
-                content = consolidated_data.get("content", "")
-                
-                # Include the consolidated data directly for reference
-                consolidated_view["_consolidated_data"] = consolidated_data
-                
-                # For easier client consumption, extract each message separately
-                # This way the client code doesn't need to know about the internal structure
-                for i, msg_id in enumerate(message_ids):
-                    consolidated_view[str(msg_id)] = {
-                        "message_id": str(msg_id),
-                        "content": content  # Each message contains the full content for now
-                    }
-                
-                logging.info(f"HERE {consolidated_view}")
-                return consolidated_view
-            
-            # Fallback - if the consolidated structure isn't as expected, return all data
+            # Fallback - if consolidation failed, return all data
             return all_data
             
         except Exception as e:

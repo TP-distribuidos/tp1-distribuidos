@@ -221,35 +221,25 @@ class ConsumerWorker:
             
             logging.info(f"Received message - Message ID: {message_id}")
             
-            client_id = "default"  # Using single client_id for this example
-            
-            # Log the message structure for debugging
-            content_len = len(str(deserialized_message.get('content', '')))
-            logging.info(f"Message content length: {content_len}")
-            
+            client_id = "default"
+                        
             # Create a normalized copy of the message
             message_to_persist = deserialized_message.copy()
             
             # Ensure message_id is consistently set
             message_to_persist['message_id'] = message_id
+
+            #WE SEND TO NEXT QUEUE HERE IN REAL PROYECT
             
             # Persist message to WAL - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, message_to_persist, message_id):
-                logging.info(f"Message {message_id} successfully persisted to WAL")
-                
-                # If this is message_id 10, write all data to file
                 try:
                     msg_num = int(message_id) 
                     if msg_num == 10:
-                        logging.info(f"Found message_id 10, writing all data to file")
                         await self._write_to_file(client_id)
-                        logging.info(f"Successfully processed message_id 10")
-                    else:
-                        logging.info(f"Message {message_id} processed (not message_id 10)")
                 except (ValueError, TypeError) as e:
                     logging.info(f"Message with non-numeric message_id {message_id} processed")
                 
-                # Acknowledge message
                 await message.ack()
                 
             else:
@@ -273,87 +263,24 @@ class ConsumerWorker:
                 
             logging.info(f"Writing data to file for client {client_id}")
             
-            # Check for consolidated data from the WAL
-            if isinstance(data, dict) and "_consolidated_data" in data:
-                consolidated = data.get("_consolidated_data")
-                if isinstance(consolidated, dict) and "content" in consolidated:
-                    # We have pre-consolidated content from the WAL
-                    content = consolidated.get("content", "")
-                    if content:
-                        message_count = len(consolidated.get("messages_id", []))
-                        logging.info(f"Using pre-consolidated content from WAL with {message_count} messages")
-                        # Format text with line breaks for readability
-                        formatted_text = self._format_text_with_linebreaks(content, 100)
-                        
-                        # Write to file
-                        await self._write_formatted_text(formatted_text)
-                        logging.info(f"Successfully wrote consolidated text from WAL to file")
-                        
-                        self.data_persistance.clear(client_id)
-                        return
-            
-            # If we don't have pre-consolidated content, extract it ourselves
-            message_contents = {}
-            
-            # Process all entries from the persistence layer
-            for key, entry in data.items():
-                # Skip special keys and non-dictionary entries
-                if not isinstance(entry, dict) or key.startswith("_"):
-                    continue
-                
-                # Extract content and message_id without assuming specific internal structure
-                content = entry.get("content")
-                
-                # Extract message_id with fallbacks for compatibility
-                msg_id = None
-                for id_field in ["message_id", "_message_id", "batch"]:
-                    if id_field in entry:
-                        msg_id = entry.get(id_field)
-                        break
-                
-                # If key is numeric and we don't have a message_id, use the key
-                if msg_id is None and isinstance(key, str) and key.isdigit():
-                    msg_id = key
-                
-                # Store content with its message_id for ordering
-                if content and msg_id is not None:
-                    # Try to normalize message ID for proper sorting
-                    try:
-                        if isinstance(msg_id, str) and msg_id.isdigit():
-                            msg_id = int(msg_id)
-                    except (ValueError, TypeError):
-                        # Keep as is if conversion fails
-                        pass
+            # Check if we have the proper data structure
+            if isinstance(data, dict) and "content" in data:
+                # Get the content from the consolidated data
+                content = data.get("content", "")
+                if content:
+                    # Format text with line breaks for readability
+                    formatted_text = self._format_text_with_linebreaks(content, 100)
                     
-                    # Store the content
-                    message_contents[msg_id] = content
+                    # Write to file
+                    await self._write_formatted_text(formatted_text)
+                    logging.info(f"Successfully wrote text to file, length: {len(content)}")
+                    
+                    # No longer clearing WAL data - keeping it for improved fault tolerance
+                    logging.info(f"Keeping WAL data for client {client_id} for fault tolerance")
+                    return
             
-            # If we found no valid content, exit
-            if not message_contents:
-                logging.info(f"No valid message content found for client {client_id}")
-                return
-                
-            # Build combined content in message_id order
-            logging.info(f"Building combined content from {len(message_contents)} messages")
-            
-            # Sort message IDs for ordered processing
-            sorted_ids = sorted(message_contents.keys())
-            
-            # Combine message content in order
-            combined_content = " ".join(message_contents[msg_id] for msg_id in sorted_ids if message_contents[msg_id])
-            combined_content = combined_content.strip()
-            
-            logging.info(f"Built combined content with length {len(combined_content)}")
-            
-            # Format text with line breaks for readability
-            formatted_text = self._format_text_with_linebreaks(combined_content, 100)
-            
-            # Write to file
-            await self._write_formatted_text(formatted_text)
-            logging.info(f"Successfully wrote lorem text to file")
-            
-            # No longer clearing WAL data - keeping it for improved fault tolerance
-            logging.info(f"Keeping WAL data for client {client_id} for fault tolerance")
+            # If we get here, the data structure wasn't as expected
+            logging.warning(f"Unexpected data structure returned from persistence layer: {type(data)}")
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")

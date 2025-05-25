@@ -92,100 +92,54 @@ class WriteAheadLog(DataPersistenceInterface):
                 if client_id not in self.processed_ids:
                     self.processed_ids[client_id] = set()
                 
-                # Get the latest checkpoint for this client
-                # Get all checkpoints and filter for valid ones
-                checkpoint_files = self._get_all_checkpoints(Path(client_dir))
-                valid_checkpoints = []
-                
-                # First scan and identify any incomplete checkpoints (with PROCESSING status)
-                for ckpt in checkpoint_files:
-                    try:
-                        # Quick check of the first line to see if it's a valid checkpoint
-                        content = self.storage.read_file(ckpt)
-                        content_lines = content.splitlines()
-                        
-                        # Skip incomplete checkpoints
-                        if not content_lines or content_lines[0] == self.STATUS_PROCESSING:
-                            logging.warning(f"Found incomplete checkpoint {ckpt.name} for client {client_id}, skipping")
-                            # Optionally, could delete these incomplete checkpoints here
-                            continue
-                        
-                        if content_lines[0] == self.STATUS_COMPLETED:
-                            valid_checkpoints.append(ckpt)
-                    except Exception as e:
-                        logging.warning(f"Error checking checkpoint {ckpt}: {e}")
-                
-                # Sort valid checkpoints by timestamp (most recent first)
-                valid_checkpoints.sort(reverse=True)
-                
-                # Use the latest valid checkpoint
-                latest_checkpoint = valid_checkpoints[0] if valid_checkpoints else None
+                # Get the latest checkpoint for this client directly using our helper method
+                latest_checkpoint = self._get_latest_checkpoint(Path(client_dir))
                 
                 # Process the checkpoint if it exists
                 if latest_checkpoint:
-                    try:
-                        content = self.storage.read_file(latest_checkpoint)
+                    checkpoint_content = self._read_completed_file(latest_checkpoint)
+                    if checkpoint_content:
+                        checkpoint_data = self._parse_file_content(checkpoint_content, use_json=False)
                         
-                        # Skip the status line
-                        content_lines = content.splitlines()
-                        if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
-                            # Parse the checkpoint data
-                            checkpoint_content = "\n".join(content_lines[1:])
-                            checkpoint_data = self.state_interpreter.parse_data(checkpoint_content)
+                        # Extract message IDs from checkpoint (supports both formats)
+                        if isinstance(checkpoint_data, dict):
+                            message_ids = []
                             
-                            # Extract message IDs from checkpoint (supports both formats)
-                            if isinstance(checkpoint_data, dict):
-                                message_ids = []
-                                
-                                # New format with direct messages_id and content
-                                if "messages_id" in checkpoint_data:
-                                    message_ids = checkpoint_data.get("messages_id", [])
-                                # Legacy format with data wrapper
-                                elif "data" in checkpoint_data and isinstance(checkpoint_data["data"], dict):
-                                    inner_data = checkpoint_data["data"]
-                                    if "messages_id" in inner_data:
-                                        message_ids = inner_data.get("messages_id", [])
-                                
-                                # Add all message IDs to the processed set
-                                for msg_id in message_ids:
-                                    self.processed_ids[client_id].add(str(msg_id))
-                                
-                                logging.info(f"Loaded {len(message_ids)} processed message IDs from checkpoint for client {client_id}")
-                    except Exception as e:
-                        logging.error(f"Error loading processed IDs from checkpoint for client {client_id}: {e}")
-                        
+                            # New format with direct messages_id and content
+                            if "messages_id" in checkpoint_data:
+                                message_ids = checkpoint_data.get("messages_id", [])
+                            # Legacy format with data wrapper
+                            elif "data" in checkpoint_data and isinstance(checkpoint_data["data"], dict):
+                                inner_data = checkpoint_data["data"]
+                                if "messages_id" in inner_data:
+                                    message_ids = inner_data.get("messages_id", [])
+                            
+                            # Add all message IDs to the processed set
+                            for msg_id in message_ids:
+                                self.processed_ids[client_id].add(str(msg_id))
+                            
+                            logging.info(f"Loaded {len(message_ids)} processed message IDs from checkpoint for client {client_id}")
+                
                 # Now process any completed log files to get message IDs that might
                 # not be in the checkpoint yet
                 log_files = self._get_all_logs(Path(client_dir))
                 for log_file in log_files:
-                    try:
-                        # Read the log content
-                        content = self.storage.read_file(log_file)
+                    log_content = self._read_completed_file(log_file)
+                    if log_content:
+                        parsed_data = self._parse_file_content(log_content, use_json=False)
                         
-                        # Skip processing logs that aren't completed
-                        content_lines = content.splitlines()
-                        if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
-                            continue
-                        
-                        # Parse data from content (skip status line)
-                        if len(content_lines) > 1:
-                            data_content = "\n".join(content_lines[1:])
-                            parsed_data = self.state_interpreter.parse_data(data_content)
-                            
+                        if isinstance(parsed_data, dict):
                             # Extract message ID from parsed data
                             msg_id = None
-                            if isinstance(parsed_data, dict):
-                                # Try different field names for message ID
-                                for field in ["message_id", "_message_id", "batch"]:
-                                    if field in parsed_data:
-                                        msg_id = str(parsed_data[field])
-                                        break
+                            # Try different field names for message ID
+                            for field in ["message_id", "_message_id", "batch"]:
+                                if field in parsed_data:
+                                    msg_id = str(parsed_data[field])
+                                    break
                             
                             # If found, add to processed IDs
                             if msg_id:
                                 self.processed_ids[client_id].add(msg_id)
-                    except Exception as e:
-                        logging.warning(f"Error processing log file {log_file} for processed IDs: {e}")
                 
                 # Update the log count based on the actual number of log files
                 log_file_count = len(log_files)
@@ -240,6 +194,7 @@ class WriteAheadLog(DataPersistenceInterface):
         # Find the most recent COMPLETED checkpoint
         for checkpoint in checkpoint_files:
             try:
+                # Just read the first line to check status
                 content = self.storage.read_file(checkpoint)
                 first_line = content.splitlines()[0] if content else ""
                 
@@ -288,73 +243,50 @@ class WriteAheadLog(DataPersistenceInterface):
             # First, extract data from the existing checkpoint if it exists
             checkpoint_business_data = None
             if latest_checkpoint:
-                try:
-                    # Read checkpoint content
-                    content = self.storage.read_file(latest_checkpoint)
+                checkpoint_content = self._read_completed_file(latest_checkpoint)
+                if checkpoint_content:
+                    checkpoint_data = self._parse_file_content(checkpoint_content)
                     
-                    # Skip the status line
-                    content_lines = content.splitlines()
-                    if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
-                        # Parse the checkpoint data
-                        checkpoint_content = "\n".join(content_lines[1:])
-                        checkpoint_data = json.loads(checkpoint_content)
-
+                    if isinstance(checkpoint_data, dict):
+                        # Extract message IDs for WAL tracking
+                        if "messages_id" in checkpoint_data and isinstance(checkpoint_data["messages_id"], list):
+                            for msg_id in checkpoint_data["messages_id"]:
+                                all_message_ids.add(str(msg_id))
+                            logging.info(f"Loaded {len(checkpoint_data['messages_id'])} message IDs from checkpoint")
                         
-                        if isinstance(checkpoint_data, dict):
-                            # Extract message IDs for WAL tracking
-                            if "messages_id" in checkpoint_data and isinstance(checkpoint_data["messages_id"], list):
-                                for msg_id in checkpoint_data["messages_id"]:
-                                    all_message_ids.add(str(msg_id))
-                                logging.info(f"Loaded {len(checkpoint_data['messages_id'])} message IDs from checkpoint")
-                            
-                            # Extract just the business data (content field)
-                            checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
-                            if checkpoint_business_data["content"]:
-                                business_data_items.append(checkpoint_business_data)
-                except Exception as e:
-                    logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
+                        # Extract just the business data (content field)
+                        checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
+                        if checkpoint_business_data["content"]:
+                            business_data_items.append(checkpoint_business_data)
             
             # Process the log entries to extract business data and message IDs
             for log_file in log_files:
-                try:
-                    # Read the log content
-                    content = self.storage.read_file(log_file)
+                log_content = self._read_completed_file(log_file)
+                if log_content:
+                    parsed_log = self._parse_file_content(log_content)
                     
-                    # Skip processing logs that aren't complete
-                    content_lines = content.splitlines()
-                    if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
-                        continue
-                    
-                    # Parse data from content (skip status line)
-                    if len(content_lines) > 1:
-                        data_content = "\n".join(content_lines[1:])
-                        parsed_log = json.loads(data_content)
-                        
+                    if isinstance(parsed_log, dict):
                         # Extract message ID for WAL tracking
                         msg_id = None
-                        if isinstance(parsed_log, dict):
-                            if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
-                                msg_id = parsed_log["_wal_metadata"]["message_id"]
-                            elif "message_id" in parsed_log:
-                                msg_id = parsed_log["message_id"]
-                        
+                        if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
+                            msg_id = parsed_log["_wal_metadata"]["message_id"]
+                        elif "message_id" in parsed_log:
+                            msg_id = parsed_log["message_id"]
+                    
                         if msg_id:
                             all_message_ids.add(str(msg_id))
-                            
+                        
                         # Extract business data
                         business_data = None
-                        if isinstance(parsed_log, dict):
-                            if "data" in parsed_log:  # WAL wrapper format
-                                business_data = parsed_log["data"]
-                            else:  # Direct business data
-                                business_data = parsed_log
-                                
+                        if "data" in parsed_log:  # WAL wrapper format
+                            business_data = parsed_log["data"]
+                        else:  # Direct business data
+                            business_data = parsed_log
+                            
                         # Add business data to items for merging
                         if business_data is not None:
                             business_data_items.append(business_data)
                             logging.debug(f"Added business data from log {log_file.name}")
-                except Exception as e:
-                    logging.warning(f"Error processing log file {log_file} for checkpoint: {e}")
                     
             # If no valid business data items to merge, skip checkpoint
             if not business_data_items:
@@ -542,33 +474,21 @@ class WriteAheadLog(DataPersistenceInterface):
         
         # Try to get the latest checkpoint
         latest_checkpoint = self._get_latest_checkpoint(client_dir)
-        checkpoint_content = None
         
         if latest_checkpoint:
-            try:
-                # Read checkpoint content
-                content = self.storage.read_file(latest_checkpoint)
+            checkpoint_content = self._read_completed_file(latest_checkpoint)
+            if checkpoint_content:
+                checkpoint_data = self._parse_file_content(checkpoint_content)
                 
-                # Skip the status line which is WAL-specific
-                content_lines = content.splitlines()
-                if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
-                    # Get the checkpoint content without parsing yet
-                    checkpoint_content = "\n".join(content_lines[1:])
+                # Extract just business data, not WAL metadata
+                if isinstance(checkpoint_data, dict):
+                    # Create business data structure with content
+                    business_data = {"content": checkpoint_data.get("content", "")}
                     
-                    # Parse the checkpoint data
-                    checkpoint_data = json.loads(checkpoint_content)
-                    
-                    # Extract just business data, not WAL metadata
-                    if isinstance(checkpoint_data, dict):
-                        # Create business data structure with content
-                        business_data = {"content": checkpoint_data.get("content", "")}
-                        
-                        # Add the business data to our collection
-                        if business_data["content"]:
-                            business_data_items.append(business_data)
-                            logging.debug(f"Extracted business content from checkpoint {latest_checkpoint.name}")
-            except Exception as e:
-                logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
+                    # Add the business data to our collection
+                    if business_data["content"]:
+                        business_data_items.append(business_data)
+                        logging.debug(f"Extracted business content from checkpoint {latest_checkpoint.name}")
         
         # Get all log files - since we delete logs after checkpoint creation,
         # all logs in the directory are newer than the latest checkpoint
@@ -577,44 +497,28 @@ class WriteAheadLog(DataPersistenceInterface):
         
         # Process each log file to extract business data
         for log_file in log_files:
-            try:
-                # Read the log content
-                content = self.storage.read_file(log_file)
+            log_content = self._read_completed_file(log_file)
+            if log_content:
+                log_data = self._parse_file_content(log_content)
                 
-                # Skip processing logs that aren't completed
-                content_lines = content.splitlines()
-                if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
-                    continue
-                
-                # Parse data from content (skip status line)
-                if len(content_lines) > 1:
-                    data_content = "\n".join(content_lines[1:])
-                    try:
-                        # Parse the log entry
-                        log_data = json.loads(data_content)
-                        
-                        # Extract just business data
-                        business_data = None
-                        if isinstance(log_data, dict):
-                            if "data" in log_data:  # WAL wrapper format
-                                business_data = log_data["data"]
-                            else:  # Direct business data format or legacy format
-                                # Filter out WAL-specific fields
-                                if "_wal_metadata" in log_data:
-                                    # Has WAL metadata but not in expected format
-                                    business_data = {k: v for k, v in log_data.items() if k != "_wal_metadata"}
-                                else:
-                                    # Assume everything is business data
-                                    business_data = log_data
-                        
-                        # Add business data to our collection
-                        if business_data is not None:
-                            business_data_items.append(business_data)
-                            logging.debug(f"Extracted business data from log {log_file.name}")
-                    except json.JSONDecodeError:
-                        logging.warning(f"Invalid JSON in log file {log_file.name}")
-            except Exception as e:
-                logging.warning(f"Error processing log file {log_file}: {e}")
+                if isinstance(log_data, dict):
+                    # Extract just business data
+                    business_data = None
+                    if "data" in log_data:  # WAL wrapper format
+                        business_data = log_data["data"]
+                    else:  # Direct business data format or legacy format
+                        # Filter out WAL-specific fields
+                        if "_wal_metadata" in log_data:
+                            # Has WAL metadata but not in expected format
+                            business_data = {k: v for k, v in log_data.items() if k != "_wal_metadata"}
+                        else:
+                            # Assume everything is business data
+                            business_data = log_data
+                    
+                    # Add business data to our collection
+                    if business_data is not None:
+                        business_data_items.append(business_data)
+                        logging.debug(f"Extracted business data from log {log_file.name}")
         
         # If no business data items found, return None
         if not business_data_items:
@@ -725,72 +629,104 @@ class WriteAheadLog(DataPersistenceInterface):
                     
                 try:
                     # Read checkpoint content to extract message IDs
-                    content = self.storage.read_file(latest_checkpoint)
+                    checkpoint_content = self._read_completed_file(latest_checkpoint)
+                    if not checkpoint_content:
+                        continue
+                        
+                    checkpoint_data = self._parse_file_content(checkpoint_content)
                     
-                    # Skip the status line
-                    content_lines = content.splitlines()
-                    if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
-                        # Parse the checkpoint data
-                        checkpoint_content = "\n".join(content_lines[1:])
-                        checkpoint_data = json.loads(checkpoint_content)
+                    # Extract message IDs from checkpoint
+                    checkpoint_message_ids = set()
+                    if isinstance(checkpoint_data, dict) and "messages_id" in checkpoint_data:
+                        for msg_id in checkpoint_data["messages_id"]:
+                            checkpoint_message_ids.add(str(msg_id))
                         
-                        # Extract message IDs from checkpoint
-                        checkpoint_message_ids = set()
-                        if isinstance(checkpoint_data, dict) and "messages_id" in checkpoint_data:
-                            for msg_id in checkpoint_data["messages_id"]:
-                                checkpoint_message_ids.add(str(msg_id))
-                            
-                        if not checkpoint_message_ids:
-                            continue
-                            
-                        # Now check all logs to see if any message IDs are in the checkpoint
-                        logs_to_delete = []
-                        log_files = self._get_all_logs(Path(client_dir))
+                    if not checkpoint_message_ids:
+                        continue
                         
-                        for log_file in log_files:
+                    # Now check all logs to see if any message IDs are in the checkpoint
+                    logs_to_delete = []
+                    log_files = self._get_all_logs(Path(client_dir))
+                    
+                    for log_file in log_files:
+                        log_content = self._read_completed_file(log_file)
+                        if log_content:
+                            parsed_log = self._parse_file_content(log_content)
+                            
+                            # Extract message ID
+                            msg_id = None
+                            if isinstance(parsed_log, dict):
+                                # Check both formats
+                                if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
+                                    msg_id = parsed_log["_wal_metadata"]["message_id"]
+                            
+                            # If message ID is in checkpoint, mark log for deletion
+                            if msg_id and msg_id in checkpoint_message_ids:
+                                logs_to_delete.append(log_file)
+                    
+                    # Delete redundant logs
+                    if logs_to_delete:
+                        for log_file in logs_to_delete:
                             try:
-                                # Read the log content
-                                content = self.storage.read_file(log_file)
-                                
-                                # Skip incomplete logs
-                                content_lines = content.splitlines()
-                                if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
-                                    continue
-                                
-                                # Parse data from content (skip status line)
-                                if len(content_lines) > 1:
-                                    data_content = "\n".join(content_lines[1:])
-                                    parsed_log = json.loads(data_content)
-                                    
-                                    # Extract message ID
-                                    msg_id = None
-                                    if isinstance(parsed_log, dict):
-                                        # Check both formats
-                                        if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
-                                            msg_id = parsed_log["_wal_metadata"]["message_id"]
-                                        elif "data" in parsed_log and "batch" in parsed_log["data"]:
-                                            msg_id = str(parsed_log["data"]["batch"])
-                                        elif "message_id" in parsed_log:
-                                            msg_id = parsed_log["message_id"]
-                                    
-                                    # If message ID is in checkpoint, mark log for deletion
-                                    if msg_id and msg_id in checkpoint_message_ids:
-                                        logs_to_delete.append(log_file)
+                                self.storage.delete_file(log_file)
+                                logging.info(f"Deleted redundant log {log_file.name} for client {client_id} (message ID already in checkpoint)")
                             except Exception as e:
-                                logging.warning(f"Error processing log file {log_file} for cleanup: {e}")
+                                logging.warning(f"Error deleting redundant log {log_file}: {e}")
                         
-                        # Delete redundant logs
-                        if logs_to_delete:
-                            for log_file in logs_to_delete:
-                                try:
-                                    self.storage.delete_file(log_file)
-                                    logging.info(f"Deleted redundant log {log_file.name} for client {client_id} (message ID already in checkpoint)")
-                                except Exception as e:
-                                    logging.warning(f"Error deleting redundant log {log_file}: {e}")
-                            
-                            logging.info(f"Cleaned up {len(logs_to_delete)} redundant logs for client {client_id}")
+                        logging.info(f"Cleaned up {len(logs_to_delete)} redundant logs for client {client_id}")
                 except Exception as e:
                     logging.error(f"Error processing checkpoint {latest_checkpoint} for cleanup: {e}")
                     
         except Exception as e:
             logging.error(f"Error cleaning up redundant logs: {e}")
+    
+    def _read_completed_file(self, file_path: Path) -> Optional[str]:
+        """
+        Read a file and verify if it has the COMPLETED status.
+        
+        Args:
+            file_path: Path to the file to read
+            
+        Returns:
+            str: Content of the file without status line if completed, None otherwise
+        """
+        try:
+            # Read file content
+            content = self.storage.read_file(file_path)
+            
+            # Check status in first line
+            content_lines = content.splitlines()
+            if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
+                return None
+                
+            # Return content without status line
+            if len(content_lines) > 1:
+                return "\n".join(content_lines[1:])
+            else:
+                return ""
+        except Exception as e:
+            logging.warning(f"Error reading file {file_path}: {e}")
+            return None
+    
+    def _parse_file_content(self, content: str, use_json: bool = True) -> Optional[Dict]:
+        """
+        Parse file content as JSON or using state interpreter.
+        
+        Args:
+            content: Content string to parse
+            use_json: If True, use json.loads, otherwise use state_interpreter.parse_data
+            
+        Returns:
+            Dict: Parsed content as dictionary or None if parsing fails
+        """
+        if not content:
+            return None
+            
+        try:
+            if use_json:
+                return json.loads(content)
+            else:
+                return self.state_interpreter.parse_data(content)
+        except Exception as e:
+            logging.warning(f"Error parsing content: {e}")
+            return None

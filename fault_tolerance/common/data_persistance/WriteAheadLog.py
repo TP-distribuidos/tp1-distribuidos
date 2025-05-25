@@ -68,6 +68,9 @@ class WriteAheadLog(DataPersistenceInterface):
         # Load the processed message IDs and log counts from checkpoints
         self._load_processed_ids_and_log_counts()
         
+        # Clean up any redundant logs (logs whose message IDs are already in checkpoints)
+        self._cleanup_redundant_logs()
+        
     def _load_processed_ids_and_log_counts(self):
         """
         Load processed message IDs and log counts from existing checkpoints.
@@ -396,21 +399,18 @@ class WriteAheadLog(DataPersistenceInterface):
             if success:
                 logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(business_data_items)} business data items and {len(all_message_ids)} tracked message IDs")
                 
-                # Delete old checkpoint since we've incorporated its data into the new one
+                for log_file in log_files:
+                    try:
+                        self.storage.delete_file(log_file)
+                    except Exception as e:
+                        logging.warning(f"Error deleting log file {log_file}: {e}")
+
                 if latest_checkpoint:
                     try:
                         self.storage.delete_file(latest_checkpoint)
                         logging.info(f"Deleted old checkpoint {latest_checkpoint.name}")
                     except Exception as e:
                         logging.warning(f"Error deleting old checkpoint {latest_checkpoint}: {e}")
-                
-                # Now clean up log files that are included in the checkpoint
-                # This is safe because their data is now in the checkpoint
-                for log_file in log_files:
-                    try:
-                        self.storage.delete_file(log_file)
-                    except Exception as e:
-                        logging.warning(f"Error deleting log file {log_file}: {e}")
                 
                 return True
             else:
@@ -696,3 +696,101 @@ class WriteAheadLog(DataPersistenceInterface):
                 recovered_data[client_id] = client_data
                 
         return recovered_data
+    
+    def _cleanup_redundant_logs(self):
+        """
+        Clean up any log files whose message IDs are already included in checkpoints.
+        This helps maintain consistency and prevent redundant storage.
+        Called during initialization to ensure a clean state.
+        """
+        try:
+            # Find all client directories
+            client_dirs = []
+            for item in self.storage.list_files(self.base_dir):
+                if Path(item).is_dir():
+                    client_dirs.append(item)
+            
+            logging.info(f"Checking {len(client_dirs)} client directories for redundant logs")
+            
+            # Process each client directory
+            for client_dir in client_dirs:
+                client_id = Path(client_dir).name
+                
+                # Get the latest checkpoint for this client
+                latest_checkpoint = self._get_latest_checkpoint(Path(client_dir))
+                
+                # If there's no checkpoint, nothing to clean up
+                if not latest_checkpoint:
+                    continue
+                    
+                try:
+                    # Read checkpoint content to extract message IDs
+                    content = self.storage.read_file(latest_checkpoint)
+                    
+                    # Skip the status line
+                    content_lines = content.splitlines()
+                    if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
+                        # Parse the checkpoint data
+                        checkpoint_content = "\n".join(content_lines[1:])
+                        checkpoint_data = json.loads(checkpoint_content)
+                        
+                        # Extract message IDs from checkpoint
+                        checkpoint_message_ids = set()
+                        if isinstance(checkpoint_data, dict) and "messages_id" in checkpoint_data:
+                            for msg_id in checkpoint_data["messages_id"]:
+                                checkpoint_message_ids.add(str(msg_id))
+                            
+                        if not checkpoint_message_ids:
+                            continue
+                            
+                        # Now check all logs to see if any message IDs are in the checkpoint
+                        logs_to_delete = []
+                        log_files = self._get_all_logs(Path(client_dir))
+                        
+                        for log_file in log_files:
+                            try:
+                                # Read the log content
+                                content = self.storage.read_file(log_file)
+                                
+                                # Skip incomplete logs
+                                content_lines = content.splitlines()
+                                if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
+                                    continue
+                                
+                                # Parse data from content (skip status line)
+                                if len(content_lines) > 1:
+                                    data_content = "\n".join(content_lines[1:])
+                                    parsed_log = json.loads(data_content)
+                                    
+                                    # Extract message ID
+                                    msg_id = None
+                                    if isinstance(parsed_log, dict):
+                                        # Check both formats
+                                        if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
+                                            msg_id = parsed_log["_wal_metadata"]["message_id"]
+                                        elif "data" in parsed_log and "batch" in parsed_log["data"]:
+                                            msg_id = str(parsed_log["data"]["batch"])
+                                        elif "message_id" in parsed_log:
+                                            msg_id = parsed_log["message_id"]
+                                    
+                                    # If message ID is in checkpoint, mark log for deletion
+                                    if msg_id and msg_id in checkpoint_message_ids:
+                                        logs_to_delete.append(log_file)
+                            except Exception as e:
+                                logging.warning(f"Error processing log file {log_file} for cleanup: {e}")
+                        
+                        # Delete redundant logs
+                        if logs_to_delete:
+                            for log_file in logs_to_delete:
+                                try:
+                                    self.storage.delete_file(log_file)
+                                    logging.info(f"Deleted redundant log {log_file.name} for client {client_id} (message ID already in checkpoint)")
+                                except Exception as e:
+                                    logging.warning(f"Error deleting redundant log {log_file}: {e}")
+                            
+                            logging.info(f"Cleaned up {len(logs_to_delete)} redundant logs for client {client_id}")
+                except Exception as e:
+                    logging.error(f"Error processing checkpoint {latest_checkpoint} for cleanup: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error cleaning up redundant logs: {e}")

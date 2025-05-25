@@ -15,7 +15,7 @@ class StateInterpreterInterface(abc.ABC):
             data: Data to format
             
         Returns:
-            str: Formatted data ready for storage
+            str: Formatted data from worker to for DataPersistance class
         """
         pass
     

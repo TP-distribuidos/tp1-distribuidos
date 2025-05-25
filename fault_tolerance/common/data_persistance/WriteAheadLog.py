@@ -1,4 +1,6 @@
 import logging
+import json
+import logging
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Set
@@ -276,6 +278,11 @@ class WriteAheadLog(DataPersistenceInterface):
         Create a checkpoint for a client by merging the latest checkpoint (if any) with recent logs.
         The old checkpoint is deleted after successful creation of the new one.
         
+        This method now handles WAL-specific concerns internally:
+        1. Tracking message IDs from logs
+        2. Managing checkpoint metadata (log_count, timestamps)
+        3. Storing and reconstructing WAL-specific structures
+        
         Args:
             client_id: Client identifier
             
@@ -294,10 +301,12 @@ class WriteAheadLog(DataPersistenceInterface):
                 logging.warning(f"No logs found for client {client_id}, skipping checkpoint creation")
                 return False
             
-            # Items to merge - will include checkpoint data and logs
-            merge_items = []
+            # Collect business data from logs and checkpoint
+            business_data_items = []
+            all_message_ids = set()  # For WAL internal tracking
             
-            # First, try to get the latest checkpoint data if it exists
+            # First, extract data from the existing checkpoint if it exists
+            checkpoint_business_data = None
             if latest_checkpoint:
                 try:
                     # Read checkpoint content
@@ -308,30 +317,30 @@ class WriteAheadLog(DataPersistenceInterface):
                     if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
                         # Parse the checkpoint data
                         checkpoint_content = "\n".join(content_lines[1:])
-                        parsed_data = self.state_interpreter.parse_data(checkpoint_content)
+                        checkpoint_data = json.loads(checkpoint_content)
+
                         
-                        # Handle both checkpoint formats
-                        if isinstance(parsed_data, dict):
-                            # New format with direct messages_id and content
-                            if "messages_id" in parsed_data and "content" in parsed_data:
-                                merge_items.append(parsed_data)
-                                logging.info(f"Found existing checkpoint {latest_checkpoint.name} with {len(parsed_data.get('messages_id', []))} messages")
-                            # Legacy format with data wrapper
-                            elif "data" in parsed_data:
-                                checkpoint_data = parsed_data["data"]
-                                if isinstance(checkpoint_data, dict):
-                                    merge_items.append(checkpoint_data)
-                                    logging.info(f"Found existing checkpoint {latest_checkpoint.name} with {len(checkpoint_data.get('messages_id', []))} messages (legacy format)")
+                        if isinstance(checkpoint_data, dict):
+                            # Extract message IDs for WAL tracking
+                            if "messages_id" in checkpoint_data and isinstance(checkpoint_data["messages_id"], list):
+                                for msg_id in checkpoint_data["messages_id"]:
+                                    all_message_ids.add(str(msg_id))
+                                logging.info(f"Loaded {len(checkpoint_data['messages_id'])} message IDs from checkpoint")
+                            
+                            # Extract just the business data (content field)
+                            checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
+                            if checkpoint_business_data["content"]:
+                                business_data_items.append(checkpoint_business_data)
                 except Exception as e:
                     logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
             
-            # Process the new log entries
+            # Process the log entries to extract business data and message IDs
             for log_file in log_files:
                 try:
                     # Read the log content
                     content = self.storage.read_file(log_file)
                     
-                    # Skip processing logs
+                    # Skip processing logs that aren't complete
                     content_lines = content.splitlines()
                     if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
                         continue
@@ -339,39 +348,63 @@ class WriteAheadLog(DataPersistenceInterface):
                     # Parse data from content (skip status line)
                     if len(content_lines) > 1:
                         data_content = "\n".join(content_lines[1:])
-                        parsed_data = self.state_interpreter.parse_data(data_content)
-                        # Add to merge items
-                        merge_items.append(parsed_data)
-                        logging.debug(f"Added log {log_file.name} to checkpoint for client {client_id}")
+                        parsed_log = json.loads(data_content)
+                        
+                        # Extract message ID for WAL tracking
+                        msg_id = None
+                        if isinstance(parsed_log, dict):
+                            if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
+                                msg_id = parsed_log["_wal_metadata"]["message_id"]
+                            elif "message_id" in parsed_log:
+                                msg_id = parsed_log["message_id"]
+                        
+                        if msg_id:
+                            all_message_ids.add(str(msg_id))
+                            
+                        # Extract business data
+                        business_data = None
+                        if isinstance(parsed_log, dict):
+                            if "data" in parsed_log:  # WAL wrapper format
+                                business_data = parsed_log["data"]
+                            else:  # Direct business data
+                                business_data = parsed_log
+                                
+                        # Add business data to items for merging
+                        if business_data is not None:
+                            business_data_items.append(business_data)
+                            logging.debug(f"Added business data from log {log_file.name}")
                 except Exception as e:
                     logging.warning(f"Error processing log file {log_file} for checkpoint: {e}")
                     
-            # If no valid items to merge, skip checkpoint
-            if not merge_items:
-                logging.warning(f"No valid items to merge for checkpoint, client {client_id}")
+            # If no valid business data items to merge, skip checkpoint
+            if not business_data_items:
+                logging.warning(f"No business data found for checkpoint, client {client_id}")
                 return False
-                
+            
             # Create checkpoint using a two-phase approach
             timestamp = str(int(time.time() * 1000))  # millisecond precision
             
             # Create the checkpoint file path
             checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
+
+            # Use state interpreter to merge only the business data
+            merged_business_data = self.state_interpreter.merge_data(business_data_items)
+
+            # Create a WAL-specific checkpoint structure with:
+            # 1. Business data from the merge
+            # 2. WAL-tracked message IDs
+            # 3. WAL metadata (log_count, timestamp)
+            checkpoint_structure = {
+                "content": merged_business_data.get("content", ""),
+                "messages_id": sorted(list(all_message_ids)),  # WAL's responsibility to track these
+                "_metadata": {
+                    "log_count": self.log_count.get(client_id, 0),
+                    "timestamp": timestamp
+                }
+            }
             
-            # Use state interpreter to create merged representation
-            merged_data = self.state_interpreter.merge_data(merge_items)
-            
-            # Add metadata to the merged data - add log_count for recovery after restart
-            if isinstance(merged_data, dict):
-                # Add metadata dictionary if it doesn't exist
-                if "_metadata" not in merged_data:
-                    merged_data["_metadata"] = {}
-                
-                # Store current log count
-                merged_data["_metadata"]["log_count"] = self.log_count.get(client_id, 0)
-                logging.debug(f"Added log_count {self.log_count.get(client_id, 0)} to checkpoint metadata for client {client_id}")
-            
-            # Format the checkpoint data - directly use the merged data without any wrapper
-            formatted_data = self.state_interpreter.format_data(merged_data)
+            # Format the complete checkpoint structure
+            formatted_data = json.dumps(checkpoint_structure)
             
             # Write the checkpoint file with PROCESSING status initially
             checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
@@ -385,7 +418,7 @@ class WriteAheadLog(DataPersistenceInterface):
             success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
-                logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(merge_items)} items")
+                logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(business_data_items)} business data items and {len(all_message_ids)} tracked message IDs")
                 
                 # Delete old checkpoint since we've incorporated its data into the new one
                 if latest_checkpoint:
@@ -406,8 +439,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 return True
             else:
                 logging.error(f"Failed to write checkpoint file for client {client_id}")
-                
-                # No cleanup needed as we're overwriting the same file
                 return False
                 
         except Exception as e:
@@ -418,10 +449,19 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         Persist data for a client with write-ahead logging.
         
+        This method handles the WAL implementation details, including:
+        1. Tracking message IDs for deduplication
+        2. Managing checkpoint creation thresholds
+        3. Storing WAL metadata appropriately
+        4. Ensuring durability with two-phase writes
+        
+        The business data is formatted by the StateInterpreter, but all WAL metadata handling
+        is contained within this method.
+        
         Args:
             client_id: Client identifier
-            data: Data to persist
-            operation_id: External ID used for reference (e.g., batch ID)
+            data: Business data to persist (domain-specific)
+            operation_id: External ID used for reference
             
         Returns:
             bool: True if successfully persisted
@@ -433,28 +473,14 @@ class WriteAheadLog(DataPersistenceInterface):
         client_dir = self._get_client_dir(client_id)
         log_file_path = self._get_log_file_path(client_dir, internal_id)
         
-        # Convert batch to message_id in data
-        message_id = operation_id  # Default to operation_id if message_id is not found
-        if isinstance(data, dict):
-            # Make a copy to avoid modifying the original
-            data = data.copy()
-            
-            if 'batch' in data and 'message_id' not in data:
-                # Replace batch with message_id
-                data['message_id'] = data.pop('batch')
-            
-            # Extract message_id for checking if already processed
-            if 'message_id' in data:
-                message_id = str(data['message_id'])
-            
-            # Add the operation_id to data for reference
-            data['_external_operation_id'] = operation_id
+        # Use operation_id as the message_id for tracking
+        message_id = str(operation_id)
         
         # Initialize client data structures if they don't exist
         if client_id not in self.processed_ids:
             self.processed_ids[client_id] = set()
             
-        # Check if message has already been processed
+        # Check if message has already been processed (deduplication)
         if message_id in self.processed_ids[client_id]:
             logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping")
             return True
@@ -474,20 +500,49 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Continue with rewriting
         
         try:
-            # Format the data using the state interpreter
-            formatted_data = self.state_interpreter.format_data(data)
+            # Let the state interpreter format the data as a string representation
+            intermediate_data = self.state_interpreter.format_data(data)
+            logging.debug(f"Formatted data for client {client_id}, operation {operation_id}")
+            
+            # Create WAL record with metadata
+            try:
+                # Parse the intermediate data to add WAL metadata
+                parsed_data = json.loads(intermediate_data)
+                
+                # Validate the expected structure from StateInterpreter
+                if isinstance(parsed_data, dict):
+                    # Handle checkpoint data structure (special case)
+                    if "messages_id" in parsed_data and "content" in parsed_data:
+                        # Checkpoint data should be preserved as-is
+                        formatted_data = intermediate_data
+                    # Handle standard WAL structure
+                    elif "data" in parsed_data and "_wal_metadata" in parsed_data:
+                        # Add WAL-specific metadata
+                        parsed_data["_wal_metadata"]["timestamp"] = timestamp
+                        parsed_data["_wal_metadata"]["message_id"] = message_id
+                        formatted_data = json.dumps(parsed_data)
+                    else:
+                        # Unexpected format - rely on StateInterpreter to handle this
+                        logging.warning(f"Unexpected data format from StateInterpreter")
+                        formatted_data = intermediate_data
+                else:
+                    # Non-dict structure - use as-is
+                    formatted_data = intermediate_data
+            except json.JSONDecodeError as e:
+                # If not valid JSON, log warning and use as-is
+                logging.warning(f"StateInterpreter returned non-JSON data: {e}")
+                formatted_data = intermediate_data
             
             # Create log content with status header
             log_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
             
-            # Write the log file
+            # Write the log file (first phase)
             success = self.storage.write_file(log_file_path, log_content)
             if not success:
                 return False
                 
-            # Update the status to COMPLETED
-            log_content = f"{self.STATUS_COMPLETED}\n{formatted_data}"
-            success = self.storage.write_file(log_file_path, log_content)
+            # Update the status to COMPLETED (second phase) - use update_first_line for efficiency
+            success = self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED)
             if not success:
                 return False
             
@@ -506,7 +561,6 @@ class WriteAheadLog(DataPersistenceInterface):
             
             # Check if we need to create a checkpoint
             if self.log_count[client_id] >= self.CHECKPOINT_THRESHOLD:
-                logging.info(f"Log count {self.log_count[client_id]} reached threshold {self.CHECKPOINT_THRESHOLD}, creating checkpoint")
                 self._create_checkpoint(client_id)
                 # Reset log count after checkpoint creation
                 self.log_count[client_id] = 0
@@ -524,52 +578,50 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         Retrieve data for a client.
         
-        This method consolidates data from the latest checkpoint (if any)
-        and all subsequent log files to provide a single coherent view of all data.
-        It performs a just-in-time checkpoint creation when retrieving data.
+        This method:
+        1. Consolidates data from the latest checkpoint and all subsequent logs
+        2. Provides a single coherent view of business data without WAL implementation details
+        3. Abstracts away internal WAL storage details from the consumer
+        4. Keeps WAL-specific metadata (like message IDs) internal to the WAL
         
         Args:
             client_id: Client identifier
             
         Returns:
-            Any: Consolidated data or None if not found
+            Any: Consolidated business data or None if not found
         """
         client_dir = self._get_client_dir(client_id)
         
-        # Data storage
-        all_data = {}
+        # Business data collection - focus on extracting only business data
+        business_data_items = []
         
         # Try to get the latest checkpoint
         latest_checkpoint = self._get_latest_checkpoint(client_dir)
+        checkpoint_content = None
+        
         if latest_checkpoint:
             try:
                 # Read checkpoint content
                 content = self.storage.read_file(latest_checkpoint)
                 
-                # Skip the status line
+                # Skip the status line which is WAL-specific
                 content_lines = content.splitlines()
                 if len(content_lines) > 1 and content_lines[0] == self.STATUS_COMPLETED:
-                    # Parse the checkpoint data
+                    # Get the checkpoint content without parsing yet
                     checkpoint_content = "\n".join(content_lines[1:])
-                    checkpoint_data = self.state_interpreter.parse_data(checkpoint_content)
                     
-                    # Extract data from checkpoint (may or may not have data wrapper)
+                    # Parse the checkpoint data
+                    checkpoint_data = json.loads(checkpoint_content)
+                    
+                    # Extract just business data, not WAL metadata
                     if isinstance(checkpoint_data, dict):
-                        # Handle both checkpoint formats - with or without data wrapper
-                        if "data" in checkpoint_data:
-                            # Legacy format with data wrapper
-                            inner_data = checkpoint_data["data"]
-                            if isinstance(inner_data, dict):
-                                # Store checkpoint with filename as key
-                                checkpoint_name = latest_checkpoint.name
-                                all_data[checkpoint_name] = {"data": inner_data}
-                                logging.debug(f"Retrieved legacy format checkpoint {checkpoint_name}")
-                        elif "messages_id" in checkpoint_data and "content" in checkpoint_data:
-                            # New format without data wrapper
-                            # Store checkpoint with filename as key
-                            checkpoint_name = latest_checkpoint.name
-                            all_data[checkpoint_name] = checkpoint_data
-                            logging.debug(f"Retrieved new format checkpoint {checkpoint_name}")
+                        # Create business data structure with content
+                        business_data = {"content": checkpoint_data.get("content", "")}
+                        
+                        # Add the business data to our collection
+                        if business_data["content"]:
+                            business_data_items.append(business_data)
+                            logging.debug(f"Extracted business content from checkpoint {latest_checkpoint.name}")
             except Exception as e:
                 logging.error(f"Error reading checkpoint {latest_checkpoint} for client {client_id}: {e}")
         
@@ -578,12 +630,9 @@ class WriteAheadLog(DataPersistenceInterface):
         log_files = self._get_all_logs(client_dir)
         logging.debug(f"Found {len(log_files)} log files for client {client_id}")
         
-        # Process each log file
+        # Process each log file to extract business data
         for log_file in log_files:
             try:
-                # Get the log filename
-                file_name = log_file.name
-                
                 # Read the log content
                 content = self.storage.read_file(log_file)
                 
@@ -595,38 +644,58 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Parse data from content (skip status line)
                 if len(content_lines) > 1:
                     data_content = "\n".join(content_lines[1:])
-                    parsed_data = self.state_interpreter.parse_data(data_content)
-                    # Store with the original filename as key
-                    all_data[file_name] = parsed_data
-                    logging.debug(f"Retrieved log {file_name}")
+                    try:
+                        # Parse the log entry
+                        log_data = json.loads(data_content)
+                        
+                        # Extract just business data
+                        business_data = None
+                        if isinstance(log_data, dict):
+                            if "data" in log_data:  # WAL wrapper format
+                                business_data = log_data["data"]
+                            else:  # Direct business data format or legacy format
+                                # Filter out WAL-specific fields
+                                if "_wal_metadata" in log_data:
+                                    # Has WAL metadata but not in expected format
+                                    business_data = {k: v for k, v in log_data.items() if k != "_wal_metadata"}
+                                else:
+                                    # Assume everything is business data
+                                    business_data = log_data
+                        
+                        # Add business data to our collection
+                        if business_data is not None:
+                            business_data_items.append(business_data)
+                            logging.debug(f"Extracted business data from log {log_file.name}")
+                    except json.JSONDecodeError:
+                        logging.warning(f"Invalid JSON in log file {log_file.name}")
             except Exception as e:
                 logging.warning(f"Error processing log file {log_file}: {e}")
         
-        # If all_data is empty, return None
-        if not all_data:
-            logging.info(f"No data found for client {client_id}")
+        # If no business data items found, return None
+        if not business_data_items:
+            logging.info(f"No business data found for client {client_id}")
             return None
-        logging.info(f"HEREE {all_data}")
-        # IMPORTANT: Create a consolidated view before returning
-        # This performs a just-in-time consolidation of all data
+            
+        # Use state interpreter to merge business data items
         try:
-            # Use state interpreter to merge all data
-            logging.info(f"Consolidating data from checkpoint and {len(log_files)} logs for client {client_id}")
-            consolidated_data = self.state_interpreter.merge_data(all_data)
+            if len(business_data_items) == 1:
+                # Just one item, no need to merge
+                return business_data_items[0]
             
-            logging.info(f"HEREE2 {consolidated_data}")
-            # Just return the consolidated data directly
-            if consolidated_data:
-                logging.info(f"Successfully consolidated data for client {client_id}")
-                return consolidated_data
+            # Merge all business data items
+            logging.info(f"Merging {len(business_data_items)} business data items")
+            consolidated_data = self.state_interpreter.merge_data(business_data_items)
             
-            # Fallback - if consolidation failed, return all data
-            return all_data
+            return consolidated_data
             
         except Exception as e:
-            logging.error(f"Error creating consolidated view for client {client_id}: {e}")
-            # Fall back to returning the raw data
-            return all_data
+            logging.error(f"Error merging business data: {e}")
+            
+            # Fallback: return the most recent business data
+            if business_data_items:
+                return business_data_items[-1]
+            
+            return None
     
     def clear(self, client_id: str) -> bool:
         """

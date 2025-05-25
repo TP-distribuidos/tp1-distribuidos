@@ -223,16 +223,10 @@ class ConsumerWorker:
             
             client_id = "default"
                         
-            # Create a normalized copy of the message
-            message_to_persist = deserialized_message.copy()
-            
-            # Ensure message_id is consistently set
-            message_to_persist['message_id'] = message_id
-
             #WE SEND TO NEXT QUEUE HERE IN REAL PROYECT
             
             # Persist message to WAL - let WAL handle any format normalization
-            if self.data_persistance.persist(client_id, message_to_persist, message_id):
+            if self.data_persistance.persist(client_id, deserialized_message, message_id):
                 try:
                     msg_num = int(message_id) 
                     if msg_num == 10:

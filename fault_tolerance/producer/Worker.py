@@ -110,7 +110,6 @@ class ProducerWorker:
             # Generate a shorter lorem ipsum message for this batch
             # Use a sentence instead of a paragraph, or limit paragraph size
             content = lorem.sentence()  # Just a single sentence
-            logging.info(f"CONTENT: {content}")
 
             message = {
                 "batch": batch_number,

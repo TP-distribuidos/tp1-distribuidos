@@ -67,7 +67,7 @@ class WriteAheadLog(DataPersistenceInterface):
         
         # Clean up any redundant logs (logs whose message IDs are already in checkpoints)
         self._cleanup_redundant_logs()
-        
+
         # Load the processed message IDs and log counts from checkpoints
         self._load_processed_ids_and_log_counts()
         
@@ -317,6 +317,9 @@ class WriteAheadLog(DataPersistenceInterface):
             
             # Format the complete checkpoint structure
             formatted_data = json.dumps(checkpoint_structure)
+
+            logging.info("TEST POINT 3: BEFORE CREATING CHECKPOINT")
+            time.sleep(1)
             
             # Write the checkpoint file with PROCESSING status initially
             checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
@@ -325,18 +328,27 @@ class WriteAheadLog(DataPersistenceInterface):
             if not success:
                 logging.error(f"Failed to write checkpoint file for client {client_id}")
                 return False
-                
+            
+            logging.info("TEST POINT 4: AFTER CREATING CHECKPOINT BUT BEFORE COMPLETING IT")
+            time.sleep(1)
+
             # Update just the status line to COMPLETED - more efficient than rewriting the whole file
             success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
                 logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(business_data_items)} business data items and {len(all_message_ids)} tracked message IDs")
                 
+                logging.info("TEST POINT 5: BEFORE DELETING LOGS")
+                time.sleep(1) 
+
                 for log_file in log_files:
                     try:
                         self.storage.delete_file(log_file)
                     except Exception as e:
                         logging.warning(f"Error deleting log file {log_file}: {e}")
+
+                logging.info("TEST POINT 6: BEFORE DELETING OLD CHEKPOINT")
+                time.sleep(1) 
 
                 if latest_checkpoint:
                     try:
@@ -577,31 +589,7 @@ class WriteAheadLog(DataPersistenceInterface):
         except Exception as e:
             logging.error(f"Error clearing data for client {client_id}: {e}")
             return False
-    
-    def recover_state(self) -> Dict[str, Any]:
-        """
-        Recover all completed operations from log files and checkpoints.
         
-        Returns:
-            Dict[str, Any]: Dictionary mapping client_ids to their recovered data
-        """
-        recovered_data = {}
-        
-        # Find all client directories
-        for item in self.storage.list_files(self.base_dir):
-            client_dir = Path(item)
-            
-            if not client_dir.is_dir():
-                continue
-                
-            client_id = client_dir.name
-            client_data = self.retrieve(client_id)
-            
-            if client_data:
-                recovered_data[client_id] = client_data
-                
-        return recovered_data
-    
     def _cleanup_redundant_logs(self):
         """
         Clean up any log files whose message IDs are already included in checkpoints.

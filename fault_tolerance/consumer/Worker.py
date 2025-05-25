@@ -29,12 +29,14 @@ logging.basicConfig(
 CONSUMER_QUEUE = os.getenv("CONSUMER_QUEUE", "test_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9002))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/output/received_messages.txt")
+TARGET_BATCH = 15
 
 class ConsumerWorker:
     def __init__(self, consumer_queue=CONSUMER_QUEUE):
         self._running = True
         self.consumer_queue = consumer_queue
         self.rabbitmq = RabbitMQClient()
+        self.target_batch = TARGET_BATCH
         
         # Create output directory if it doesn't exist and ensure it has proper permissions
         output_dir = os.path.dirname(OUTPUT_FILE)
@@ -77,43 +79,6 @@ class ConsumerWorker:
         
         # Initialize sentinel beacon
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT, "Consumer Worker")
-        
-        # Recover any previous state
-        recovered_data = self.data_persistance.recover_state()
-        if recovered_data:
-            logging.info(f"Recovered data for {len(recovered_data)} clients")
-            # We'll store client IDs that need processing
-            clients_to_process = []
-            
-            # Identify clients with message_id 10 messages that need to be written
-            for client_id, data in recovered_data.items():
-                if data:
-                    found_message10 = False
-                    message10_count = 0
-                    
-                    # Iterate through entries looking for message_id 10
-                    for key, entry in data.items():
-                        if isinstance(entry, dict):
-                            # Look for message_id or batch field using a generic approach
-                            for id_field in ['message_id', 'batch']:
-                                if id_field in entry:
-                                    msg_id = entry.get(id_field)
-                                    
-                                    # Check if this is message_id 10
-                                    if msg_id == '10' or msg_id == 10:
-                                        if not found_message10:
-                                            clients_to_process.append(client_id)
-                                            found_message10 = True
-                                        message10_count += 1
-                                        break
-                    
-                    if found_message10:
-                        logging.info(f"Found client {client_id} with {message10_count} 'message_id 10' entries")
-            
-            # We'll process these clients during the run method
-            self.clients_to_process = clients_to_process
-            if clients_to_process:
-                logging.info(f"Found {len(clients_to_process)} clients with message_id 10 messages to process")
         
         logging.info(f"Consumer Worker initialized to consume from queue '{consumer_queue}'")
     
@@ -228,8 +193,9 @@ class ConsumerWorker:
             # Persist message to WAL - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, deserialized_message, message_id):
                 try:
-                    msg_num = int(message_id) 
-                    if msg_num == 10:
+                    msg_num = int(message_id)
+                    if msg_num == self.target_batch:
+                        logging.info(f"Received target batch {self.target_batch}, processing data")
                         await self._write_to_file(client_id)
                 except (ValueError, TypeError) as e:
                     logging.info(f"Message with non-numeric message_id {message_id} processed")

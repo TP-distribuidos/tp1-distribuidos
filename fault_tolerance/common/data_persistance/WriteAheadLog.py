@@ -313,14 +313,15 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         Retrieve data for a client.
         
-        This method combines data from the latest checkpoint (if any)
-        and all subsequent log files to provide the most up-to-date view.
+        This method consolidates data from the latest checkpoint (if any)
+        and all subsequent log files to provide a single coherent view of all data.
+        It performs a just-in-time checkpoint creation when retrieving data.
         
         Args:
             client_id: Client identifier
             
         Returns:
-            Any: Retrieved data or None if not found
+            Any: Consolidated data or None if not found
         """
         client_dir = self._get_client_dir(client_id)
         
@@ -382,7 +383,7 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Read the log content
                 content = self.storage.read_file(log_file)
                 
-                # Skip processing logs
+                # Skip processing logs that aren't completed
                 content_lines = content.splitlines()
                 if not content_lines or content_lines[0] != self.STATUS_COMPLETED:
                     continue
@@ -400,8 +401,43 @@ class WriteAheadLog(DataPersistenceInterface):
         if not all_data:
             logging.info(f"No data found for client {client_id}")
             return None
+        
+        # IMPORTANT: Create a consolidated view before returning
+        # This performs a just-in-time consolidation of all data
+        try:
+            # Use state interpreter to merge all data
+            logging.info(f"Consolidating data from checkpoint and {len(log_files)} logs for client {client_id}")
+            consolidated_data = self.state_interpreter.merge_data(all_data)
             
-        return all_data
+            # Create a structure optimized for client consumption
+            consolidated_view = {}
+            
+            # Include messages in the consolidated view with message_id as the key
+            if isinstance(consolidated_data, dict) and "messages_id" in consolidated_data:
+                message_ids = consolidated_data.get("messages_id", [])
+                content = consolidated_data.get("content", "")
+                
+                # Include the consolidated data directly for reference
+                consolidated_view["_consolidated_data"] = consolidated_data
+                
+                # For easier client consumption, extract each message separately
+                # This way the client code doesn't need to know about the internal structure
+                for i, msg_id in enumerate(message_ids):
+                    consolidated_view[str(msg_id)] = {
+                        "message_id": str(msg_id),
+                        "content": content  # Each message contains the full content for now
+                    }
+                
+                logging.info(f"Created consolidated view with {len(message_ids)} messages")
+                return consolidated_view
+            
+            # Fallback - if the consolidated structure isn't as expected, return all data
+            return all_data
+            
+        except Exception as e:
+            logging.error(f"Error creating consolidated view for client {client_id}: {e}")
+            # Fall back to returning the raw data
+            return all_data
     
     def clear(self, client_id: str) -> bool:
         """

@@ -68,6 +68,9 @@ class WriteAheadLog(DataPersistenceInterface):
         # Clean up any redundant logs (logs whose message IDs are already in checkpoints)
         self._cleanup_redundant_logs()
 
+        # Clean up incomplete checkpoints and old checkpoints
+        self._cleanup_checkpoints()
+
         # Load the processed message IDs and log counts from checkpoints
         self._load_processed_ids_and_log_counts()
         
@@ -333,9 +336,6 @@ class WriteAheadLog(DataPersistenceInterface):
             # Format the complete checkpoint structure
             formatted_data = json.dumps(checkpoint_structure)
 
-            logging.info("TEST POINT 3: BEFORE CREATING CHECKPOINT")
-            time.sleep(1)
-            
             # Write the checkpoint file with PROCESSING status initially
             checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
             success = self.storage.write_file(checkpoint_path, checkpoint_content)
@@ -344,26 +344,15 @@ class WriteAheadLog(DataPersistenceInterface):
                 logging.error(f"Failed to write checkpoint file for client {client_id}")
                 return False
             
-            logging.info("TEST POINT 4: AFTER CREATING CHECKPOINT BUT BEFORE COMPLETING IT")
-            time.sleep(1)
-
             # Update just the status line to COMPLETED - more efficient than rewriting the whole file
             success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
-                logging.info(f"Created checkpoint {checkpoint_path.name} for client {client_id} with {len(business_data_items)} business data items and {len(all_message_ids)} tracked message IDs")
-                
-                logging.info("TEST POINT 5: BEFORE DELETING LOGS")
-                time.sleep(1) 
-
                 for log_file in log_files:
                     try:
                         self.storage.delete_file(log_file)
                     except Exception as e:
                         logging.warning(f"Error deleting log file {log_file}: {e}")
-
-                logging.info("TEST POINT 6: BEFORE DELETING OLD CHEKPOINT")
-                time.sleep(1) 
 
                 if latest_checkpoint:
                     try:
@@ -739,6 +728,80 @@ class WriteAheadLog(DataPersistenceInterface):
                     
         except Exception as e:
             logging.error(f"Error cleaning up redundant logs: {e}")
+    
+    def _cleanup_checkpoints(self):
+        """
+        Clean up checkpoints that:
+        1. Have PROCESSING status (incomplete/abandoned checkpoints)
+        2. Are older than the most recent COMPLETED checkpoint
+        
+        This helps maintain a clean state by removing stale or corrupted checkpoint files.
+        Called during initialization to ensure a clean state.
+        """
+        try:
+            # Find all client directories
+            client_dirs = []
+            for item in self.storage.list_files(self.base_dir):
+                if Path(item).is_dir():
+                    client_dirs.append(item)
+            
+            logging.info(f"Checking {len(client_dirs)} client directories for checkpoint cleanup")
+            
+            # Process each client directory
+            for client_dir in client_dirs:
+                client_id = Path(client_dir).name
+                checkpoint_files = self._get_all_checkpoints(Path(client_dir))
+                
+                if not checkpoint_files:
+                    continue
+                
+                # Sort checkpoints by name (timestamp) in descending order (newest first)
+                checkpoint_files.sort(reverse=True)
+                
+                # Find the most recent COMPLETED checkpoint
+                latest_completed = None
+                processing_checkpoints = []
+                
+                # First pass: identify latest completed checkpoint and any processing checkpoints
+                for checkpoint in checkpoint_files:
+                    try:
+                        content = self.storage.read_file(checkpoint)
+                        first_line = content.splitlines()[0] if content else ""
+                        
+                        if first_line == self.STATUS_COMPLETED:
+                            if latest_completed is None:
+                                latest_completed = checkpoint
+                        elif first_line == self.STATUS_PROCESSING:
+                            processing_checkpoints.append(checkpoint)
+                    except Exception as e:
+                        logging.warning(f"Error checking checkpoint status {checkpoint.name}: {e}")
+                
+                # Delete all checkpoints with PROCESSING status (incomplete/abandoned)
+                for checkpoint in processing_checkpoints:
+                    try:
+                        self.storage.delete_file(checkpoint)
+                        logging.info(f"Deleted incomplete checkpoint {checkpoint.name} for client {client_id}")
+                    except Exception as e:
+                        logging.warning(f"Error deleting incomplete checkpoint {checkpoint}: {e}")
+                
+                # Delete old checkpoints (all but the latest completed one)
+                if latest_completed:
+                    old_checkpoints = [cp for cp in checkpoint_files if cp != latest_completed]
+                    for checkpoint in old_checkpoints:
+                        try:
+                            # Skip if we already deleted it as a processing checkpoint
+                            if checkpoint in processing_checkpoints:
+                                continue
+                                
+                            self.storage.delete_file(checkpoint)
+                            logging.info(f"Deleted old checkpoint {checkpoint.name} for client {client_id}")
+                        except Exception as e:
+                            logging.warning(f"Error deleting old checkpoint {checkpoint}: {e}")
+                    
+                    if old_checkpoints:
+                        logging.info(f"Cleaned up {len(old_checkpoints)} old checkpoints for client {client_id}, keeping {latest_completed.name}")
+        except Exception as e:
+            logging.error(f"Error cleaning up checkpoints: {e}")
     
     def _read_completed_file(self, file_path: Path) -> Optional[str]:
         """

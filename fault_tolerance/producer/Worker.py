@@ -21,7 +21,7 @@ logging.basicConfig(
 # Get environment variables
 PRODUCER_QUEUE = os.getenv("PRODUCER_QUEUE", "test_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9001))
-NUM_BATCHES = 10
+NUM_BATCHES = 15
 BATCH_INTERVAL = 2  # seconds
 
 # File to store sent messages for verification

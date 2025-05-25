@@ -88,8 +88,8 @@ services:
       - CHECK_INTERVAL=5
       - SERVICE_NAME=sentinel2
       - PEER_PORT=9010
-      - RESTART_ATTEMPTS=3
-      - RESTART_COOLDOWN=30
+      - RESTART_ATTEMPTS=2
+      - RESTART_COOLDOWN=5
       - COMPOSE_PROJECT_NAME=fault_tolerance
     depends_on:
       - consumer_worker

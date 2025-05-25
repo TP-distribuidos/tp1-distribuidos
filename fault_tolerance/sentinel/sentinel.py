@@ -22,7 +22,7 @@ HOSTNAME = os.getenv("HOSTNAME", "unknown_host")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "sentinel")
 PEER_PORT = int(os.getenv("PEER_PORT", 9010))
 RESTART_ATTEMPTS = int(os.getenv("RESTART_ATTEMPTS", 3))
-RESTART_COOLDOWN = int(os.getenv("RESTART_COOLDOWN", 30))
+RESTART_COOLDOWN = int(os.getenv("RESTART_COOLDOWN", 10))
 COMPOSE_PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME")
 
 # Election and Leader Constants

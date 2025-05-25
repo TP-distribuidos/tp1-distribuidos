@@ -76,18 +76,11 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                     logging.debug(f"Extracted business data from WAL structure")
                     return business_data
                 
-                # Handle checkpoint format with messages_id and content
-                if "messages_id" in data and "content" in data:
-                    logging.debug(f"Parsed checkpoint data with {len(data.get('messages_id', []))} messages")
+                # Handle checkpoint formats (both new TCP-style and old format for backward compatibility)
+                if "max_message_id" in data and "content" in data:
+                    # New TCP-style format with just max_message_id
+                    logging.debug(f"Parsed TCP-style checkpoint with max message ID {data.get('max_message_id')}")
                     return data
-                
-                # Handle legacy format with nested data
-                if "data" in data and isinstance(data["data"], dict):
-                    inner_data = data["data"]
-                    if "messages_id" in inner_data and "content" in inner_data:
-                        logging.debug(f"Parsed legacy checkpoint data")
-                        return inner_data
-                
                 # For direct business data without WAL structure, return as-is
                 return data
                 

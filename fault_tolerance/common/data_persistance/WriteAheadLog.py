@@ -104,22 +104,13 @@ class WriteAheadLog(DataPersistenceInterface):
                         
                         # Extract message IDs from checkpoint (supports both formats)
                         if isinstance(checkpoint_data, dict):
-                            message_ids = []
-                            
-                            # New format with direct messages_id and content
-                            if "messages_id" in checkpoint_data:
-                                message_ids = checkpoint_data.get("messages_id", [])
-                            # Legacy format with data wrapper
-                            elif "data" in checkpoint_data and isinstance(checkpoint_data["data"], dict):
-                                inner_data = checkpoint_data["data"]
-                                if "messages_id" in inner_data:
-                                    message_ids = inner_data.get("messages_id", [])
-                            
-                            # Add all message IDs to the processed set
-                            for msg_id in message_ids:
-                                self.processed_ids[client_id].add(str(msg_id))
-                            
-                            logging.info(f"Loaded {len(message_ids)} processed message IDs from checkpoint for client {client_id}")
+                            # Handle the new TCP-style max_message_id approach
+                            if "max_message_id" in checkpoint_data:
+                                max_id = checkpoint_data.get("max_message_id")
+                                if max_id:
+                                    # Store the max_message_id for future comparisons
+                                    self.processed_ids[client_id].add(str(max_id))
+                                    logging.info(f"Loaded max message ID {max_id} from checkpoint for client {client_id}")
                 
                 # Now process any completed log files to get message IDs that might
                 # not be in the checkpoint yet
@@ -249,11 +240,13 @@ class WriteAheadLog(DataPersistenceInterface):
                     checkpoint_data = self._parse_file_content(checkpoint_content)
                     
                     if isinstance(checkpoint_data, dict):
-                        # Extract message IDs for WAL tracking
-                        if "messages_id" in checkpoint_data and isinstance(checkpoint_data["messages_id"], list):
-                            for msg_id in checkpoint_data["messages_id"]:
-                                all_message_ids.add(str(msg_id))
-                            logging.info(f"Loaded {len(checkpoint_data['messages_id'])} message IDs from checkpoint")
+                        # Extract message IDs for WAL tracking (support both TCP-style and legacy formats)
+                        if "max_message_id" in checkpoint_data:
+                            # TCP-style approach with max_message_id
+                            max_id = checkpoint_data.get("max_message_id")
+                            if max_id:
+                                all_message_ids.add(str(max_id))
+                                logging.info(f"Loaded max message ID {max_id} from checkpoint")
                         
                         # Extract just the business data (content field)
                         checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
@@ -303,13 +296,35 @@ class WriteAheadLog(DataPersistenceInterface):
             # Use state interpreter to merge only the business data
             merged_business_data = self.state_interpreter.merge_data(business_data_items)
 
+            # Find the maximum message ID (using TCP approach)
+            max_message_id = None
+            if all_message_ids:
+                # Convert all IDs to integers if possible for proper comparison
+                numeric_ids = []
+                for msg_id in all_message_ids:
+                    try:
+                        numeric_ids.append(int(msg_id))
+                    except (ValueError, TypeError):
+                        # If any ID can't be converted, keep using string comparison
+                        numeric_ids = None
+                        break
+                
+                if numeric_ids:
+                    # If all IDs could be converted to int, find the max numeric ID
+                    max_message_id = str(max(numeric_ids))
+                else:
+                    # Otherwise use string comparison (lexicographical order)
+                    max_message_id = max(all_message_ids)
+                    
+                logging.info(f"Maximum message ID found: {max_message_id} (TCP-style approach)")
+            
             # Create a WAL-specific checkpoint structure with:
             # 1. Business data from the merge
-            # 2. WAL-tracked message IDs
+            # 2. Maximum message ID (TCP style) instead of all message IDs
             # 3. WAL metadata (timestamp only - no log_count as we count files directly)
             checkpoint_structure = {
                 "content": merged_business_data.get("content", ""),
-                "messages_id": sorted(list(all_message_ids)),  # WAL's responsibility to track these
+                "max_message_id": max_message_id,  # Store only the maximum ID
                 "_metadata": {
                     "timestamp": timestamp
                 }
@@ -401,10 +416,50 @@ class WriteAheadLog(DataPersistenceInterface):
         if client_id not in self.processed_ids:
             self.processed_ids[client_id] = set()
             
-        # Check if message has already been processed (deduplication)
-        if message_id in self.processed_ids[client_id]:
-            logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping")
-            return True
+        # Check if message has already been processed (using TCP-style approach)
+        if self.processed_ids[client_id]:
+            # Get the maximum processed ID for this client
+            max_processed_id = None
+            try:
+                # First try to convert all IDs to integers for numeric comparison
+                numeric_ids = []
+                for msg_id in self.processed_ids[client_id]:
+                    try:
+                        numeric_ids.append(int(msg_id))
+                    except (ValueError, TypeError):
+                        numeric_ids = None
+                        break
+                        
+                if numeric_ids:
+                    max_processed_id = str(max(numeric_ids))
+                else:
+                    # If numeric conversion failed, use string comparison
+                    max_processed_id = max(self.processed_ids[client_id])
+                    
+                # Compare the current message_id with the max_processed_id
+                # In TCP approach, if message_id <= max_processed_id, it's already processed
+                try:
+                    # Try numeric comparison first
+                    if str(message_id).isdigit() and str(max_processed_id).isdigit():
+                        if int(message_id) <= int(max_processed_id):
+                            logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping (numeric comparison)")
+                            return True
+                    # Otherwise use string comparison
+                    elif str(message_id) <= str(max_processed_id):
+                        logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping (string comparison)")
+                        return True
+                except Exception as e:
+                    logging.warning(f"Error comparing message IDs: {e}, falling back to exact match check")
+                    # Fall back to exact match if comparison fails
+                    if message_id in self.processed_ids[client_id]:
+                        logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping (exact match)")
+                        return True
+            except Exception as e:
+                logging.warning(f"Error finding max processed ID: {e}, falling back to exact match check")
+                # Fall back to exact match if max finding fails
+                if message_id in self.processed_ids[client_id]:
+                    logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping (exact match)")
+                    return True
         
         try:
             # Let the state interpreter format the data as a string representation
@@ -624,13 +679,16 @@ class WriteAheadLog(DataPersistenceInterface):
                         
                     checkpoint_data = self._parse_file_content(checkpoint_content)
                     
-                    # Extract message IDs from checkpoint
-                    checkpoint_message_ids = set()
-                    if isinstance(checkpoint_data, dict) and "messages_id" in checkpoint_data:
-                        for msg_id in checkpoint_data["messages_id"]:
-                            checkpoint_message_ids.add(str(msg_id))
-                        
-                    if not checkpoint_message_ids:
+                    # Extract max message ID from checkpoint (TCP-style approach)
+                    max_message_id = None
+                    # Handle the new TCP-style max_message_id format
+                    if isinstance(checkpoint_data, dict) and "max_message_id" in checkpoint_data:
+                        max_message_id = checkpoint_data.get("max_message_id")
+                        if max_message_id:
+                            max_message_id = str(max_message_id)
+                            logging.info(f"Found max message ID {max_message_id} in checkpoint")
+                    
+                    if not max_message_id:
                         continue
                         
                     # Now check all logs to see if any message IDs are in the checkpoint
@@ -645,13 +703,26 @@ class WriteAheadLog(DataPersistenceInterface):
                             # Extract message ID
                             msg_id = None
                             if isinstance(parsed_log, dict):
-                                # Check both formats
+                                # Check multiple possible locations for message ID
                                 if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
                                     msg_id = parsed_log["_wal_metadata"]["message_id"]
+                                elif "message_id" in parsed_log:
+                                    msg_id = parsed_log["message_id"]
                             
-                            # If message ID is in checkpoint, mark log for deletion
-                            if msg_id and msg_id in checkpoint_message_ids:
-                                logs_to_delete.append(log_file)
+                            # In the TCP approach, compare with max_message_id instead of checking membership
+                            # If the message ID is less than or equal to max_message_id, it's already covered by the checkpoint
+                            if msg_id is not None:
+                                # Convert to appropriate type for comparison
+                                try:
+                                    # Try numeric comparison if both are numbers
+                                    if str(msg_id).isdigit() and str(max_message_id).isdigit():
+                                        if int(msg_id) <= int(max_message_id):
+                                            logs_to_delete.append(log_file)
+                                    # Otherwise, fall back to string comparison
+                                    elif str(msg_id) <= str(max_message_id):
+                                        logs_to_delete.append(log_file)
+                                except Exception as e:
+                                    logging.warning(f"Error comparing message IDs during cleanup: {e}")
                     
                     # Delete redundant logs
                     if logs_to_delete:

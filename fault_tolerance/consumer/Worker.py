@@ -170,11 +170,7 @@ class ConsumerWorker:
             deserialized_message = Serializer.deserialize(message.body)
             
             # Extract message ID with fallbacks for compatibility
-            message_id = None
-            for id_field in ['message_id', 'batch']:
-                if id_field in deserialized_message:
-                    message_id = deserialized_message.get(id_field)
-                    break
+            message_id = deserialized_message.get('batch')
             
             # Generate a message ID if none exists
             if message_id is None:

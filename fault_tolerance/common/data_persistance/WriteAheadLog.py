@@ -90,10 +90,12 @@ class WriteAheadLog(DataPersistenceInterface):
                     if checkpoint_content:
                         checkpoint_data = self._parse_file_content(checkpoint_content, use_json=False)
                         
-                        if isinstance(checkpoint_data, dict) and "max_message_id" in checkpoint_data:
-                            max_id = checkpoint_data.get("max_message_id")
-                            if max_id:
-                                checkpoint_max_id = str(max_id)
+                        if isinstance(checkpoint_data, dict):
+                            # Get max_message_id from checkpoint metadata
+                            if isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
+                                max_id = checkpoint_data["_metadata"]["max_message_id"]
+                                if max_id:
+                                    checkpoint_max_id = str(max_id)
                 
                 log_files = self._get_all_logs(Path(client_dir))
                 all_msg_ids = []  
@@ -108,9 +110,9 @@ class WriteAheadLog(DataPersistenceInterface):
                         
                         if isinstance(parsed_data, dict):
                             msg_id = None
-                            # Check in _wal_metadata first (standard location)
-                            if isinstance(parsed_data.get("_wal_metadata"), dict) and "message_id" in parsed_data["_wal_metadata"]:
-                                msg_id = parsed_data["_wal_metadata"]["message_id"]
+                            # Check in _metadata first (standard location)
+                            if isinstance(parsed_data.get("_metadata"), dict) and "message_id" in parsed_data["_metadata"]:
+                                msg_id = parsed_data["_metadata"]["message_id"]
                             # Then check direct message_id field
                             elif "message_id" in parsed_data:
                                 msg_id = parsed_data["message_id"]
@@ -234,11 +236,12 @@ class WriteAheadLog(DataPersistenceInterface):
                     checkpoint_data = self._parse_file_content(checkpoint_content)
                     
                     if isinstance(checkpoint_data, dict):
-                        if "max_message_id" in checkpoint_data:
-                            max_id = checkpoint_data.get("max_message_id")
+                        # Get max_message_id from checkpoint metadata
+                        if isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
+                            max_id = checkpoint_data["_metadata"]["max_message_id"]
                             if max_id:
                                 all_message_ids.add(str(max_id))
-                                logging.info(f"Loaded max message ID {max_id} from checkpoint")
+                                logging.info(f"Loaded max message ID {max_id} from checkpoint metadata")
                         
                         checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
                         if checkpoint_business_data["content"]:
@@ -251,8 +254,8 @@ class WriteAheadLog(DataPersistenceInterface):
                     
                     if isinstance(parsed_log, dict):
                         msg_id = None
-                        if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
-                            msg_id = parsed_log["_wal_metadata"]["message_id"]
+                        if "_metadata" in parsed_log and "message_id" in parsed_log["_metadata"]:
+                            msg_id = parsed_log["_metadata"]["message_id"]
                         elif "message_id" in parsed_log:
                             msg_id = parsed_log["message_id"]
                     
@@ -291,13 +294,12 @@ class WriteAheadLog(DataPersistenceInterface):
                     
             # Create a WAL-specific checkpoint structure with:
             # 1. Business data from the merge
-            # 2. Maximum message ID
-            # 3. WAL metadata
+            # 2. WAL metadata with timestamp and maximum message ID 
             checkpoint_structure = {
                 "content": merged_business_data.get("content", ""),
-                "max_message_id": max_message_id,
                 "_metadata": {
-                    "timestamp": timestamp
+                    "timestamp": timestamp,
+                    "max_message_id": max_message_id
                 }
             }
             
@@ -383,18 +385,18 @@ class WriteAheadLog(DataPersistenceInterface):
         
         try:
             # Let the state interpreter format the data as a string representation
-            # The format_data method MUST return a JSON string representing a dictionary with data and _wal_metadata fields
+            # The format_data method MUST return a JSON string representing a dictionary with data and _metadata fields
             intermediate_data = self.state_interpreter.format_data(data)
             
-            # Parse the intermediate data and add WAL-specific metadata
+            # Parse the intermediate data and add metadata
             parsed_data = json.loads(intermediate_data)
             
             # Validate the contract with StateInterpreter
-            if not isinstance(parsed_data, dict) or "data" not in parsed_data or "_wal_metadata" not in parsed_data:
-                raise ValueError(f"StateInterpreter.format_data must return a JSON string with 'data' and '_wal_metadata' fields")
+            if not isinstance(parsed_data, dict) or "data" not in parsed_data or "_metadata" not in parsed_data:
+                raise ValueError(f"StateInterpreter.format_data must return a JSON string with 'data' and '_metadata' fields")
                 
-            parsed_data["_wal_metadata"]["timestamp"] = timestamp
-            parsed_data["_wal_metadata"]["message_id"] = message_id
+            parsed_data["_metadata"]["timestamp"] = timestamp
+            parsed_data["_metadata"]["message_id"] = message_id
             formatted_data = json.dumps(parsed_data)
             
             # Two-phase commit approach:
@@ -493,10 +495,10 @@ class WriteAheadLog(DataPersistenceInterface):
                     if "data" in log_data: 
                         business_data = log_data["data"]
                     else: 
-                        # Filter out WAL-specific fields
-                        if "_wal_metadata" in log_data:
-                            # Has WAL metadata but not in expected format
-                            business_data = {k: v for k, v in log_data.items() if k != "_wal_metadata"}
+                        # Filter out metadata fields
+                        if "_metadata" in log_data:
+                            # Remove metadata from business data
+                            business_data = {k: v for k, v in log_data.items() if k != "_metadata"}
                         else:
                             # Assume everything is business data
                             business_data = log_data
@@ -580,8 +582,9 @@ class WriteAheadLog(DataPersistenceInterface):
                     checkpoint_data = self._parse_file_content(checkpoint_content)
                     
                     max_message_id = None
-                    if isinstance(checkpoint_data, dict) and "max_message_id" in checkpoint_data:
-                        max_message_id = checkpoint_data.get("max_message_id")
+                    # Get max_message_id from checkpoint metadata
+                    if isinstance(checkpoint_data, dict) and isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
+                        max_message_id = checkpoint_data["_metadata"]["max_message_id"]
                     
                     if not max_message_id:
                         continue
@@ -602,8 +605,8 @@ class WriteAheadLog(DataPersistenceInterface):
                             
                             msg_id = None
                             if isinstance(parsed_log, dict):
-                                if "_wal_metadata" in parsed_log and "message_id" in parsed_log["_wal_metadata"]:
-                                    msg_id = parsed_log["_wal_metadata"]["message_id"]
+                                if "_metadata" in parsed_log and "message_id" in parsed_log["_metadata"]:
+                                    msg_id = parsed_log["_metadata"]["message_id"]
                                 elif "message_id" in parsed_log:
                                     msg_id = parsed_log["message_id"]
                             

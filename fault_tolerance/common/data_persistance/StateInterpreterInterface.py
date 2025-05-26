@@ -14,12 +14,12 @@ class StateInterpreterInterface(abc.ABC):
         IMPORTANT: This method MUST return a JSON string representing a dictionary 
         with exactly these two keys:
         - "data": Contains the business data to be stored
-        - "_wal_metadata": An empty dict (or with custom metadata) that WAL will populate
+        - "_metadata": An empty dict (or with custom metadata) that WAL will populate
         
         Example:
         {
             "data": your_business_data,
-            "_wal_metadata": {}
+            "_metadata": {}
         }
         
         Args:

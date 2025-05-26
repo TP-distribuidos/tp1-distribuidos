@@ -34,7 +34,7 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
         # Create standardized structure for business data
         wal_structure = {
             "data": data,  # Store original business data unchanged
-            "_wal_metadata": {}  # Reserved for WAL to add its metadata
+            "_metadata": {}  # Reserved for WAL to add its metadata
         }
             
         # Serialize the structure
@@ -61,17 +61,21 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
             data = json.loads(content)
             if isinstance(data, dict):
                 # Handle WAL format with proper structure
-                if "data" in data and "_wal_metadata" in data:
+                if "data" in data:
                     # Extract pure business data
                     business_data = data["data"]
                     
-                    # If the business data contains a message_id from WAL metadata, add it
-                    if "_wal_metadata" in data and "message_id" in data["_wal_metadata"]:
-                        wal_message_id = data["_wal_metadata"]["message_id"]
+                    # Check for message_id in metadata
+                    message_id = None
+                    if "_metadata" in data and "message_id" in data["_metadata"]:
+                        message_id = data["_metadata"]["message_id"]
+                    
+                    # If we found a message_id in metadata, add it to business data
+                    if message_id is not None:
                         # Only add if business data is a dict and doesn't already have message_id
                         if isinstance(business_data, dict) and "message_id" not in business_data:
                             business_data = business_data.copy()  # Create copy to avoid modifying original
-                            business_data["message_id"] = wal_message_id
+                            business_data["message_id"] = message_id
                     
                     logging.debug(f"Extracted business data from WAL structure")
                     return business_data
@@ -104,12 +108,17 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 
                 if isinstance(item, dict):
                     # Check if this is a WAL structure and extract business data
-                    if "data" in item and "_wal_metadata" in item:
+                    if "data" in item:
                         business_data = item["data"]
                         if isinstance(business_data, dict):
-                            # Add message_id from WAL metadata if available
-                            if "message_id" in item["_wal_metadata"]:
-                                message_id = str(item["_wal_metadata"]["message_id"])
+                            # Check for message_id in metadata
+                            msg_id = None
+                            if "_metadata" in item and "message_id" in item["_metadata"]:
+                                msg_id = str(item["_metadata"]["message_id"])
+                                
+                            # Add message_id from metadata if available
+                            if msg_id:
+                                message_id = msg_id
                                 business_data["message_id"] = message_id
                             
                             # Add all business data fields to parsed_data

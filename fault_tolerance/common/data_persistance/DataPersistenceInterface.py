@@ -8,14 +8,14 @@ class DataPersistenceInterface(abc.ABC):
     """
     
     @abc.abstractmethod
-    def persist(self, client_id: str, data: Any, operation_id: str) -> bool:
+    def persist(self, client_id: str, data: Any, operation_id: int) -> bool:
         """
         Persist data for a client.
         
         Args:
             client_id: Client identifier
             data: Data to persist
-            operation_id: Unique operation identifier
+            operation_id: Unique operation identifier as integer
             
         Returns:
             bool: True if successfully persisted

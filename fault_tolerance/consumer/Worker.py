@@ -175,10 +175,9 @@ class ConsumerWorker:
             # Generate a message ID if none exists
             if message_id is None:
                 logging.warning("Message received without ID field, generating one")
-                message_id = str(int(time.time() * 1000))  # Use timestamp as fallback
+                message_id = int(time.time() * 1000)  # Use timestamp as integer directly
                 
-            # Convert message_id to string for consistent handling
-            message_id = str(message_id)
+            message_id = int(message_id) if not isinstance(message_id, int) else message_id
             
             logging.info(f"Received message - Message ID: {message_id}")
             
@@ -188,13 +187,9 @@ class ConsumerWorker:
             
             # Persist message to WAL - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, deserialized_message, message_id):
-                try:
-                    msg_num = int(message_id)
-                    if msg_num == self.target_batch:
-                        logging.info(f"Received target batch {self.target_batch}, processing data")
-                        await self._write_to_file(client_id)
-                except (ValueError, TypeError) as e:
-                    logging.info(f"Message with non-numeric message_id {message_id} processed")
+                if message_id == self.target_batch:
+                    logging.info(f"Received target batch {self.target_batch}, processing data")
+                    await self._write_to_file(client_id)
                 
                 await message.ack()
                 

@@ -53,8 +53,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.storage = storage
         self.service_name = service_name
         self.log_count = {}  
-        self.processed_ids = {} 
-        
+        self.processed_ids = {}  
         self.base_dir = Path(base_dir)
         self.storage.create_directory(self.base_dir)
         
@@ -79,30 +78,29 @@ class WriteAheadLog(DataPersistenceInterface):
                 if Path(item).is_dir():
                     client_dirs.append(item)
             
-            logging.info(f"Found {len(client_dirs)} client directories for loading state")                # Process each client directory
             for client_dir in client_dirs:
                 client_id = Path(client_dir).name
                 
-                if client_id not in self.processed_ids:
-                    self.processed_ids[client_id] = set()
+                self.processed_ids[client_id] = None
+                checkpoint_max_id = None
                 
                 latest_checkpoint = self._get_latest_checkpoint(Path(client_dir))
-                
                 if latest_checkpoint:
                     checkpoint_content = self._read_completed_file(latest_checkpoint)
                     if checkpoint_content:
                         checkpoint_data = self._parse_file_content(checkpoint_content, use_json=False)
                         
-                        if isinstance(checkpoint_data, dict):
-                            if "max_message_id" in checkpoint_data:
-                                max_id = checkpoint_data.get("max_message_id")
-                                if max_id:
-                                    self.processed_ids[client_id].add(str(max_id))
-                                    logging.info(f"Loaded max message ID {max_id} from checkpoint for client {client_id}")
+                        if isinstance(checkpoint_data, dict) and "max_message_id" in checkpoint_data:
+                            max_id = checkpoint_data.get("max_message_id")
+                            if max_id:
+                                checkpoint_max_id = str(max_id)
                 
-                # process any completed log files to get message IDs that might
-                # not be in the checkpoint yet
                 log_files = self._get_all_logs(Path(client_dir))
+                all_msg_ids = []  
+                
+                if checkpoint_max_id is not None:
+                    all_msg_ids.append(checkpoint_max_id)
+                
                 for log_file in log_files:
                     log_content = self._read_completed_file(log_file)
                     if log_content:
@@ -110,15 +108,29 @@ class WriteAheadLog(DataPersistenceInterface):
                         
                         if isinstance(parsed_data, dict):
                             msg_id = None
-                            # Try different field names for message ID
-                            for field in ["message_id"]:
-                                if field in parsed_data:
-                                    msg_id = str(parsed_data[field])
-                                    break
+                            # Check in _wal_metadata first (standard location)
+                            if isinstance(parsed_data.get("_wal_metadata"), dict) and "message_id" in parsed_data["_wal_metadata"]:
+                                msg_id = parsed_data["_wal_metadata"]["message_id"]
+                            # Then check direct message_id field
+                            elif "message_id" in parsed_data:
+                                msg_id = parsed_data["message_id"]
                             
-                            # If found, add to processed IDs
+                            # If found a valid message ID, add to our list for max calculation
                             if msg_id:
-                                self.processed_ids[client_id].add(msg_id)
+                                all_msg_ids.append(str(msg_id))
+                
+                # Calculate the true max message ID considering both checkpoint and logs
+                if all_msg_ids:
+                    try:
+                        # Convert all message IDs to integers once
+                        numeric_ids = [int(msg_id) for msg_id in all_msg_ids]
+                        max_id = str(max(numeric_ids))
+                        self.processed_ids[client_id] = max_id
+                        
+                    except Exception as e:
+                        logging.warning(f"Error calculating max message ID: {e}, using checkpoint value")
+                        if checkpoint_max_id is not None:
+                            self.processed_ids[client_id] = checkpoint_max_id
                 
                 # Update the log count based on the actual number of log files
                 log_file_count = len(log_files)
@@ -269,17 +281,12 @@ class WriteAheadLog(DataPersistenceInterface):
 
             max_message_id = None
             if all_message_ids:
-                numeric_ids = []
-                for msg_id in all_message_ids:
-                    try:
-                        numeric_ids.append(int(msg_id))
-                    except (ValueError, TypeError):
-                        numeric_ids = None
-                        break
-                
-                if numeric_ids:
+                try:
+                    numeric_ids = [int(msg_id) for msg_id in all_message_ids]
                     max_message_id = str(max(numeric_ids))
-                else:
+                except (ValueError, TypeError) as e:
+                    # Fallback in case there are non-numeric IDs (shouldn't happen with our changes)
+                    logging.warning(f"Found non-numeric message IDs: {e}")
                     max_message_id = max(all_message_ids)
                     
             # Create a WAL-specific checkpoint structure with:
@@ -357,44 +364,22 @@ class WriteAheadLog(DataPersistenceInterface):
         message_id = str(operation_id)
         
         if client_id not in self.processed_ids:
-            self.processed_ids[client_id] = set()
+            self.processed_ids[client_id] = None
             
-        if self.processed_ids[client_id]:
-            max_processed_id = None
+        # Check if we have a max processed ID for this client
+        max_processed_id = self.processed_ids[client_id]
+        if max_processed_id is not None:
+            # Compare the current message_id with the max_processed_id
+            # if message_id <= max_processed_id, it's already processed
             try:
-                numeric_ids = []
-                for msg_id in self.processed_ids[client_id]:
-                    try:
-                        numeric_ids.append(int(msg_id))
-                    except (ValueError, TypeError):
-                        numeric_ids = None
-                        break
-                        
-                if numeric_ids:
-                    max_processed_id = str(max(numeric_ids))
-                else:
-                    max_processed_id = max(self.processed_ids[client_id])
-                    
-                # Compare the current message_id with the max_processed_id
-                # if message_id <= max_processed_id, it's already processed
-                try:
-                    if str(message_id).isdigit() and str(max_processed_id).isdigit():
-                        if int(message_id) <= int(max_processed_id):
-                            logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping (numeric comparison)")
-                            return True
-                    elif str(message_id) <= str(max_processed_id):
-                        logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping (string comparison)")
-                        return True
-                except Exception as e:
-                    logging.warning(f"Error comparing message IDs: {e}, falling back to exact match check")
-                    if message_id in self.processed_ids[client_id]:
-                        logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping (exact match)")
-                        return True
-            except Exception as e:
-                logging.warning(f"Error finding max processed ID: {e}, falling back to exact match check")
-                if message_id in self.processed_ids[client_id]:
-                    logging.info(f"Message ID {message_id} for client {client_id} has already been processed, skipping (exact match)")
+                message_id_int = int(message_id)
+                max_processed_id_int = int(max_processed_id)
+                if message_id_int <= max_processed_id_int:
+                    logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping")
                     return True
+            except Exception as e:
+                logging.warning(f"Error comparing message IDs: {e}")
+                return False
         
         try:
             # Let the state interpreter format the data as a string representation
@@ -422,8 +407,16 @@ class WriteAheadLog(DataPersistenceInterface):
             if not self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED):
                 return False
             
-            # Successfully persisted - update tracking information
-            self.processed_ids[client_id].add(message_id)
+            # Successfully persisted - update max processed ID
+            message_id_int = int(message_id)
+            if self.processed_ids[client_id] is None:
+                self.processed_ids[client_id] = message_id
+                logging.info(f"Set initial max processed ID to {message_id} for client {client_id}")
+            else:
+                max_processed_id_int = int(self.processed_ids[client_id])
+                if message_id_int > max_processed_id_int:
+                    self.processed_ids[client_id] = message_id
+                    logging.info(f"Updated max processed ID to {message_id} for client {client_id}")
             
             log_files = self._get_all_logs(client_dir)
             self.log_count[client_id] = len(log_files)
@@ -552,8 +545,7 @@ class WriteAheadLog(DataPersistenceInterface):
                 self.storage.delete_file(file_path)
             
             if client_id in self.processed_ids:
-                processed_count = len(self.processed_ids[client_id])
-                self.processed_ids[client_id] = set()
+                self.processed_ids[client_id] = None
                 
             return True
         except Exception as e:
@@ -590,10 +582,14 @@ class WriteAheadLog(DataPersistenceInterface):
                     max_message_id = None
                     if isinstance(checkpoint_data, dict) and "max_message_id" in checkpoint_data:
                         max_message_id = checkpoint_data.get("max_message_id")
-                        if max_message_id:
-                            max_message_id = str(max_message_id)
                     
                     if not max_message_id:
+                        continue
+                    
+                    try:
+                        max_message_id_int = int(max_message_id)
+                    except (ValueError, TypeError):
+                        logging.warning(f"Invalid max_message_id in checkpoint: {max_message_id}")
                         continue
                         
                     logs_to_delete = []
@@ -614,10 +610,7 @@ class WriteAheadLog(DataPersistenceInterface):
                             # If the message ID is less than or equal to max_message_id, it's already covered by the checkpoint
                             if msg_id is not None:
                                 try:
-                                    if str(msg_id).isdigit() and str(max_message_id).isdigit():
-                                        if int(msg_id) <= int(max_message_id):
-                                            logs_to_delete.append(log_file)
-                                    elif str(msg_id) <= str(max_message_id):
+                                    if int(msg_id) <= max_message_id_int:
                                         logs_to_delete.append(log_file)
                                 except Exception as e:
                                     logging.warning(f"Error comparing message IDs during cleanup: {e}")

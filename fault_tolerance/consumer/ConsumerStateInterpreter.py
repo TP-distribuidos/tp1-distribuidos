@@ -175,7 +175,6 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
                 if "batch" not in entry:
                     # This is probably checkpoint content, store it as existing content
                     existing_content = entry.get("content", "")
-                    logging.info(f"Found existing checkpoint content: {existing_content[:50]}...")
                     continue
                 
                 # Case 2: Entry with batch ID and content

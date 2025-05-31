@@ -199,7 +199,7 @@ class Worker:
     async def send_disconnect(self, client_id, query=None):
         """Send DISCONNECT notification to all downstream components"""
         # Send to primary output queue (for next stage processing)
-        message = self._add_metadata(client_id, None, False, query, True)
+        message = Serializer.add_metadata(client_id, None, False, query, True)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -224,7 +224,7 @@ class Worker:
 
     async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
         """Send data to the eq_one_country queue in our exchange"""
-        message = self._add_metadata(client_id, data, eof_marker)
+        message = Serializer.add_metadata(client_id, data, eof_marker, None, False, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -236,7 +236,7 @@ class Worker:
 
     async def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
         """Send data to the response queue in our exchange"""
-        message = self._add_metadata(client_id, data, query=query)
+        message = Serializer.add_metadata(client_id, data, False, query, False, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -245,18 +245,6 @@ class Worker:
         )
         if not success:
             logging.error(f"Failed to send data to response queue")
-
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
-        """Add metadata to the message"""
-        message = {        
-            "client_id": client_id,
-            "EOF_MARKER": eof_marker,
-            "DISCONNECT": disconnect_marker,
-            "operation_id": operation_id,
-            "data": data,
-            "query": query,
-        }
-        return message
 
     def _filter_data(self, data):
         """Filter data into two lists based on the country"""

@@ -178,7 +178,7 @@ class Worker:
 
     async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -187,19 +187,6 @@ class Worker:
         )
         if not success:
             logging.error(f"Failed to send data with query '{query}' to router queue")
-
-    #TODO: move _add_metadata to Serializer
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
-        """Add metadata to the message"""
-        message = {        
-            "client_id": client_id,
-            "EOF_MARKER": eof_marker,
-            "data": data,
-            "query": query,
-            "DISCONNECT": disconnect_marker,
-            "operation_id": operation_id
-        }
-        return message
 
 
     def _handle_shutdown(self, *_):

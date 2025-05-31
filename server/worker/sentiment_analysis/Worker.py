@@ -103,9 +103,13 @@ class SentimentWorker:
             operation_id = deserialized_message.get("operation_id")
             
             if disconnect_marker:
-                response_message = self._add_metadata(
+                response_message = Serializer.add_metadata(
                     client_id=client_id,
+                    data=None,
+                    eof_marker=False,
+                    query=None,
                     disconnect_marker=True,
+                    operation_id=None
                 )
                 
                 # Send processed data to response queue
@@ -141,11 +145,13 @@ class SentimentWorker:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
                 processed_data = await self._analyze_sentiment_and_calculate_ratios(data)
                 
-                # TODO: Move to _send_data
-                # Prepare response message using the standardized _add_metadata method
-                response_message = self._add_metadata(
+                # Prepare response message using the standardized add_metadata method
+                response_message = Serializer.add_metadata(
                     client_id=client_id,
                     data=processed_data,
+                    eof_marker=False,
+                    query=None,
+                    disconnect_marker=False,
                     operation_id=operation_id
                 )
                 
@@ -259,17 +265,7 @@ class SentimentWorker:
             logging.error(f"Error during sentiment analysis: {e}")
             return ("NEUTRAL", 0.5)
         
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
-        """Prepare the message to be sent to the output queue - standardized across workers"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": eof_marker,
-            "query": query,
-            "DISCONNECT": disconnect_marker,
-            "operation_id": operation_id
-        }
-        return message
+
     
     def _handle_shutdown(self, *_):
         logging.info(f"Shutting down sentiment analysis worker...")

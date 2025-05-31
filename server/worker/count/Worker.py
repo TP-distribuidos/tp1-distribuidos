@@ -18,6 +18,7 @@ logging.basicConfig(
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+NODE_ID = os.getenv("NODE_ID", "count_node_unknown")  # Add NODE_ID
 
 # Output queues and exchange
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
@@ -44,13 +45,23 @@ class Worker:
         
         self.participations = {}
         
+        # WAL metadata tracking
+        self.node_id = NODE_ID
+        self.message_counter = 0  # Simple incremental counter for message_id
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
+        logging.info(f"Count Worker initialized with NODE_ID: {self.node_id}")
+        logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
+
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
@@ -141,12 +152,16 @@ class Worker:
             operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
-                await self.send_data(client_id, data, False, disconnect_marker=True)
+                # Get message ID for this operation
+                message_id = self._get_next_message_id()
+                await self.send_data(client_id, data, False, disconnect_marker=True, message_id=message_id)
                 self.participations.pop(client_id, None)
 
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
-                await self.send_data(client_id, data, True, query)
+                # Get message ID for this operation
+                message_id = self._get_next_message_id()
+                await self.send_data(client_id, data, True, query, message_id=message_id)
             elif data:
                 # TODO: This is not necessarily anymore, it could be just an "anonymous" dict
                 self.participations[client_id] = {}
@@ -156,7 +171,9 @@ class Worker:
                         self.participations[client_id][actor_name] = 0
                     self.participations[client_id][actor_name] += 1
                 parsed_data = self._parse_data(self.participations[client_id])
-                await self.send_data(client_id, parsed_data, False, query, operation_id=operation_id)
+                # Get message ID for this operation
+                message_id = self._get_next_message_id()
+                await self.send_data(client_id, parsed_data, False, query, operation_id=operation_id, message_id=message_id)
             else:
                 logging.warning(f"No data in message: {deserialized_message}")
 
@@ -176,9 +193,14 @@ class Worker:
             parsed_data.append({"name": actor, "count": count})
         return parsed_data
 
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
-        """Send data to the router queue with query in metadata"""
+    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None, message_id=None):
+        """Send data to the router queue with query in metadata and WAL metadata"""
         message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+        
+        # Add WAL-specific metadata
+        message["node_id"] = self.node_id
+        message["message_id"] = message_id
+        
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -187,7 +209,8 @@ class Worker:
         )
         if not success:
             logging.error(f"Failed to send data with query '{query}' to router queue")
-
+        else:
+            logging.debug(f"Sent message to router queue for client {client_id} with node_id {self.node_id}, message_id {message_id}")
 
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

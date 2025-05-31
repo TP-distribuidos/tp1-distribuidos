@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 import os
+from typing import Dict, List, Any
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
@@ -9,7 +10,10 @@ import heapq
 from collections import defaultdict
 import uuid
 from common.SentinelBeacon import SentinelBeacon
-
+# WAL imports
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+from worker.top.TopStateInterpreter import TopStateInterpreter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,14 +48,26 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.client_data = {}
+        # WAL REPLACES IN-MEMORY STORAGE!
+        # No more self.client_data = {} - WAL handles persistence
         self.top_n = TOP_N
+        
+        # Initialize WAL
+        storage = FileSystemStorage()
+        state_interpreter = TopStateInterpreter()
+        self.wal = WriteAheadLog(
+            state_interpreter=state_interpreter,
+            storage=storage,
+            service_name="top_worker",
+            base_dir="/app/persistence"
+        )
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
+        logging.info(f"Top Worker initialized with WAL persistence")
+        logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
     async def run(self):
@@ -130,7 +146,7 @@ class Worker:
         return True
     
     async def _process_message(self, message):
-        """Process a message and update top actors for the client"""
+        """Process a message and update top actors for the client using WAL"""
         try:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(message.body)
@@ -142,27 +158,45 @@ class Worker:
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
             operation_id = deserialized_message.get("operation_id", None)
             
+            # Extract WAL metadata from count workers
+            node_id = deserialized_message.get("node_id")
+            message_id = deserialized_message.get("message_id")
+            
             if disconnect_marker:
+                # Clear WAL data for this client on disconnect
+                self.wal.clear(client_id)
                 await self._send_data(client_id, data, self.producer_queue_name[0], False, disconnect_marker=True)
-                self.client_data.pop(client_id, None)
             
             elif eof_marker:
-                new_operation_id = str(uuid.uuid4())
-                # If we have data for this client, send it to router producer queue
-                if client_id in self.client_data:
-                    top_actors = self._get_top_actors(client_id)
+                # Retrieve consolidated data from WAL and send top actors
+                current_data = self.wal.retrieve(client_id)
+                
+                if current_data:
+                    top_actors = self._get_top_actors_from_dict(current_data)
+                    new_operation_id = str(uuid.uuid4())
                     await self._send_data(client_id, top_actors, self.producer_queue_name[0], operation_id=new_operation_id)
                     await self._send_data(client_id, [], self.producer_queue_name[0], True)
-                    # Clean up client data after sending
-                    del self.client_data[client_id]
-                    logging.info(f"Sent top actors for client {client_id} and cleaned up")
+                    
+                    # Clean up WAL data after sending
+                    self.wal.clear(client_id)
+                    logging.info(f"Sent top actors for client {client_id} and cleared WAL data")
                 else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found")
-            elif data:
-                # Update actors counts for this client
-                self._update_actors_data(client_id, data)
+                    logging.warning(f"Received EOF for client {client_id} but no data found in WAL")
+                    
+            elif data and node_id and message_id:
+                # Persist actor data using WAL
+                success = self.wal.persist(client_id, node_id, data, message_id)
+                
+                if success:
+                    logging.debug(f"Persisted actor data for client {client_id} from count worker {node_id}, message {message_id}")
+                else:
+                    logging.error(f"Failed to persist actor data for client {client_id}")
+                    
             else:
-                logging.warning(f"Received message with no data for client {client_id}")
+                if not data:
+                    logging.warning(f"Received message with no data for client {client_id}")
+                else:
+                    logging.warning(f"Received message without WAL metadata for client {client_id}")
             
             await message.ack()
             
@@ -171,33 +205,18 @@ class Worker:
             # Reject the message and requeue it
             await message.reject(requeue=True)
     
-    
-    def _update_actors_data(self, client_id, data):
+    def _get_top_actors_from_dict(self, actor_counts: Dict[str, int]) -> List[Dict[str, Any]]:
         """
-        Update the actors count data for a specific client
-        Store counts for ALL actors, not just top_n
-        """
-        if client_id not in self.client_data:
-            self.client_data[client_id] = defaultdict(int)
-        for actor_data in data:
-            name = actor_data.get("name")
-            count = actor_data.get("count", 0)
-            if name:
-                self.client_data[client_id][name] += count
-            else:
-                logging.warning(f"Received actor data without name for client {client_id}, skipping")
-    
+        Calculate and return the top N actors from a dictionary of counts.
         
-    def _get_top_actors(self, client_id):
+        Args:
+            actor_counts: Dictionary of actor_name -> count
+            
+        Returns:
+            List[Dict]: Top N actors formatted as [{"name": "Actor", "count": 5}, ...]
         """
-        Calculate and return the top N actors for a client
-        Only called when EOF is received
-        """
-        if client_id not in self.client_data:
+        if not actor_counts:
             return []
-        
-        # Get all actor counts for this client
-        actor_counts = self.client_data[client_id]
         
         # Use heapq to get the top N actors
         top_actors = heapq.nlargest(self.top_n, actor_counts.items(), key=lambda x: x[1])

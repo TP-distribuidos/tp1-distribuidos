@@ -165,15 +165,15 @@ class RouterWorker:
                 await message.ack()
                 return
                 
-            # Prepare message to publish - maintain the query field if present
-            outgoing_message = {
-                "client_id": client_id,
-                "data": data,
-                "EOF_MARKER": eof_marker,
-                "operation_id": operation_id
-            }
-            if query:
-                outgoing_message["query"] = query
+            # Prepare message to publish using the centralized Serializer.add_metadata method
+            outgoing_message = Serializer.add_metadata(
+                client_id=client_id,
+                data=data,
+                eof_marker=eof_marker,
+                query=query,
+                disconnect_marker=False,
+                operation_id=operation_id
+            )
 
             
             # Process message based on exchange type
@@ -266,17 +266,14 @@ class RouterWorker:
 
     async def _send_disconnect_to_all_queues(self, client_id, query=None):
         """Send DISCONNECT marker to all output queues for a specific client ID"""
-        # TODO: Add a _add_metadata method
-        disconnect_message = {
-            "client_id": client_id,
-            "data": None,
-            "EOF_MARKER": False,
-            "DISCONNECT": True
-        }
-        
-        # Include query field if present
-        if query:
-            disconnect_message["query"] = query
+        disconnect_message = Serializer.add_metadata(
+            client_id=client_id,
+            data=None,
+            eof_marker=False,
+            query=query,
+            disconnect_marker=True,
+            operation_id=None
+        )
         
         # For fanout exchanges, we only need to publish once with any routing key
         if self.exchange_type == "fanout":
@@ -302,15 +299,14 @@ class RouterWorker:
         
     async def _send_eof_to_all_queues(self, client_id, data, query=None):
         """Send EOF marker to all output queues for a specific client ID"""
-        eof_message = {
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": True
-        }
-        
-        # Include query field if present
-        if query:
-            eof_message["query"] = query
+        eof_message = Serializer.add_metadata(
+            client_id=client_id,
+            data=data,
+            eof_marker=True,
+            query=query,
+            disconnect_marker=False,
+            operation_id=None
+        )
         
         # For fanout exchanges, we only need to publish once with any routing key
         if self.exchange_type == "fanout":

@@ -172,7 +172,7 @@ class Worker:
 
     async def send_disconnect(self, client_id, query=""):
         """Send DISCONNECT notification to downstream components"""
-        message = self._add_metadata(client_id, {}, False, query, disconnect_marker=True)
+        message = Serializer.add_metadata(client_id, {}, False, query, True)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
@@ -182,7 +182,7 @@ class Worker:
 
     async def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
         """Send data to the router queue with query type in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, operation_id=operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
@@ -191,18 +191,6 @@ class Worker:
         )
         if not success:
             logging.error(f"Failed to send data with query type '{query}' to router queue")
-
-    def _add_metadata(self, client_id, data, eof_marker, query, disconnect_marker=False, operation_id=None):
-        """Add metadata including query type to the message"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "query": query,
-            "EOF_MARKER": eof_marker,
-            "DISCONNECT": disconnect_marker,
-            "operation_id": operation_id
-        }
-        return message
 
     def _filter_data(self, data):
         """Filter data into two lists based on the year"""

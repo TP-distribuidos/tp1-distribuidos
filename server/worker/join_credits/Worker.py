@@ -285,7 +285,7 @@ class Worker:
     async def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
         try:    
-            message = self._add_metadata(client_id, data, eof_marker, disconnect_marker=disconnect_marker, operation_id=operation_id)
+            message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id)
             success = await self.rabbitmq.publish(
                 exchange_name=self.exchange_name_producer,
                 routing_key=self.producer_queue_name,
@@ -297,18 +297,6 @@ class Worker:
         except Exception as e:
             logging.error(f"Error sending data to output queue: {e}")
             raise e
-
-    def _add_metadata(self, client_id, data, eof_marker, query=None, disconnect_marker=False, operation_id=None):
-        """Prepare the message to be sent to the output queue"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": eof_marker,
-            "query": query,
-            "DISCONNECT": disconnect_marker,
-            "operation_id": operation_id
-        }
-        return message
         
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

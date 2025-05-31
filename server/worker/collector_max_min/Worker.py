@@ -227,7 +227,7 @@ class Worker:
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
             
-        message = self._add_metadata(client_id, data, eof_marker, query, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -237,17 +237,6 @@ class Worker:
         
         if not success:
             logging.error(f"Failed to send data to {queue_name} for client {client_id}")
-
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, operation_id=None):
-        """Prepare the message to be sent to the output queue"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": eof_marker,
-            "query": query,
-            "operation_id": operation_id
-        }
-        return message
         
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

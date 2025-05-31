@@ -1,6 +1,5 @@
 import logging
 import json
-import logging
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Set, Union
@@ -33,7 +32,7 @@ class WriteAheadLog(DataPersistenceInterface):
     STATUS_PROCESSING = "PROCESSING"
     STATUS_COMPLETED = "COMPLETED"
     
-    CHECKPOINT_THRESHOLD = 3  
+    CHECKPOINT_THRESHOLD = 2
 
     def __init__(self, 
                  state_interpreter: StateInterpreterInterface,
@@ -68,9 +67,10 @@ class WriteAheadLog(DataPersistenceInterface):
         
     def _load_processed_ids_and_log_counts(self):
         """
-        Load processed message IDs and log counts from existing checkpoints.
+        Load processed message IDs and log counts from existing checkpoints and logs.
         This helps prevent reprocessing of messages after system restarts and
         ensures log count continuity.
+        Now works with the node-based directory structure.
         """
         try:
             client_dirs = []
@@ -81,81 +81,96 @@ class WriteAheadLog(DataPersistenceInterface):
             for client_dir in client_dirs:
                 client_id = Path(client_dir).name
                 
-                self.processed_ids[client_id] = None
-                checkpoint_max_id = None
+                # Get all node directories within this client
+                node_dirs = []
+                for item in self.storage.list_files(client_dir):
+                    if Path(item).is_dir():
+                        node_dirs.append(item)
                 
-                latest_checkpoint = self._get_latest_checkpoint(Path(client_dir))
-                if latest_checkpoint:
-                    checkpoint_content = self._read_completed_file(latest_checkpoint)
-                    if checkpoint_content:
-                        checkpoint_data = self._parse_file_content(checkpoint_content, use_json=False)
-                        
-                        if isinstance(checkpoint_data, dict):
-                            # Get max_message_id from checkpoint metadata
-                            if isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
-                                max_id = checkpoint_data["_metadata"]["max_message_id"]
-                                if max_id is not None:
-                                    try:
-                                        checkpoint_max_id = int(max_id)
-                                    except (ValueError, TypeError):
-                                        logging.warning(f"Invalid max_message_id in checkpoint: {max_id}")
-                                        checkpoint_max_id = None
-                
-                log_files = self._get_all_logs(Path(client_dir))
-                all_msg_ids = []  
-                
-                if checkpoint_max_id is not None:
-                    try:
-                        all_msg_ids.append(int(checkpoint_max_id))
-                    except (ValueError, TypeError):
-                        logging.warning(f"Skipping non-integer checkpoint max ID: {checkpoint_max_id}")
-                
-                for log_file in log_files:
-                    log_content = self._read_completed_file(log_file)
-                    if log_content:
-                        parsed_data = self._parse_file_content(log_content, use_json=False)
-                        
-                        if isinstance(parsed_data, dict):
-                            msg_id = None
-                            # Check in _metadata first (standard location)
-                            if isinstance(parsed_data.get("_metadata"), dict) and "message_id" in parsed_data["_metadata"]:
-                                msg_id = parsed_data["_metadata"]["message_id"]
-                            # Then check direct message_id field
-                            elif "message_id" in parsed_data:
-                                msg_id = parsed_data["message_id"]
+                # Process each node directory separately
+                for node_dir in node_dirs:
+                    node_id = Path(node_dir).name
+                    node_key = f"{client_id}:{node_id}"
+                    
+                    self.processed_ids[node_key] = None
+                    checkpoint_max_id = None
+                    
+                    # Get the latest checkpoint for this specific node
+                    latest_checkpoint = self._get_latest_checkpoint(node_dir)
+                    if latest_checkpoint:
+                        checkpoint_content = self._read_completed_file(latest_checkpoint)
+                        if checkpoint_content:
+                            checkpoint_data = self._parse_file_content(checkpoint_content)
                             
-                            # If found a valid message ID, add to list
-                            if msg_id:
+                            if isinstance(checkpoint_data, dict):
+                                # Get max_message_id from checkpoint metadata
+                                if isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
+                                    max_id = checkpoint_data["_metadata"]["max_message_id"]
+                                    if max_id is not None:
+                                        try:
+                                            checkpoint_max_id = int(max_id)
+                                        except (ValueError, TypeError):
+                                            logging.warning(f"Invalid max_message_id in checkpoint: {max_id}")
+                                            checkpoint_max_id = None
+                    
+                    # Get all log files for this specific node
+                    log_files = self._get_all_logs(node_dir)
+                    all_msg_ids = []
+                    
+                    if checkpoint_max_id is not None:
+                        try:
+                            all_msg_ids.append(int(checkpoint_max_id))
+                        except (ValueError, TypeError):
+                            logging.warning(f"Skipping non-integer checkpoint max ID: {checkpoint_max_id}")
+                    
+                    # Process logs for this specific node
+                    for log_file in log_files:
+                        log_content = self._read_completed_file(log_file)
+                        if log_content:
+                            parsed_data = self._parse_file_content(log_content)
+                            
+                            if isinstance(parsed_data, dict):
+                                msg_id = None
+                                # Check in _metadata first (standard location)
+                                if isinstance(parsed_data.get("_metadata"), dict) and "message_id" in parsed_data["_metadata"]:
+                                    msg_id = parsed_data["_metadata"]["message_id"]
+                                # Then check direct message_id field
+                                elif "message_id" in parsed_data:
+                                    msg_id = parsed_data["message_id"]
+                                
+                                # If found a valid message ID, add to list
+                                if msg_id:
+                                    try:
+                                        msg_id_int = int(msg_id)
+                                        all_msg_ids.append(msg_id_int)
+                                    except (ValueError, TypeError):
+                                        logging.warning(f"Skipping non-integer message ID: {msg_id}")
+                    
+                    # Calculate the true max message ID considering both checkpoint and logs for this node
+                    if all_msg_ids:
+                        try:
+                            max_id = max(all_msg_ids)
+                            self.processed_ids[node_key] = max_id
+                            logging.debug(f"Loaded max processed ID {max_id} for client {client_id}, node {node_id}")
+                            
+                        except Exception as e:
+                            logging.warning(f"Error calculating max message ID for client {client_id}, node {node_id}: {e}, using checkpoint value")
+                            if checkpoint_max_id is not None:
                                 try:
-                                    msg_id_int = int(msg_id)
-                                    all_msg_ids.append(msg_id_int)
+                                    self.processed_ids[node_key] = int(checkpoint_max_id)
                                 except (ValueError, TypeError):
-                                    logging.warning(f"Skipping non-integer message ID: {msg_id}")
-                
-                # Calculate the true max message ID considering both checkpoint and logs
-                if all_msg_ids:
-                    try:
-                        max_id = max(all_msg_ids)
-                        self.processed_ids[client_id] = max_id
-                        
-                    except Exception as e:
-                        logging.warning(f"Error calculating max message ID: {e}, using checkpoint value")
-                        if checkpoint_max_id is not None:
-                            try:
-                                self.processed_ids[client_id] = int(checkpoint_max_id)
-                            except (ValueError, TypeError):
-                                logging.warning(f"Invalid checkpoint max_id: {checkpoint_max_id}")
-                                self.processed_ids[client_id] = None
-                
-                # Update the log count based on the actual number of log files
-                log_file_count = len(log_files)
-                if client_id not in self.log_count:
-                    self.log_count[client_id] = log_file_count
-                else:
-                    self.log_count[client_id] = log_file_count
+                                    logging.warning(f"Invalid checkpoint max_id: {checkpoint_max_id}")
+                                    self.processed_ids[node_key] = None
+                    
+                    # Update the log count based on the actual number of log files for this node
+                    log_file_count = len(log_files)
+                    node_log_key = f"{client_id}:{node_id}"
+                    self.log_count[node_log_key] = log_file_count
+                    
+                    logging.debug(f"Loaded {log_file_count} log files for client {client_id}, node {node_id}")
                 
         except Exception as e:
-            logging.error(f"Error loading processed message IDs: {e}")
+            logging.error(f"Error loading processed message IDs and log counts: {e}")
     
     def _get_client_dir(self, client_id: str) -> Path:
         """Get the directory path for a specific client's logs"""
@@ -163,37 +178,44 @@ class WriteAheadLog(DataPersistenceInterface):
         self.storage.create_directory(client_dir)
         return client_dir
     
-    def _get_log_file_path(self, client_dir: Path, message_id: Union[int, str]) -> Path:
+    def _get_node_dir(self, client_id: str, node_id: str) -> Path:
+        """Get the directory path for a specific node within a client"""
+        client_dir = self._get_client_dir(client_id)
+        node_dir = client_dir / node_id
+        self.storage.create_directory(node_dir)
+        return node_dir
+    
+    def _get_log_file_path(self, node_dir: Path, message_id: Union[int, str]) -> Path:
         """Get the path for a log file based on operation ID"""
-        return client_dir / f"{self.LOG_PREFIX}{message_id}{self.LOG_EXTENSION}"
+        return node_dir / f"{self.LOG_PREFIX}{message_id}{self.LOG_EXTENSION}"
     
-    def _get_checkpoint_file_path(self, client_dir: Path, timestamp: str) -> Path:
+    def _get_checkpoint_file_path(self, node_dir: Path, timestamp: str) -> Path:
         """Get the path for a checkpoint file"""
-        return client_dir / f"{self.CHECKPOINT_PREFIX}{timestamp}{self.CHECKPOINT_EXTENSION}"
+        return node_dir / f"{self.CHECKPOINT_PREFIX}{timestamp}{self.CHECKPOINT_EXTENSION}"
     
-    def _get_all_logs(self, client_dir: Path) -> List[Path]:
-        """Get all log files for a client"""
+    def _get_all_logs(self, node_dir: Path) -> List[Path]:
+        """Get all log files for a node"""
         pattern = f"{self.LOG_PREFIX}*{self.LOG_EXTENSION}"
-        return self.storage.list_files(client_dir, pattern)
+        return self.storage.list_files(node_dir, pattern)
     
-    def _get_all_checkpoints(self, client_dir: Path) -> List[Path]:
-        """Get all checkpoint files for a client"""
+    def _get_all_checkpoints(self, node_dir: Path) -> List[Path]:
+        """Get all checkpoint files for a node"""
         pattern = f"{self.CHECKPOINT_PREFIX}*{self.CHECKPOINT_EXTENSION}"
-        return self.storage.list_files(client_dir, pattern)
+        return self.storage.list_files(node_dir, pattern)
     
-    def _get_latest_checkpoint(self, client_dir: Path) -> Optional[Path]:
+    def _get_latest_checkpoint(self, node_dir: Path) -> Optional[Path]:
         """
-        Get the most recent completed checkpoint file.
+        Get the most recent completed checkpoint file for a specific node.
         Skips over any incomplete checkpoints (those with PROCESSING status).
         """
-        checkpoint_files = self._get_all_checkpoints(client_dir)
+        checkpoint_files = self._get_all_checkpoints(node_dir)
         
         if not checkpoint_files:
             return None
             
         # Sort by timestamp in filename (descending)
         checkpoint_files.sort(reverse=True)
-        
+
         # Find the most recent COMPLETED checkpoint
         for checkpoint in checkpoint_files:
             try:
@@ -211,38 +233,26 @@ class WriteAheadLog(DataPersistenceInterface):
         # No valid completed checkpoints found
         return None
     
-    def _create_checkpoint(self, client_id: str) -> bool:
+    def _create_checkpoint(self, client_id: str, node_id: str) -> bool:
         """
-        Create a checkpoint for a client by merging the latest checkpoint (if any) with recent logs.
+        Create a checkpoint for a specific node by merging the latest checkpoint (if any) with recent logs.
         The old checkpoint is deleted after successful creation of the new one.
-        
-        This method now handles WAL-specific concerns internally:
-        1. Tracking message IDs from logs
-        2. Managing checkpoint metadata (log_count, timestamps)
-        3. Storing and reconstructing WAL-specific structures
-        
-        Args:
-            client_id: Client identifier
-            
-        Returns:
-            bool: True if checkpoint created successfully
         """
-        client_dir = self._get_client_dir(client_id)
+        node_dir = self._get_node_dir(client_id, node_id)
         
         try:
-            latest_checkpoint = self._get_latest_checkpoint(client_dir)
+            latest_checkpoint = self._get_latest_checkpoint(node_dir)
             
-            log_files = self._get_all_logs(client_dir)
+            log_files = self._get_all_logs(node_dir)
             if not log_files:
-                logging.warning(f"No logs found for client {client_id}, skipping checkpoint creation")
+                logging.warning(f"No logs found for client {client_id}, node {node_id}, skipping checkpoint creation")
                 return False
             
-            # Collect business data from logs and checkpoint
+            # Collect business data from logs and checkpoint for this specific node
             business_data_items = []
             all_message_ids = set()  # For WAL internal tracking
             
             # First, extract data from the existing checkpoint if it exists
-            checkpoint_business_data = None
             if latest_checkpoint:
                 checkpoint_content = self._read_completed_file(latest_checkpoint)
                 if checkpoint_content:
@@ -255,12 +265,14 @@ class WriteAheadLog(DataPersistenceInterface):
                             if max_id is not None:
                                 max_id_int = int(max_id) if not isinstance(max_id, int) else max_id
                                 all_message_ids.add(max_id_int)
-                                logging.info(f"Loaded max message ID {max_id_int} from checkpoint metadata")
+                                logging.info(f"Loaded max message ID {max_id_int} from checkpoint metadata for client {client_id}, node {node_id}")
                         
-                        checkpoint_business_data = {"content": checkpoint_data.get("content", "")}
-                        if checkpoint_business_data["content"]:
+                        # Extract business data - it's stored directly in the checkpoint, not under "content"
+                        checkpoint_business_data = {k: v for k, v in checkpoint_data.items() if k != "_metadata"}
+                        if checkpoint_business_data:
                             business_data_items.append(checkpoint_business_data)
             
+            # Process logs for this specific node
             for log_file in log_files:
                 log_content = self._read_completed_file(log_file)
                 if log_content:
@@ -283,19 +295,20 @@ class WriteAheadLog(DataPersistenceInterface):
                         if "data" in parsed_log:
                             business_data = parsed_log["data"]
                         else:
-                            business_data = parsed_log
+                            # Remove metadata from business data for consistency with checkpoint extraction
+                            business_data = {k: v for k, v in parsed_log.items() if k != "_metadata"}
                             
                         if business_data is not None:
                             business_data_items.append(business_data)
                     
             # If no valid business data items to merge, skip checkpoint
             if not business_data_items:
-                logging.warning(f"No business data found for checkpoint, client {client_id}")
+                logging.warning(f"No business data found for checkpoint, client {client_id}, node {node_id}")
                 return False
             
             timestamp = str(int(time.time() * 1000))  # millisecond precision
             
-            checkpoint_path = self._get_checkpoint_file_path(client_dir, timestamp)
+            checkpoint_path = self._get_checkpoint_file_path(node_dir, timestamp)
 
             merged_business_data = self.state_interpreter.merge_data(business_data_items)
 
@@ -303,57 +316,79 @@ class WriteAheadLog(DataPersistenceInterface):
             if all_message_ids:
                 max_message_id = max(all_message_ids)
                     
-            # Create a WAL-specific checkpoint structure with:
-            # 1. Business data from the merge
-            # 2. WAL metadata with timestamp and maximum message ID 
-            checkpoint_structure = {
-                "content": merged_business_data.get("content", ""),
-                "_metadata": {
-                    "timestamp": timestamp,
-                    "max_message_id": max_message_id
-                }
+            # Store the merged business data directly with WAL metadata
+            # Don't wrap it in a "content" field - store it as-is
+            checkpoint_structure = merged_business_data.copy()  # Start with the business data
+            checkpoint_structure["_metadata"] = {
+                "timestamp": timestamp,
+                "max_message_id": max_message_id,
+                "node_id": node_id
             }
             
             formatted_data = json.dumps(checkpoint_structure)
+
+            # TEST POINT 1: About to write checkpoint
+            logging.warning(f"TEST POINT 1: About to write checkpoint for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+            time.sleep(5)
+
 
             checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
             success = self.storage.write_file(checkpoint_path, checkpoint_content)
             
             if not success:
-                logging.error(f"Failed to write checkpoint file for client {client_id}")
+                logging.error(f"Failed to write checkpoint file for client {client_id}, node {node_id}")
                 return False
+            
+            # TEST POINT 2: Checkpoint is PROCESSING but not yet COMPLETED
+            logging.warning(f"TEST POINT 2: Checkpoint written with PROCESSING status for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+            time.sleep(5)
             
             success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
+                # TEST POINT 3: Right before deleting logs for this checkpoint
+                logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+                time.sleep(5)
+                
+                # Delete logs for this specific node
                 for log_file in log_files:
                     try:
                         self.storage.delete_file(log_file)
                     except Exception as e:
                         logging.warning(f"Error deleting log file {log_file}: {e}")
 
+                # Delete old checkpoint for this specific node
                 if latest_checkpoint:
+                    # TEST POINT 4: Right before deleting old checkpoints
+                    logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+                    time.sleep(5)
+
                     try:
                         self.storage.delete_file(latest_checkpoint)
                     except Exception as e:
                         logging.warning(f"Error deleting old checkpoint {latest_checkpoint}: {e}")
                 
+                # Reset log count for this node
+                node_log_key = f"{client_id}:{node_id}"
+                self.log_count[node_log_key] = 0
+                
+                logging.info(f"Successfully created checkpoint for client {client_id}, node {node_id}")
                 return True
             else:
-                logging.error(f"Failed to write checkpoint file for client {client_id}")
+                logging.error(f"Failed to write checkpoint file for client {client_id}, node {node_id}")
                 return False
                 
         except Exception as e:
-            logging.error(f"Error creating checkpoint for client {client_id}: {e}")
+            logging.error(f"Error creating checkpoint for client {client_id}, node {node_id}: {e}")
             return False
     
-    def persist(self, client_id: str, data: Any, message_id: int) -> bool:
+    def persist(self, client_id: str, node_id: str, data: Any, message_id: int) -> bool:
         """
-        Persist data for a client with write-ahead logging.
+        Persist data for a client and node with write-ahead logging.
         
         This method handles the WAL implementation details, including:
-        1. Tracking message IDs for deduplication
-        2. Managing checkpoint creation thresholds
+        1. Tracking message IDs for deduplication per node
+        2. Managing checkpoint creation thresholds per node
         3. Storing WAL metadata appropriately
         4. Ensuring durability with two-phase writes
         
@@ -362,6 +397,7 @@ class WriteAheadLog(DataPersistenceInterface):
         
         Args:
             client_id: Client identifier
+            node_id: Node identifier within the client
             data: Business data to persist (domain-specific)
             message_id: External ID used for reference as integer (used for deduplication)
             
@@ -371,18 +407,32 @@ class WriteAheadLog(DataPersistenceInterface):
         timestamp = str(int(time.time() * 1000))  # millisecond precision
         internal_id = f"{timestamp}_{message_id}"
         
-        client_dir = self._get_client_dir(client_id)
-        log_file_path = self._get_log_file_path(client_dir, internal_id)
+        node_dir = self._get_node_dir(client_id, node_id)
+        log_file_path = self._get_log_file_path(node_dir, internal_id)
         
-        if client_id not in self.processed_ids:
-            self.processed_ids[client_id] = None
+        # Create composite key for tracking processed IDs per node
+        node_key = f"{client_id}:{node_id}"
+        
+        if node_key not in self.processed_ids:
+            self.processed_ids[node_key] = None
             
-        # Check if we have a max processed ID for this client
-        max_processed_id = self.processed_ids[client_id]
+        # Check if we have a max processed ID for this client:node
+        max_processed_id = self.processed_ids[node_key]
         if max_processed_id is not None:
             if message_id <= max_processed_id:
-                logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, skipping")
+                logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, node {node_id}, skipping")
                 return True
+        
+        # CHECK CHECKPOINT THRESHOLD BEFORE WRITING NEW LOG
+        # This prevents infinite log accumulation if system crashes after writing but before checkpoint
+        node_log_key = f"{client_id}:{node_id}"
+        current_log_count = len(self._get_all_logs(node_dir))
+        
+        if current_log_count >= self.CHECKPOINT_THRESHOLD:
+            logging.info(f"Log count {current_log_count} >= threshold {self.CHECKPOINT_THRESHOLD} for client {client_id}, node {node_id}, creating checkpoint before new log")
+            checkpoint_success = self._create_checkpoint(client_id, node_id)
+            if not checkpoint_success:
+                logging.warning(f"Checkpoint creation failed for client {client_id}, node {node_id}, but continuing with log write")
         
         try:
             # Let the state interpreter format the data as a string representation
@@ -398,6 +448,7 @@ class WriteAheadLog(DataPersistenceInterface):
                 
             parsed_data["_metadata"]["timestamp"] = timestamp
             parsed_data["_metadata"]["message_id"] = message_id
+            parsed_data["_metadata"]["node_id"] = node_id  # Add node_id to metadata
             formatted_data = json.dumps(parsed_data)
             
             # Two-phase commit approach:
@@ -410,24 +461,21 @@ class WriteAheadLog(DataPersistenceInterface):
             if not self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED):
                 return False
             
-            # Successfully persisted - update max processed ID
-            if self.processed_ids[client_id] is None:
-                self.processed_ids[client_id] = message_id
-                logging.info(f"Set initial max processed ID to {message_id} for client {client_id}")
+            # Successfully persisted - update max processed ID for this node
+            if self.processed_ids[node_key] is None:
+                self.processed_ids[node_key] = message_id
+                logging.info(f"Set initial max processed ID to {message_id} for client {client_id}, node {node_id}")
             else:
-                if message_id > self.processed_ids[client_id]:
-                    self.processed_ids[client_id] = message_id
+                if message_id > self.processed_ids[node_key]:
+                    self.processed_ids[node_key] = message_id
             
-            log_files = self._get_all_logs(client_dir)
-            self.log_count[client_id] = len(log_files)
-            
-            if self.log_count[client_id] >= self.CHECKPOINT_THRESHOLD:
-                self._create_checkpoint(client_id)
+            # Update log count for this node (after successful write)
+            self.log_count[node_log_key] = len(self._get_all_logs(node_dir))
             
             return True
         
         except json.JSONDecodeError as e:
-            logging.error(f"StateInterpreter.format_data returned invalid JSON for client {client_id}: {e}")
+            logging.error(f"StateInterpreter.format_data returned invalid JSON for client {client_id}, node {node_id}: {e}")
             raise ValueError("StateInterpreter must return valid JSON") from e
         
         except ValueError as e:
@@ -436,7 +484,7 @@ class WriteAheadLog(DataPersistenceInterface):
             raise
             
         except Exception as e:
-            logging.error(f"Error persisting data for client {client_id}: {e}")
+            logging.error(f"Error persisting data for client {client_id}, node {node_id}: {e}")
             # Clean up any partial writes
             if self.storage.file_exists(log_file_path):
                 self.storage.delete_file(log_file_path)
@@ -444,91 +492,113 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def retrieve(self, client_id: str) -> Any:
         """
-        Retrieve data for a client.
+        Retrieve data for a client by consolidating ALL nodes within that client.
         
         This method:
-        1. Consolidates data from the latest checkpoint and all subsequent logs
-        2. Provides a single coherent view of business data without WAL implementation details
-        3. Abstracts away internal WAL storage details from the consumer
-        4. Keeps WAL-specific metadata (like message IDs) internal to the WAL
+        1. Finds all node directories within the client directory
+        2. For each node, gets the latest checkpoint and subsequent logs
+        3. Consolidates all business data from all nodes
+        4. Provides a single coherent view of business data without WAL implementation details
+        5. Abstracts away internal WAL storage details from the consumer
         
         Args:
             client_id: Client identifier
             
         Returns:
-            Any: Consolidated business data or None if not found
+            Any: Consolidated business data from all nodes or None if not found
         """
         client_dir = self._get_client_dir(client_id)
         
-        business_data_items = []
+        # Collect business data from ALL nodes
+        all_business_data_items = []
         
-        latest_checkpoint = self._get_latest_checkpoint(client_dir)
-        
-        if latest_checkpoint:
-            checkpoint_content = self._read_completed_file(latest_checkpoint)
-            if checkpoint_content:
-                checkpoint_data = self._parse_file_content(checkpoint_content)
-                
-                # Extract just business data, not WAL metadata
-                if isinstance(checkpoint_data, dict):
-                    business_data = {"content": checkpoint_data.get("content", "")}
-                    
-                    if business_data["content"]:
-                        business_data_items.append(business_data)
-                        logging.debug(f"Extracted business content from checkpoint {latest_checkpoint.name}")
-        
-        # Get all log files - since we delete logs after checkpoint creation,
-        # all logs in the directory are newer than the latest checkpoint
-        log_files = self._get_all_logs(client_dir)
-        logging.debug(f"Found {len(log_files)} log files for client {client_id}")
-        
-        for log_file in log_files:
-            log_content = self._read_completed_file(log_file)
-            if log_content:
-                log_data = self._parse_file_content(log_content)
-                
-                if isinstance(log_data, dict):
-                    business_data = None
-                    if "data" in log_data: 
-                        business_data = log_data["data"]
-                    else: 
-                        # Filter out metadata fields
-                        if "_metadata" in log_data:
-                            # Remove metadata from business data
-                            business_data = {k: v for k, v in log_data.items() if k != "_metadata"}
-                        else:
-                            # Assume everything is business data
-                            business_data = log_data
-                    
-                    # Add business data to our collection
-                    if business_data is not None:
-                        business_data_items.append(business_data)
-                        logging.debug(f"Extracted business data from log {log_file.name}")
-        
-        if not business_data_items:
-            logging.info(f"No business data found for client {client_id}")
-            return None
-            
-        # Use state interpreter to merge business data items
+        # Get all node directories within this client
         try:
-            if len(business_data_items) == 1:
-                return business_data_items[0]
+            node_dirs = []
+            for item in self.storage.list_files(client_dir):
+                if Path(item).is_dir():
+                    node_dirs.append(item)
             
-            consolidated_data = self.state_interpreter.merge_data(business_data_items)
+            logging.debug(f"Found {len(node_dirs)} node directories for client {client_id}")
             
-            return consolidated_data
+            # Process each node directory
+            for node_dir_path in node_dirs:
+                node_id = Path(node_dir_path).name
+                logging.debug(f"Processing node {node_id} for client {client_id}")
+                
+                # Get latest checkpoint for this node
+                latest_checkpoint = self._get_latest_checkpoint(node_dir_path)
+                
+                if latest_checkpoint:
+                    checkpoint_content = self._read_completed_file(latest_checkpoint)
+                    if checkpoint_content:
+                        checkpoint_data = self._parse_file_content(checkpoint_content)
+                        
+                        # Extract business data directly (not from "content" field)
+                        if isinstance(checkpoint_data, dict):
+                            business_data = {k: v for k, v in checkpoint_data.items() if k != "_metadata"}
+                            
+                            if business_data:
+                                all_business_data_items.append(business_data)
+                                logging.debug(f"Extracted business content from checkpoint {latest_checkpoint.name} for node {node_id}")
+                
+                # Get all log files for this node - since we delete logs after checkpoint creation,
+                # all logs in the directory are newer than the latest checkpoint
+                log_files = self._get_all_logs(node_dir_path)
+                logging.debug(f"Found {len(log_files)} log files for client {client_id}, node {node_id}")
+                
+                for log_file in log_files:
+                    log_content = self._read_completed_file(log_file)
+                    if log_content:
+                        log_data = self._parse_file_content(log_content)
+                        
+                        if isinstance(log_data, dict):
+                            business_data = None
+                            if "data" in log_data: 
+                                business_data = log_data["data"]
+                            else: 
+                                # Filter out metadata fields
+                                if "_metadata" in log_data:
+                                    # Remove metadata from business data
+                                    business_data = {k: v for k, v in log_data.items() if k != "_metadata"}
+                                else:
+                                    # Assume everything is business data
+                                    business_data = log_data
+                            
+                            # Add business data to our collection
+                            if business_data is not None:
+                                all_business_data_items.append(business_data)
+                                logging.debug(f"Extracted business data from log {log_file.name} for node {node_id}")
             
+            if not all_business_data_items:
+                logging.info(f"No business data found for client {client_id} across all nodes")
+                return None
+                
+            # Use state interpreter to merge all business data items from all nodes
+            try:
+                if len(all_business_data_items) == 1:
+                    return all_business_data_items[0]
+                
+                consolidated_data = self.state_interpreter.merge_data(all_business_data_items)
+                
+                logging.info(f"Successfully consolidated data from {len(all_business_data_items)} items across all nodes for client {client_id}")
+                return consolidated_data
+                
+            except Exception as e:
+                logging.error(f"Error merging business data from all nodes: {e}")
+                
+                if all_business_data_items:
+                    return all_business_data_items[-1]
+                
+                return None
+                
         except Exception as e:
-            logging.error(f"Error merging business data: {e}")
-            
-            if business_data_items:
-                return business_data_items[-1]
-            
+            logging.error(f"Error retrieving data for client {client_id}: {e}")
             return None
     
     def clear(self, client_id: str) -> bool:
         """
-        Clear all data for a client.
+        Clear all data for a client by deleting the entire client directory.
         
         Args:
             client_id: Client identifier
@@ -539,13 +609,21 @@ class WriteAheadLog(DataPersistenceInterface):
         client_dir = self._get_client_dir(client_id)
         
         try:
-            files = self.storage.list_files(client_dir)
-            for file_path in files:
-                self.storage.delete_file(file_path)
+            # Delete the entire client directory and all its contents recursively
+            self.storage.delete_file(client_dir)
             
-            if client_id in self.processed_ids:
-                self.processed_ids[client_id] = None
-                
+            # Clear processed_ids and log_count for ALL nodes of this client
+            keys_to_remove = []
+            for key in self.processed_ids.keys():
+                if key.startswith(f"{client_id}:"):
+                    keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del self.processed_ids[key]
+                if key in self.log_count:
+                    del self.log_count[key]
+                    
+            logging.info(f"Cleared all data for client {client_id}: deleted client directory and {len(keys_to_remove)} tracking entries")
             return True
         except Exception as e:
             logging.error(f"Error clearing data for client {client_id}: {e}")
@@ -556,6 +634,7 @@ class WriteAheadLog(DataPersistenceInterface):
         Clean up any log files whose message IDs are already included in checkpoints.
         This helps maintain consistency and prevent redundant storage.
         Called during initialization to ensure a clean state.
+        Now works with the node-based directory structure.
         """
         try:
             client_dirs = []
@@ -566,68 +645,78 @@ class WriteAheadLog(DataPersistenceInterface):
             for client_dir in client_dirs:
                 client_id = Path(client_dir).name
                 
-                latest_checkpoint = self._get_latest_checkpoint(Path(client_dir))
+                # Get all node directories within this client
+                node_dirs = []
+                for item in self.storage.list_files(client_dir):
+                    if Path(item).is_dir():
+                        node_dirs.append(item)
                 
-                if not latest_checkpoint:
-                    continue
+                # Process each node directory separately
+                for node_dir in node_dirs:
+                    node_id = Path(node_dir).name
                     
-                try:
-                    checkpoint_content = self._read_completed_file(latest_checkpoint)
-                    if not checkpoint_content:
+                    latest_checkpoint = self._get_latest_checkpoint(node_dir)
+                    
+                    if not latest_checkpoint:
                         continue
                         
-                    checkpoint_data = self._parse_file_content(checkpoint_content)
-                    
-                    max_message_id = None
-                    # Get max_message_id from checkpoint metadata
-                    if isinstance(checkpoint_data, dict) and isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
-                        max_message_id = checkpoint_data["_metadata"]["max_message_id"]
-                    
-                    if not max_message_id:
-                        continue
-                    
-                    if not isinstance(max_message_id, int):
-                        try:
-                            max_message_id = int(max_message_id)
-                        except (ValueError, TypeError):
-                            logging.warning(f"Invalid max_message_id in checkpoint: {max_message_id}")
+                    try:
+                        checkpoint_content = self._read_completed_file(latest_checkpoint)
+                        if not checkpoint_content:
+                            continue
+                            
+                        checkpoint_data = self._parse_file_content(checkpoint_content)
+                        
+                        max_message_id = None
+                        # Get max_message_id from checkpoint metadata
+                        if isinstance(checkpoint_data, dict) and isinstance(checkpoint_data.get("_metadata"), dict) and "max_message_id" in checkpoint_data["_metadata"]:
+                            max_message_id = checkpoint_data["_metadata"]["max_message_id"]
+                        
+                        if not max_message_id:
                             continue
                         
-                    logs_to_delete = []
-                    log_files = self._get_all_logs(Path(client_dir))
-                    
-                    for log_file in log_files:
-                        log_content = self._read_completed_file(log_file)
-                        if log_content:
-                            parsed_log = self._parse_file_content(log_content)
-                            
-                            msg_id = None
-                            if isinstance(parsed_log, dict):
-                                if "_metadata" in parsed_log and "message_id" in parsed_log["_metadata"]:
-                                    msg_id = parsed_log["_metadata"]["message_id"]
-                                elif "message_id" in parsed_log:
-                                    msg_id = parsed_log["message_id"]
-                            
-                            # If the message ID is less than or equal to max_message_id, it's already covered by the checkpoint
-                            if msg_id is not None:
-                                try:
-                                    msg_id_int = int(msg_id) if not isinstance(msg_id, int) else msg_id
-                                    if msg_id_int <= max_message_id:
-                                        logs_to_delete.append(log_file)
-                                except Exception as e:
-                                    logging.warning(f"Error comparing message IDs during cleanup: {e}")
-                    
-                    if logs_to_delete:
-                        for log_file in logs_to_delete:
+                        if not isinstance(max_message_id, int):
                             try:
-                                self.storage.delete_file(log_file)
-                            except Exception as e:
-                                logging.warning(f"Error deleting redundant log {log_file}: {e}")
+                                max_message_id = int(max_message_id)
+                            except (ValueError, TypeError):
+                                logging.warning(f"Invalid max_message_id in checkpoint: {max_message_id}")
+                                continue
+                            
+                        logs_to_delete = []
+                        log_files = self._get_all_logs(node_dir)
                         
-                        logging.info(f"WAL: Cleaned up {len(logs_to_delete)} redundant logs for client {client_id}")
-                except Exception as e:
-                    logging.error(f"Error processing checkpoint {latest_checkpoint} for cleanup: {e}")
-                    
+                        for log_file in log_files:
+                            log_content = self._read_completed_file(log_file)
+                            if log_content:
+                                parsed_log = self._parse_file_content(log_content)
+                                
+                                msg_id = None
+                                if isinstance(parsed_log, dict):
+                                    if "_metadata" in parsed_log and "message_id" in parsed_log["_metadata"]:
+                                        msg_id = parsed_log["_metadata"]["message_id"]
+                                    elif "message_id" in parsed_log:
+                                        msg_id = parsed_log["message_id"]
+                                
+                                # If the message ID is less than or equal to max_message_id, it's already covered by the checkpoint
+                                if msg_id is not None:
+                                    try:
+                                        msg_id_int = int(msg_id) if not isinstance(msg_id, int) else msg_id
+                                        if msg_id_int <= max_message_id:
+                                            logs_to_delete.append(log_file)
+                                    except Exception as e:
+                                        logging.warning(f"Error comparing message IDs during cleanup: {e}")
+                        
+                        if logs_to_delete:
+                            for log_file in logs_to_delete:
+                                try:
+                                    self.storage.delete_file(log_file)
+                                except Exception as e:
+                                    logging.warning(f"Error deleting redundant log {log_file}: {e}")
+                            
+                            logging.info(f"WAL: Cleaned up {len(logs_to_delete)} redundant logs for client {client_id}, node {node_id}")
+                    except Exception as e:
+                        logging.error(f"Error processing checkpoint {latest_checkpoint} for cleanup: {e}")
+                        
         except Exception as e:
             logging.error(f"Error cleaning up redundant logs: {e}")
     
@@ -639,6 +728,7 @@ class WriteAheadLog(DataPersistenceInterface):
         
         This helps maintain a clean state by removing stale or corrupted checkpoint files.
         Called during initialization to ensure a clean state.
+        Now works with the node-based directory structure.
         """
         try:
             client_dirs = []
@@ -646,55 +736,65 @@ class WriteAheadLog(DataPersistenceInterface):
                 if Path(item).is_dir():
                     client_dirs.append(item)
             
-            
             for client_dir in client_dirs:
                 client_id = Path(client_dir).name
-                checkpoint_files = self._get_all_checkpoints(Path(client_dir))
                 
-                if not checkpoint_files:
-                    continue
+                # Get all node directories within this client
+                node_dirs = []
+                for item in self.storage.list_files(client_dir):
+                    if Path(item).is_dir():
+                        node_dirs.append(item)
                 
-                checkpoint_files.sort(reverse=True)
-                
-                latest_completed = None
-                processing_checkpoints = []
-                
-                # First pass: identify latest completed checkpoint and any processing checkpoints
-                for checkpoint in checkpoint_files:
-                    try:
-                        content = self.storage.read_file(checkpoint)
-                        first_line = content.splitlines()[0] if content else ""
-                        
-                        if first_line == self.STATUS_COMPLETED:
-                            if latest_completed is None:
-                                latest_completed = checkpoint
-                        elif first_line == self.STATUS_PROCESSING:
-                            processing_checkpoints.append(checkpoint)
-                    except Exception as e:
-                        logging.warning(f"Error checking checkpoint status {checkpoint.name}: {e}")
-                
-                # Delete all checkpoints with PROCESSING status
-                for checkpoint in processing_checkpoints:
-                    try:
-                        self.storage.delete_file(checkpoint)
-                    except Exception as e:
-                        logging.warning(f"Error deleting incomplete checkpoint {checkpoint}: {e}")
-                
-                # Delete old checkpoints (all but the latest completed one)
-                if latest_completed:
-                    old_checkpoints = [cp for cp in checkpoint_files if cp != latest_completed]
-                    for checkpoint in old_checkpoints:
+                # Process each node directory separately
+                for node_dir in node_dirs:
+                    node_id = Path(node_dir).name
+                    
+                    checkpoint_files = self._get_all_checkpoints(node_dir)
+                    
+                    if not checkpoint_files:
+                        continue
+                    
+                    checkpoint_files.sort(reverse=True)
+                    
+                    latest_completed = None
+                    processing_checkpoints = []
+                    
+                    # First pass: identify latest completed checkpoint and any processing checkpoints
+                    for checkpoint in checkpoint_files:
                         try:
-                            # Skip if we already deleted it as a processing checkpoint
-                            if checkpoint in processing_checkpoints:
-                                continue
-                                
+                            content = self.storage.read_file(checkpoint)
+                            first_line = content.splitlines()[0] if content else ""
+                            
+                            if first_line == self.STATUS_COMPLETED:
+                                if latest_completed is None:
+                                    latest_completed = checkpoint
+                            elif first_line == self.STATUS_PROCESSING:
+                                processing_checkpoints.append(checkpoint)
+                        except Exception as e:
+                            logging.warning(f"Error checking checkpoint status {checkpoint.name}: {e}")
+                    
+                    # Delete all checkpoints with PROCESSING status
+                    for checkpoint in processing_checkpoints:
+                        try:
                             self.storage.delete_file(checkpoint)
                         except Exception as e:
-                            logging.warning(f"Error deleting old checkpoint {checkpoint}: {e}")
+                            logging.warning(f"Error deleting incomplete checkpoint {checkpoint}: {e}")
                     
-                    if old_checkpoints:
-                        logging.info(f"WAL: Cleaned up {len(old_checkpoints)} old checkpoints for client {client_id}, keeping {latest_completed.name}")
+                    # Delete old checkpoints (all but the latest completed one)
+                    if latest_completed:
+                        old_checkpoints = [cp for cp in checkpoint_files if cp != latest_completed]
+                        for checkpoint in old_checkpoints:
+                            try:
+                                # Skip if we already deleted it as a processing checkpoint
+                                if checkpoint in processing_checkpoints:
+                                    continue
+                                    
+                                self.storage.delete_file(checkpoint)
+                            except Exception as e:
+                                logging.warning(f"Error deleting old checkpoint {checkpoint}: {e}")
+                        
+                        if old_checkpoints:
+                            logging.info(f"WAL: Cleaned up {len(old_checkpoints)} old checkpoints for client {client_id}, node {node_id}, keeping {latest_completed.name}")
         except Exception as e:
             logging.error(f"Error cleaning up checkpoints: {e}")
     

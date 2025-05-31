@@ -60,13 +60,15 @@ class FileSystemStorage(StorageInterface):
         return os.path.isfile(path)
     
     def delete_file(self, path: Path) -> bool:
-        """Delete a file"""
+        """Delete a file or directory"""
         try:
             if os.path.isfile(path):
                 os.remove(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)  # Recursively delete directory
             return True
         except Exception as e:
-            logging.error(f"Error deleting file {path}: {e}")
+            logging.error(f"Error deleting {path}: {e}")
             return False
     
     def create_directory(self, directory: Path) -> bool:

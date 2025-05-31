@@ -44,7 +44,7 @@ class StateInterpreterInterface(abc.ABC):
         pass
     
     @abc.abstractmethod
-    def merge_data(self, data_entries: Dict[str, Any]) -> Any:
+    def merge_data(self, data_entries: Any) -> Any:
         """
         Merge multiple data entries into a single state.
         Used for checkpointing or combining multiple logs.

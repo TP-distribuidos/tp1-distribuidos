@@ -149,89 +149,51 @@ class ConsumerStateInterpreter(StateInterpreterInterface):
     
     def merge_data(self, data_entries: Any) -> Any:
         """
-        Merge multiple data entries into a single state.
-        
-        This method focuses solely on merging business data from multiple entries.
-        It doesn't need to understand WAL implementation details or checkpoint formats.
+        Merge multiple data entries by adding up their values.
         
         Args:
             data_entries: List of business data entries to merge
             
         Returns:
-            Dict[str, Any]: Merged business data
+            Dict[str, Any]: Merged business data with sum of all values
         """
         
         # We're dealing with a list of dictionary entries
         entries_to_merge = data_entries if isinstance(data_entries, list) else []
             
-        # If nothing to merge, return empty result
+        # If nothing to merge, return zero
         if not entries_to_merge:
             logging.warning("No entries to merge")
-            return {"content": ""}
+            return {"total": 0, "count": 0}
         
-        # Collect all batch IDs and content
-        batch_ids = []
-        content_by_batch = {}
-        
-        # Start with an existing content from previous checkpoint
-        existing_content = ""
+        # Start with zero totals
+        current_total = 0
+        current_count = 0
         
         # Process each entry
         for entry in entries_to_merge:
-            # Handle different entry types
-            if "content" in entry:
-                # Case 1: Entry with only content (likely from a checkpoint)
-                if "batch" not in entry:
-                    # This is probably checkpoint content, store it as existing content
-                    existing_content = entry.get("content", "")
-                    continue
-                
-                # Case 2: Entry with batch ID and content
-                batch_id = entry.get("batch")
-                if batch_id:
-                    # Convert to string for consistent handling
-                    batch_id_str = str(batch_id)
-                    
-                    # Only add if not already processed
-                    if batch_id_str not in batch_ids:
-                        batch_ids.append(batch_id_str)
-                        
-                        # Store content if available
-                        content = entry.get("content", "")
-                        if content:
-                            # Use numeric batch ID for better sorting
-                            try:
-                                batch_id_int = int(batch_id)
-                                content_by_batch[batch_id_int] = content
-                            except (ValueError, TypeError):
-                                content_by_batch[batch_id_str] = content
+            # Handle checkpoint entries (from different nodes)
+            if "total" in entry and "count" in entry:
+                # This is a checkpoint entry with accumulated total - ADD to running total
+                node_total = entry.get("total", 0)
+                node_count = entry.get("count", 0)
+                current_total += node_total
+                current_count += node_count
+                logging.debug(f"Added checkpoint entry: total={node_total}, count={node_count}, running total={current_total}")
+                continue
+            
+            # Handle individual value entries (from logs)
+            if "value" in entry:
+                value = entry.get("value", 0)
+                current_total += value
+                current_count += 1
+                logging.debug(f"Added value {value}, new total: {current_total}")
         
-        # Combine content in sorted order by batch ID
-        sorted_batch_ids = sorted(content_by_batch.keys())
-        combined_content = existing_content  # Start with existing checkpoint content
-        
-        # Add new content from logs
-        for batch_id in sorted_batch_ids:
-            content_piece = content_by_batch[batch_id]
-            if combined_content and not combined_content.endswith(" "):
-                combined_content += " "
-            combined_content += content_piece
-        combined_content = combined_content.strip()
-        
-        
-        # Create final business data structure - use the latest batch ID as an identifier
-        # If we have batch IDs from new messages, use the latest one
-        # Otherwise keep using the previous batch ID if it exists in the checkpoint content
-        latest_batch = None
-        if batch_ids:
-            try:
-                latest_batch = int(batch_ids[-1])
-            except (ValueError, TypeError):
-                latest_batch = batch_ids[-1]
-        
+        # Create final result
         result = {
-            "content": combined_content,
-            "batch": latest_batch
+            "total": current_total,
+            "count": current_count
         }
-
+        
+        logging.info(f"Merged data: total={current_total}, count={current_count}")
         return result

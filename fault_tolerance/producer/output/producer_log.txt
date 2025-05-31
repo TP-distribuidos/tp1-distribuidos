@@ -1,34 +1,81 @@
 --- BATCH 1 ---
-Eius numquam labore modi velit quaerat est ut.
+Value: 1
+
+--- BATCH 1 ---
+Value: 1
+
+--- BATCH 1 ---
+Value: 1
 
 --- BATCH 2 ---
-Quaerat adipisci numquam aliquam.
+Value: 1
+
+--- BATCH 2 ---
+Value: 1
+
+--- BATCH 2 ---
+Value: 1
 
 --- BATCH 3 ---
-Quiquia quisquam dolor etincidunt.
+Value: 1
+
+--- BATCH 3 ---
+Value: 1
+
+--- BATCH 3 ---
+Value: 1
 
 --- BATCH 4 ---
-Quaerat est tempora ut sit sit.
+Value: 1
+
+--- BATCH 4 ---
+Value: 1
+
+--- BATCH 4 ---
+Value: 1
 
 --- BATCH 5 ---
-Neque ut dolore labore sed magnam modi ut.
+Value: 1
+
+--- BATCH 5 ---
+Value: 1
+
+--- BATCH 5 ---
+Value: 1
 
 --- BATCH 6 ---
-Adipisci sit dolore velit quisquam.
+Value: 1
+
+--- BATCH 6 ---
+Value: 1
+
+--- BATCH 6 ---
+Value: 1
 
 --- BATCH 7 ---
-Ipsum adipisci adipisci quaerat labore consectetur non.
+Value: 1
 
---- BATCH 8 ---
-Quiquia est velit labore est.
-
---- BATCH 9 ---
-Velit magnam aliquam non quaerat magnam.
-
---- BATCH 10 ---
-Velit voluptatem voluptatem dolor.
+--- BATCH 7 ---
+Value: 1
 
 
 
---- COMBINED CONTENT ---
-Eius numquam labore modi velit quaerat est ut. Quaerat adipisci numquam aliquam. Quiquia quisquam dolor etincidunt. Quaerat est tempora ut sit sit. Neque ut dolore labore sed magnam modi ut. Adipisci sit dolore velit quisquam. Ipsum adipisci adipisci quaerat labore consectetur non. Quiquia est velit labore est. Velit magnam aliquam non quaerat magnam. Velit voluptatem voluptatem dolor.
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7
+
+
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7
+--- BATCH 7 ---
+Value: 1
+
+
+
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7

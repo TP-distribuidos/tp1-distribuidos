@@ -12,6 +12,7 @@ services:
     environment:
       - PRODUCER_QUEUE=test_queue
       - SENTINEL_PORT=9001
+      - NODE_ID=producer_worker1
     ports:
       - "9001:9001"
     depends_on:
@@ -21,21 +22,39 @@ services:
       - ./rabbitmq:/app/rabbitmq
       - ./common:/app/common
       
-  # producer_worker2:
-  #   build:
-  #     context: ./producer
-  #     dockerfile: Dockerfile
-  #   environment:
-  #     - PRODUCER_QUEUE=test_queue
-  #     - SENTINEL_PORT=9011
-  #   ports:
-  #     - "9011:9001"
-  #   depends_on:
-  #     - rabbitmq
-  #   volumes:
-  #     - ./producer:/app
-  #     - ./rabbitmq:/app/rabbitmq
-  #     - ./common:/app/common
+  producer_worker2:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    environment:
+      - PRODUCER_QUEUE=test_queue
+      - SENTINEL_PORT=9011
+      - NODE_ID=producer_worker2
+    ports:
+      - "9011:9001"
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./producer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+
+  producer_worker3:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    environment:
+      - PRODUCER_QUEUE=test_queue
+      - SENTINEL_PORT=9012
+      - NODE_ID=producer_worker3
+    ports:
+      - "9012:9001"
+    depends_on:
+      - rabbitmq
+    volumes:
+      - ./producer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
 
   consumer_worker:
     build:
@@ -45,6 +64,7 @@ services:
       - CONSUMER_QUEUE=test_queue
       - SENTINEL_PORT=9002
       - OUTPUT_FILE=/app/output/received_messages.txt
+      - EXPECTED_PRODUCERS=3
     ports:
       - "9002:9002"
     depends_on:

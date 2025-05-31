@@ -21,9 +21,9 @@ logging.basicConfig(
 # Get environment variables
 PRODUCER_QUEUE = os.getenv("PRODUCER_QUEUE", "test_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9001))
-NUM_BATCHES = 15
+NUM_BATCHES = 7
 BATCH_INTERVAL = 2  # seconds
-
+NODE_ID = os.getenv("NODE_ID")
 # File to store sent messages for verification
 PRODUCER_LOG_FILE = "/app/output/producer_log.txt"
 
@@ -107,20 +107,18 @@ class ProducerWorker:
     async def _send_batch(self, batch_number):
         """Send a batch of messages"""
         try:
-            # Generate a shorter lorem ipsum message for this batch
-            # Use a sentence instead of a paragraph, or limit paragraph size
-            content = lorem.sentence()  # Just a single sentence
-
+            # Send the number 1 to be added up
             message = {
                 "batch": batch_number,
                 "timestamp": time.time(),
-                "content": content
+                "value": 1,  # Always send 1 to add up
+                "node_id": NODE_ID
             }
             
             # Log the message to file
             with open(PRODUCER_LOG_FILE, 'a') as f:
                 f.write(f"--- BATCH {batch_number} ---\n")
-                f.write(f"{content}\n\n")
+                f.write(f"Value: {message['value']}\n\n")
             
             # Send the message
             success = await self.rabbitmq.publish_to_queue(
@@ -131,35 +129,30 @@ class ProducerWorker:
             if not success:
                 logging.error(f"Failed to send message: {message}")
             else:
-                logging.info(f"Sent batch {batch_number} message")
+                logging.info(f"Sent batch {batch_number} with value 1")
             
-            # If this is the final batch, also write a combined version
+            # If this is the final batch, also write a summary
             if batch_number == NUM_BATCHES:
-                self._write_combined_log()
+                self._write_summary_log()
             
         except Exception as e:
             logging.error(f"Error sending messages: {e}")
     
-    def _write_combined_log(self):
-        """Write combined log of all messages sent"""
+    def _write_summary_log(self):
+        """Write summary log of all values sent"""
         try:
-            # Read individual batch entries
-            with open(PRODUCER_LOG_FILE, 'r') as f:
-                content = f.read()
+            total_sent = NUM_BATCHES  # Since we send 1 in each batch
             
-            # Extract and combine content from batches
-            import re
-            batches = re.findall(r'--- BATCH \d+ ---\n(.*?)\n\n', content, re.DOTALL)
-            combined = " ".join(batches)
-            
-            # Append combined content to the log file
+            # Append summary to the log file
             with open(PRODUCER_LOG_FILE, 'a') as f:
-                f.write("\n\n--- COMBINED CONTENT ---\n")
-                f.write(combined)
+                f.write(f"\n\n--- SUMMARY ---\n")
+                f.write(f"Total batches sent: {NUM_BATCHES}\n")
+                f.write(f"Value per batch: 1\n")
+                f.write(f"Total value sent: {total_sent}\n")
                 
-            logging.info(f"Wrote combined message log to {PRODUCER_LOG_FILE}")
+            logging.info(f"Producer sent total value of {total_sent} across {NUM_BATCHES} batches")
         except Exception as e:
-            logging.error(f"Error writing combined log: {e}")
+            logging.error(f"Error writing summary log: {e}")
     
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

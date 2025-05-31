@@ -29,7 +29,8 @@ logging.basicConfig(
 CONSUMER_QUEUE = os.getenv("CONSUMER_QUEUE", "test_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9002))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/output/received_messages.txt")
-TARGET_BATCH = 15
+TARGET_BATCH = 7
+EXPECTED_PRODUCERS = int(os.getenv("EXPECTED_PRODUCERS", 3))  # Add this
 
 class ConsumerWorker:
     def __init__(self, consumer_queue=CONSUMER_QUEUE):
@@ -37,7 +38,8 @@ class ConsumerWorker:
         self.consumer_queue = consumer_queue
         self.rabbitmq = RabbitMQClient()
         self.target_batch = TARGET_BATCH
-        
+        self.expected_producers = EXPECTED_PRODUCERS  # Store it
+
         # Create output directory if it doesn't exist and ensure it has proper permissions
         output_dir = os.path.dirname(OUTPUT_FILE)
         try:
@@ -171,6 +173,7 @@ class ConsumerWorker:
             
             # Extract message ID with fallbacks for compatibility
             message_id = deserialized_message.get('batch')
+            node_id = deserialized_message.get('node_id')
             
             # Generate a message ID if none exists
             if message_id is None:
@@ -179,14 +182,19 @@ class ConsumerWorker:
                 
             message_id = int(message_id) if not isinstance(message_id, int) else message_id
             
-            logging.info(f"Received message - Message ID: {message_id}")
+            # Default node_id if not provided
+            if node_id is None:
+                logging.warning("Message received without node_id, using default")
+                node_id = "default_node"
+            
+            logging.info(f"Received message - Message ID: {message_id}, Node ID: {node_id}")
             
             client_id = "default"
                         
             #WE SEND TO NEXT QUEUE HERE IN REAL PROYECT
             
-            # Persist message to WAL - let WAL handle any format normalization
-            if self.data_persistance.persist(client_id, deserialized_message, message_id):
+            # Persist message to WAL with node_id - let WAL handle any format normalization
+            if self.data_persistance.persist(client_id, node_id, deserialized_message, message_id):
                 if message_id == self.target_batch:
                     logging.info(f"Received target batch {self.target_batch}, processing data")
                     await self._write_to_file(client_id)
@@ -195,7 +203,7 @@ class ConsumerWorker:
                 
             else:
                 # WAL persistence failed
-                logging.error(f"Failed to persist message {message_id} to WAL")
+                logging.error(f"Failed to persist message {message_id} to WAL for node {node_id}")
                 await message.reject(requeue=True)
             
         except Exception as e:
@@ -204,33 +212,63 @@ class ConsumerWorker:
             await message.reject(requeue=True)
     
     async def _write_to_file(self, client_id):
-        """Write client_id's messages to output file"""
+        """Write client_id's messages to output file - retrieves ALL nodes for the client"""
         try:
-            # Retrieve consolidated data from the persistence layer
+            # Retrieve consolidated data from ALL nodes for this client
             data = self.data_persistance.retrieve(client_id)
             if not data:
                 logging.info(f"No data to write for client {client_id}")
                 return
                 
-            logging.info(f"Writing data to file for client {client_id}")
+            logging.info(f"Writing data to file for client {client_id} (all nodes)")
             
-            # Check if we have the proper data structure
-            if isinstance(data, dict) and "content" in data:
-                # Get the content from the consolidated data
-                content = data.get("content", "")
-                if content:
-                    # Format text with line breaks for readability
-                    formatted_text = self._format_text_with_linebreaks(content, 100)
+            # Handle the new numeric data structure from our state interpreter
+            if isinstance(data, dict):
+                # Check if this is our new numeric format
+                if "total" in data and "count" in data:
+                    total = data.get("total", 0)
+                    count = data.get("count", 0)
+                    processed_batches = data.get("processed_batches", [])
+                    
+                    # Count how many producers we have (by counting different node IDs in processed batches)
+                    # Each producer sends target_batch messages, so total expected = num_producers * target_batch
+                    expected_total_messages = count  # count includes all messages from all producers
+                    
+                    # For now, assume we expect at least 2 producers * 15 batches = 30 messages minimum
+                    # You could make this configurable via environment variable
+                    min_expected_messages = self.expected_producers * self.target_batch
+                    
+                    # Only clear data if we have received expected amount
+                    should_clear = count >= min_expected_messages
+                    
+                    # Create a formatted summary text
+                    summary_text = f"PROCESSING SUMMARY\n"
+                    summary_text += f"==================\n"
+                    summary_text += f"Total value accumulated: {total}\n"
+                    summary_text += f"Number of batches processed: {count}\n"
+                    summary_text += f"Minimum expected messages: {min_expected_messages}\n"
+                    summary_text += f"Status: {'✓ COMPLETE' if should_clear else '⏳ WAITING FOR MORE DATA'}\n"
+                    
+                    if should_clear:
+                        summary_text += f"Expected total for {count} batches: {count}\n"
+                        summary_text += f"Math check: {'✓ CORRECT' if total == count else '✗ MISMATCH'}\n"
                     
                     # Write to file
-                    await self._write_formatted_text(formatted_text)
-                    logging.info(f"Successfully wrote text to file, length: {len(content)}")
+                    await self._write_formatted_text(summary_text)
+                    logging.info(f"Successfully wrote summary to file: total={total}, count={count}, clearing={should_clear}")
                     
-                    self.data_persistance.clear(client_id)
+                    # Only clear if we have enough data
+                    if should_clear:
+                        self.data_persistance.clear(client_id)
+                        logging.info(f"Cleared all data for client {client_id}")
+                    else:
+                        logging.info(f"Not clearing data yet - waiting for more producers (have {count}, need {min_expected_messages})")
+                    
                     return
             
             # If we get here, the data structure wasn't as expected
             logging.warning(f"Unexpected data structure returned from persistence layer: {type(data)}")
+            logging.info(f"Data content: {data}")
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")

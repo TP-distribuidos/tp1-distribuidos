@@ -13,7 +13,7 @@ from common.SentinelBeacon import SentinelBeacon
 # WAL imports
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
-from worker.top.TopStateInterpreter import TopStateInterpreter
+from TopStateInterpreter import TopStateInterpreter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -160,8 +160,10 @@ class Worker:
             
             # Extract WAL metadata from count workers
             node_id = deserialized_message.get("node_id")
-            message_id = deserialized_message.get("message_id")
+            message_id = operation_id
             
+            # logging.info(f'Processing message for client {client_id} with node_id {node_id} and message_id {message_id}')
+
             if disconnect_marker:
                 # Clear WAL data for this client on disconnect
                 self.wal.clear(client_id)

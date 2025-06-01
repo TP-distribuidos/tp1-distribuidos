@@ -28,17 +28,17 @@ class MaxMinStateInterpreter(StateInterpreterInterface):
             if not movie_id:
                 continue
                 
-            movie_data[movie_id] = {
-                'name': movie.get('name', ''),
-                'sum': movie.get('sum', 0),
-                'count': movie.get('count', 0)
-            }
+            # Initialize the movie in the dictionary if it doesn't exist
+            if movie_id not in movie_data:
+                movie_data[movie_id] = {
+                    'name': movie.get('name', ''),
+                    'sum': 0,
+                    'count': 0
+                }
             
-            # Add avg if provided or calculate it
-            if 'avg' in movie:
-                movie_data[movie_id]['avg'] = movie['avg']
-            elif movie_data[movie_id]['count'] > 0:
-                movie_data[movie_id]['avg'] = movie_data[movie_id]['sum'] / movie_data[movie_id]['count']
+            # Add this entry's sum and count (accumulating if the movie appears multiple times)
+            movie_data[movie_id]['sum'] += movie.get('sum', 0)
+            movie_data[movie_id]['count'] += movie.get('count', 0)
         
         # Create WAL-compliant structure
         wal_structure = {
@@ -109,15 +109,6 @@ class MaxMinStateInterpreter(StateInterpreterInterface):
                 
                 # Add this entry's sum and count
                 merged_data[movie_id]['sum'] += movie_data.get('sum', 0)
-                merged_data[movie_id]['count'] += movie_data.get('count', 0)
-                
-                # Use the most detailed name we have
-                if movie_data.get('name', '') and len(movie_data.get('name', '')) > len(merged_data[movie_id]['name']):
-                    merged_data[movie_id]['name'] = movie_data.get('name', '')
-        
-        # Calculate averages for all movies
-        for movie_id, movie_data in merged_data.items():
-            if movie_data['count'] > 0:
-                movie_data['avg'] = movie_data['sum'] / movie_data['count']
-        
+                merged_data[movie_id]['count'] += movie_data.get('count', 0)     
+
         return merged_data

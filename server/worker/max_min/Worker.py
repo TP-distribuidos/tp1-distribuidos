@@ -225,14 +225,14 @@ class Worker:
             # Skip entries that aren't proper movie data
             if not isinstance(movie, dict):
                 continue
-                
-            avg_rating = movie.get('avg')
             
-            # Calculate avg if not present
-            if avg_rating is None and movie.get('count', 0) > 0 and movie.get('sum', 0) > 0:
-                avg_rating = movie['sum'] / movie['count']
+            avg_rating = None
                 
-            if avg_rating is None:
+            # Only calculate avg based on sum and count - we don't store avg values
+            if movie.get('count', 0) > 0 and movie.get('sum', 0) > 0:
+                avg_rating = movie['sum'] / movie['count']
+            else:
+                # Skip movies without valid sum and count
                 continue
                 
             # Update max if this rating is higher

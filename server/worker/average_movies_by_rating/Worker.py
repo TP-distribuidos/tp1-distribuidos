@@ -7,7 +7,6 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import ast
 from common.SentinelBeacon import SentinelBeacon
-import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +46,9 @@ class Worker:
         self.averages = {}
         self.node_id = NODE_ID
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -54,6 +56,11 @@ class Worker:
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+        
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
@@ -146,7 +153,7 @@ class Worker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
                 await self.send_data(client_id, data, True)
             elif data:
-                new_operation_id = str(uuid.uuid4())
+                new_operation_id = self._get_next_message_id()
                 self._update_averages(client_id, data)
                 # Transform dict of movies into a list of dicts with ID included
                 transformed_data = [

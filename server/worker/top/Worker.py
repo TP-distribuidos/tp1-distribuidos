@@ -161,11 +161,6 @@ class Worker:
             # Extract WAL metadata from count workers
             node_id = deserialized_message.get("node_id")
             message_id = operation_id
-            
-            if not client_id or not node_id or not message_id:
-                logging.error("\033[91mInvalid message format: {}\033[0m".format(deserialized_message))
-                await message.reject(requeue=True)
-                return
 
             if disconnect_marker:
                 # Clear WAL data for this client on disconnect
@@ -200,7 +195,7 @@ class Worker:
             else:
                 if not data:
                     logging.warning(f"Received message with no data for client {client_id}")
-            
+
             await message.ack()
             
         except Exception as e:

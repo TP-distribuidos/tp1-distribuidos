@@ -39,7 +39,7 @@ def generate_movies_q5_router(num_sentiment_workers=2, network=NETWORK):
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/movies_q5_router:/app/wal"
+                "./server/persistence/movies_q5_router:/app/persistence"
             ],
             "networks": [network]
         }

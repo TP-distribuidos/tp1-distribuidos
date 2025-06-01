@@ -37,7 +37,7 @@ def generate_top_10_actors_collector_router(num_top_workers=3, network=NETWORK):
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/top_10_actors_collector_router:/app/wal"
+                "./server/persistence/top_10_actors_collector_router:/app/persistence"
             ],
             "networks": [network]
         }

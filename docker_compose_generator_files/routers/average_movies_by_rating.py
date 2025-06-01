@@ -43,7 +43,7 @@ def generate_average_movies_by_rating_router(num_join_ratings_workers=2, avg_rat
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/average_movies_by_rating_router:/app/wal"
+                "./server/persistence/average_movies_by_rating_router:/app/persistence"
             ],
             "networks": [network]
         }

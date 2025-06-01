@@ -33,7 +33,7 @@ def generate_collector_average_sentiment_worker(network=NETWORK):
                 "./server/worker/collector_average_sentiment_worker:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/collector_average_sentiment_worker:/app/wal"
+                "./server/persistence/collector_average_sentiment_worker:/app/persistence"
             ],
             "networks": [network]
         }

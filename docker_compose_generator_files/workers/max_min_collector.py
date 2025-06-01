@@ -33,7 +33,7 @@ def generate_collector_max_min_worker(network=NETWORK):
                 "./server/worker/collector_max_min:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/collector_max_min_worker:/app/wal"
+                "./server/persistence/collector_max_min_worker:/app/persistence"
             ],
             "networks": [network]
         }

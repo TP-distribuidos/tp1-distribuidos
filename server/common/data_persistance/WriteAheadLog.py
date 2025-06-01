@@ -32,13 +32,13 @@ class WriteAheadLog(DataPersistenceInterface):
     STATUS_PROCESSING = "PROCESSING"
     STATUS_COMPLETED = "COMPLETED"
     
-    CHECKPOINT_THRESHOLD = 2
+    CHECKPOINT_THRESHOLD = 10
 
     def __init__(self, 
                  state_interpreter: StateInterpreterInterface,
                  storage: StorageInterface,
                  service_name: str = "default_service",
-                 base_dir: str = "/app/wal"):
+                 base_dir: str = "/app/persistence"):
         """
         Initialize the WriteAheadLog.
         
@@ -347,8 +347,8 @@ class WriteAheadLog(DataPersistenceInterface):
             
             if success:
                 # TEST POINT 3: Right before deleting logs for this checkpoint
-                # logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-                # time.sleep(5)
+                logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
+                time.sleep(3)
                 
                 # Delete logs for this specific node
                 for log_file in log_files:
@@ -360,8 +360,8 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Delete old checkpoint for this specific node
                 if latest_checkpoint:
                     # TEST POINT 4: Right before deleting old checkpoints
-                    # logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-                    # time.sleep(5)
+                    logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
+                    time.sleep(3)
 
                     try:
                         self.storage.delete_file(latest_checkpoint)

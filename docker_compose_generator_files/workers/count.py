@@ -110,7 +110,7 @@ def generate_count_workers(num_shards=2, num_workers_per_shard=2, network=NETWOR
                 "./server/worker/count:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/count_worker_{i}:/app/wal"
+                f"./server/persistence/count_worker_{i+1}:/app/persistence"
             ],
             "networks": [network]
         }

@@ -132,7 +132,7 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2, netw
                 "./server/worker/average_movies_by_rating:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/average_movies_by_rating_worker_{i}:/app/wal"
+                f"./server/persistence/average_movies_by_rating_worker_{i+1}:/app/persistence"
             ],
             "networks": [network]
         }

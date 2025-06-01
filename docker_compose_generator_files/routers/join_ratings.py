@@ -44,7 +44,7 @@ def generate_join_ratings_router(num_join_ratings_workers=2, network=NETWORK):
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/join_ratings_router:/app/wal"
+                "./server/persistence/join_ratings_router:/app/persistence"
             ],
             "networks": [network]
         }

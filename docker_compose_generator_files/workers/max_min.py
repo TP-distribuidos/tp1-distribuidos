@@ -39,7 +39,7 @@ def generate_max_min_workers(num_workers=2, network=NETWORK):
                 "./server/worker/max_min:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/max_min_worker_{i}:/app/wal"
+                f"./server/persistence/max_min_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

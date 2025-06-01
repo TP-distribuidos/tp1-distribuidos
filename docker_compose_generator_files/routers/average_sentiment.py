@@ -46,7 +46,7 @@ def generate_average_sentiment_router(num_sentiment_workers=2, num_avg_sentiment
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/average_sentiment_router:/app/wal"
+                "./server/persistence/average_sentiment_router:/app/persistence"
             ],
             "networks": [network]
         }

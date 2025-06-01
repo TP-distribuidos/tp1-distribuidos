@@ -38,7 +38,7 @@ class WriteAheadLog(DataPersistenceInterface):
                  state_interpreter: StateInterpreterInterface,
                  storage: StorageInterface,
                  service_name: str = "default_service",
-                 base_dir: str = "/app/wal"):
+                 base_dir: str = "/app/persistence"):
         """
         Initialize the WriteAheadLog.
         

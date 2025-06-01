@@ -58,7 +58,7 @@ def generate_join_ratings_workers(num_workers=2, network=NETWORK):
                 "./server/worker/join_ratings:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/join_ratings_worker_{i}:/app/wal"
+                f"./server/persistence/join_ratings_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

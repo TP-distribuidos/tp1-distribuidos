@@ -51,7 +51,7 @@ def generate_filter_by_country_workers(num_workers=2, network=NETWORK):
                 "./server/worker/filter_by_country:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/filter_by_country_worker_{i}:/app/wal"
+                f"./server/persistence/filter_by_country_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

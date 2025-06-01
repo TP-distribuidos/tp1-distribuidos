@@ -39,7 +39,7 @@ def generate_sentiment_analysis_workers(num_workers=2, network=NETWORK):
                 "./server/worker/sentiment_analysis:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/sentiment_analysis_worker_{i}:/app/wal"
+                f"./server/persistence/sentiment_analysis_worker_{i}:/app/persistence"
             ],
             "networks": [network],
             "deploy": {

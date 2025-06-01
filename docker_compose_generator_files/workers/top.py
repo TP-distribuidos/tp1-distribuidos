@@ -39,7 +39,7 @@ def generate_top_workers(num_workers=3, network=NETWORK):
                 "./server/worker/top:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/top_worker_{i}:/app/wal"
+                f"./server/persistence/top_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

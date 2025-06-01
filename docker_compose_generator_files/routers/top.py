@@ -47,7 +47,7 @@ def generate_top_router(num_count_workers=4, num_top_workers=3, network=NETWORK)
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                "./server/wal/top_router:/app/wal"
+                "./server/persistence/top_router:/app/persistence"
             ],
             "networks": [network]
         }

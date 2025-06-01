@@ -51,7 +51,7 @@ def generate_average_sentiment_workers(num_workers=2, network=NETWORK):
                 "./server/worker/average_sentiment:/app",
                 "./server/rabbitmq:/app/rabbitmq",
                 "./server/common:/app/common",
-                f"./server/wal/average_sentiment_worker_{i}:/app/wal"
+                f"./server/persistence/average_sentiment_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

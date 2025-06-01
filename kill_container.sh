@@ -6,6 +6,9 @@
 # Check if a container name argument is provided
 if [ -z "$1" ]; then
   echo "Usage: $0 <partial_container_name>"
+  echo "Available containers related to 'tp1-distribuidos':"
+  # List running container names that include "tp1-distribuidos", removing the "tp1-distribuidos-" prefix
+  docker ps --filter name=tp1-distribuidos --format "{{.Names}}" | sed 's/tp1-distribuidos-//g' | sed 's/^ *//;s/ *$//'
   exit 1
 fi
 
@@ -20,14 +23,34 @@ NC='\033[0m' # No Color
 # We use a tab as a delimiter for easier parsing with awk
 # We also add a unique marker "END_OF_LINE_MARKER" to handle cases where names might have spaces,
 # though docker names usually don't. This is more robust.
-CONTAINER_INFO=$(docker ps --format "{{.ID}}\t{{.Names}}\tEND_OF_LINE_MARKER" | grep "$PARTIAL_NAME")
+# Check if we're explicitly trying to kill a sentinel container
+if [[ "$PARTIAL_NAME" == sentinel_* ]]; then
+  # Looking for a sentinel container
+  CONTAINER_INFO=$(docker ps --format "{{.ID}}\t{{.Names}}\tEND_OF_LINE_MARKER" | grep -E "tp1-distribuidos-${PARTIAL_NAME}($|\t)")
+else
+  # Looking for a non-sentinel container - avoid matching sentinel prefixes
+  CONTAINER_INFO=$(docker ps --format "{{.ID}}\t{{.Names}}\tEND_OF_LINE_MARKER" | grep -E "tp1-distribuidos-${PARTIAL_NAME}($|\t)" | grep -v "tp1-distribuidos-sentinel_")
+fi
 
 if [ -z "$CONTAINER_INFO" ]; then
-  echo -e "${RED}Error: Container containing '$PARTIAL_NAME' not found.${NC}"
-  echo "Did you mean one of these running containers related to 'fault_tolerance'?"
-  # List running container names that include "fault_tolerance", removing the "fault_tolerance-" prefix
-  docker ps --filter name=fault_tolerance --format "{{.Names}}" | sed 's/fault_tolerance-//g' | sed 's/^ *//;s/ *$//'
-  exit 1
+  # If the first search failed, try a more permissive search
+  if [[ "$PARTIAL_NAME" == sentinel_* ]]; then
+    # For sentinel containers, do a more generic search
+    CONTAINER_INFO=$(docker ps --format "{{.ID}}\t{{.Names}}\tEND_OF_LINE_MARKER" | grep "${PARTIAL_NAME}" | head -n 1)
+  else
+    # For non-sentinel containers, filter out sentinel containers
+    CONTAINER_INFO=$(docker ps --format "{{.ID}}\t{{.Names}}\tEND_OF_LINE_MARKER" | grep "${PARTIAL_NAME}" | grep -v "sentinel" | head -n 1)
+  fi
+  
+  if [ -z "$CONTAINER_INFO" ]; then
+    echo -e "${RED}Error: Container with name containing '$PARTIAL_NAME' not found.${NC}"
+    echo "Did you mean one of these running containers related to 'tp1-distribuidos'?"
+    # List running container names that include "tp1-distribuidos", removing the "tp1-distribuidos-" prefix
+    docker ps --filter name=tp1-distribuidos --format "{{.Names}}" | sed 's/tp1-distribuidos-//g' | sed 's/^ *//;s/ *$//'
+    exit 1
+  else
+    echo -e "${GREEN}No exact match found, but found a container with a similar name.${NC}"
+  fi
 fi
 
 # If multiple containers match, grep will return multiple lines.

@@ -162,7 +162,10 @@ class Worker:
             node_id = deserialized_message.get("node_id")
             message_id = operation_id
             
-            # logging.info(f'Processing message for client {client_id} with node_id {node_id} and message_id {message_id}')
+            if not client_id or not node_id or not message_id:
+                logging.error("\033[91mInvalid message format: {}\033[0m".format(deserialized_message))
+                await message.reject(requeue=True)
+                return
 
             if disconnect_marker:
                 # Clear WAL data for this client on disconnect
@@ -197,8 +200,6 @@ class Worker:
             else:
                 if not data:
                     logging.warning(f"Received message with no data for client {client_id}")
-                else:
-                    logging.warning(f"Received message without WAL metadata for client {client_id}")
             
             await message.ack()
             

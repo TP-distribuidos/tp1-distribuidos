@@ -126,7 +126,8 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2, netw
             "environment": [
                 f"ROUTER_CONSUME_QUEUE={queue}",
                 "ROUTER_PRODUCER_QUEUE=max_min_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={queue}_node"
             ],
             "volumes": [
                 "./server/worker/average_movies_by_rating:/app",

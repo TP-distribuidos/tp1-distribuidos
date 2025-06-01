@@ -12,9 +12,10 @@ def generate_collector_average_sentiment_worker(network=NETWORK):
     """
     # Base port for sentinel monitoring
     worker_port = 9084
+    worker_name = "collector_average_sentiment_worker"
     
     return {
-        "collector_average_sentiment_worker": {
+        worker_name: {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/collector_average_sentiment_worker/Dockerfile"
@@ -25,9 +26,10 @@ def generate_collector_average_sentiment_worker(network=NETWORK):
             ],
             "env_file": ["./server/worker/collector_average_sentiment_worker/.env"],
             "environment": [
-                "ROUTER_CONSUME_QUEUE=collector_average_sentiment_worker",
+                f"ROUTER_CONSUME_QUEUE={worker_name}",
                 "RESPONSE_QUEUE=response_queue",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "volumes": [
                 "./server/worker/collector_average_sentiment_worker:/app",

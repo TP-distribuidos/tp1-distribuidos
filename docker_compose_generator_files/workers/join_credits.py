@@ -37,8 +37,9 @@ def generate_join_credits_workers(num_workers=2, network=NETWORK):
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
         worker_port = base_port + (i - 1) * 10
+        worker_name = f"join_credits_worker_{i}"
         
-        services[f"join_credits_worker_{i}"] = {
+        services[worker_name] = {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/join_credits/Dockerfile"
@@ -48,10 +49,11 @@ def generate_join_credits_workers(num_workers=2, network=NETWORK):
             ],
             "env_file": ["./server/worker/join_credits/.env"],
             "environment": [
-                f"ROUTER_CONSUME_QUEUE_MOVIES=join_credits_worker_{i}_movies",
-                f"ROUTER_CONSUME_QUEUE_CREDITS=join_credits_worker_{i}_credits",
+                f"ROUTER_CONSUME_QUEUE_MOVIES={worker_name}_movies",
+                f"ROUTER_CONSUME_QUEUE_CREDITS={worker_name}_credits",
                 "ROUTER_PRODUCER_QUEUE=count_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [

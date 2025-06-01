@@ -37,8 +37,9 @@ def generate_join_ratings_workers(num_workers=2, network=NETWORK):
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
         worker_port = base_port + (i - 1) * 10
+        worker_name = f"join_ratings_worker_{i}"
         
-        services[f"join_ratings_worker_{i}"] = {
+        services[worker_name] = {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/join_ratings/Dockerfile"
@@ -48,10 +49,11 @@ def generate_join_ratings_workers(num_workers=2, network=NETWORK):
             ],
             "env_file": ["./server/worker/join_ratings/.env"],
             "environment": [
-                f"ROUTER_CONSUME_QUEUE_MOVIES=join_ratings_worker_{i}_movies",
-                f"ROUTER_CONSUME_QUEUE_RATINGS=join_ratings_worker_{i}_ratings",
+                f"ROUTER_CONSUME_QUEUE_MOVIES={worker_name}_movies",
+                f"ROUTER_CONSUME_QUEUE_RATINGS={worker_name}_ratings",
                 "ROUTER_PRODUCER_QUEUE=average_movies_by_rating_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [

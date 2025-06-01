@@ -12,9 +12,10 @@ def generate_collector_max_min_worker(network=NETWORK):
     """
     # Set port for sentinel monitoring
     worker_port = 9250
+    worker_name = "collector_max_min_worker"
     
     return {
-        "collector_max_min_worker": {
+        worker_name: {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/collector_max_min/Dockerfile"
@@ -24,9 +25,10 @@ def generate_collector_max_min_worker(network=NETWORK):
             ],
             "env_file": ["./server/worker/collector_max_min/.env"],
             "environment": [
-                "ROUTER_CONSUME_QUEUE=collector_max_min_worker",
+                f"ROUTER_CONSUME_QUEUE={worker_name}",
                 "RESPONSE_QUEUE=response_queue",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [

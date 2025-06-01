@@ -360,8 +360,8 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Delete old checkpoint for this specific node
                 if latest_checkpoint:
                     # TEST POINT 4: Right before deleting old checkpoints
-                    logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
-                    time.sleep(3)
+                    # logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
+                    # time.sleep(3)
 
                     try:
                         self.storage.delete_file(latest_checkpoint)

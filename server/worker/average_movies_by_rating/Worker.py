@@ -18,6 +18,7 @@ logging.basicConfig(
 # Load environment variables
 load_dotenv()
 
+NODE_ID = os.getenv("NODE_ID")
 
 # Output queues and exchange
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
@@ -44,6 +45,7 @@ class Worker:
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         self.averages = {}
+        self.node_id = NODE_ID
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -215,7 +217,7 @@ class Worker:
 
     async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata"""
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],

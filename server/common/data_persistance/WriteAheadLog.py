@@ -347,8 +347,8 @@ class WriteAheadLog(DataPersistenceInterface):
             
             if success:
                 # TEST POINT 3: Right before deleting logs for this checkpoint
-                logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
-                time.sleep(3)
+                # logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 3 SECONDS")
+                # time.sleep(3)
                 
                 # Delete logs for this specific node
                 for log_file in log_files:
@@ -372,7 +372,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 node_log_key = f"{client_id}:{node_id}"
                 self.log_count[node_log_key] = 0
                 
-                logging.info(f"Successfully created checkpoint for client {client_id}, node {node_id}")
                 return True
             else:
                 logging.error(f"Failed to write checkpoint file for client {client_id}, node {node_id}")
@@ -429,7 +428,6 @@ class WriteAheadLog(DataPersistenceInterface):
         current_log_count = len(self._get_all_logs(node_dir))
         
         if current_log_count >= self.CHECKPOINT_THRESHOLD:
-            logging.info(f"Log count {current_log_count} >= threshold {self.CHECKPOINT_THRESHOLD} for client {client_id}, node {node_id}, creating checkpoint before new log")
             checkpoint_success = self._create_checkpoint(client_id, node_id)
             if not checkpoint_success:
                 logging.warning(f"Checkpoint creation failed for client {client_id}, node {node_id}, but continuing with log write")

@@ -139,6 +139,7 @@ class RouterWorker:
             disconnect_marker = deserialized_message.get("DISCONNECT")
             query = deserialized_message.get("query")
             operation_id = deserialized_message.get("operation_id", None)
+            node_id = deserialized_message.get("node_id", None)
             
 
             if not client_id:
@@ -172,7 +173,8 @@ class RouterWorker:
                 eof_marker=eof_marker,
                 query=query,
                 disconnect_marker=False,
-                operation_id=operation_id
+                operation_id=operation_id,
+                node_id=node_id
             )
 
             

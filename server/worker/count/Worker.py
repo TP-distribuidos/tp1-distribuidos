@@ -195,11 +195,12 @@ class Worker:
 
     async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None, message_id=None):
         """Send data to the router queue with query in metadata and WAL metadata"""
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
-        
         # Add WAL-specific metadata
         message["node_id"] = self.node_id
         message["message_id"] = message_id
+
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, message_id, self.node_id)
+        
         
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,

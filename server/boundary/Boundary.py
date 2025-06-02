@@ -53,6 +53,8 @@ class Boundary:
     self.protocol = Protocol
     self.id = uuid.uuid4()
     
+    self.message_counter = 0
+    
     # Create RabbitMQ client instance
     self.rabbitmq = RabbitMQClient()  # Using default parameters
     
@@ -100,6 +102,10 @@ class Boundary:
       client_task = asyncio.create_task(self._handle_client_connection(client_sock, addr, client_id))
       self._client_tasks[client_id] = client_task
 
+  def _get_next_message_id(self):
+    """Get the next incremental message ID for this node"""
+    self.message_counter += 1
+    return self.message_counter
 
 # ------------------------------------------------------------------ #
 # response queue consumer logic                                      #
@@ -198,28 +204,28 @@ class Boundary:
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
                 
-                operation_id = str(uuid.uuid4())
+                operation_id = self._get_next_message_id()
                 if csvs_received == MOVIES_CSV:
                     filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
                     # Send data for Q1 to the movies router
-                    prepared_data_q1 = self._addMetaData(client_id, filtered_data_q1, operation_id=operation_id)
+                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=operation_id, node_id=self.id)
                     await self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
                     # Send data for Q5 to the reviews router
-                    prepared_data_q5 = self._addMetaData(client_id, filtered_data_q5, operation_id=operation_id)
+                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=operation_id, node_id=self.id)
                     await self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
                 
                 elif csvs_received == CREDITS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q4)
                     filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = self._addMetaData(client_id, filtered_data, operation_id=operation_id)
+                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
                     await self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
                 
                 elif csvs_received == RATINGS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q3)
                     filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = self._addMetaData(client_id, filtered_data, operation_id=operation_id)
+                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
                     await self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                 
             except ConnectionError:
@@ -245,7 +251,7 @@ class Boundary:
         client_id: The client ID for which to send DISCONNECT marker
     """
     # Create metadata with DISCONNECT flag set to True
-    prepared_data = self._addMetaData(client_id, None, is_eof_marker=False, is_disconnect=True)
+    prepared_data = Serializer.add_metadata(client_id, None, eof_marker=False, disconnect_marker=True)
     
     # Send to all router queues
     for router_queue in [self.movies_router_queue, self.movies_router_q5_queue, 
@@ -255,7 +261,7 @@ class Boundary:
     logging.info(f"\033[91mSent DISCONNECT markers to all routers for client {client_id}\033[0m")
 
   async def _send_eof_marker(self, csvs_received, client_id):
-        prepared_data = self._addMetaData(client_id, None, True)
+        prepared_data = Serializer.add_metadata(client_id, None, eof_marker=True)
         if csvs_received == MOVIES_CSV:
            await self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_queue)
            await self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_q5_queue)
@@ -416,16 +422,6 @@ class Boundary:
             result.append(row_dict)
         
         return result
-  
-  def _addMetaData(self, client_id, data, is_eof_marker=False, is_disconnect=False, operation_id=None):
-    message = {        
-      "client_id": client_id,
-      "data": data,
-      "EOF_MARKER": is_eof_marker,
-      "DISCONNECT": is_disconnect,
-      "operation_id": operation_id
-    }
-    return message
   
   # TODO: Move to protocol class
   async def _receive_csv_batch(self, sock, proto):

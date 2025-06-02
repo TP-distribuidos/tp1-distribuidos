@@ -180,14 +180,13 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-            new_operation_id = operation_id if operation_id else self._get_next_message_id()
-            node_id = deserialized_message.get("node_id")
+            message_id = operation_id if operation_id else self._get_next_message_id()
 
             if disconnect_marker:
                 # Clear persistence stores and forward disconnect marker
                 self.client_states_persistence.clear(client_id)
                 self.collected_data_persistence.clear(client_id)
-                await self.send_data(client_id, data, False, disconnect_marker=True)
+                await self.send_data(client_id, data, False, disconnect_marker=True, operation_id=message_id)
                 await message.ack()
                 return
 
@@ -196,12 +195,12 @@ class Worker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
                 # Update client state to indicate movies are done
                 client_state = {'movies_done': True}
-                self.client_states_persistence.persist(client_id, node_id, client_state, operation_id)
+                self.client_states_persistence.persist(client_id, self.node_id, client_state, message_id)
             
             # Simply pass the raw data to the state interpreter - no transformation here
             elif data:
                 # Let state interpreter handle the transformation
-                self.collected_data_persistence.persist(client_id, node_id, data, operation_id)
+                self.collected_data_persistence.persist(client_id, self.node_id, data, message_id)
             
             await message.ack()
             
@@ -217,7 +216,8 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
-            new_operation_id = self._get_next_message_id()
+            operation_id = deserialized_message.get("operation_id")
+            message_id = operation_id if operation_id else self._get_next_message_id()
             
             if disconnect_marker:
                 # Clear persistence stores and forward disconnect marker
@@ -250,6 +250,7 @@ class Worker:
                 if collected_data:
                     joined_data = self._join_data(collected_data, data)
                     if joined_data:
+                        new_operation_id = self._get_next_message_id()
                         await self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
             await message.ack()
@@ -261,7 +262,8 @@ class Worker:
     async def _finalize_client(self, client_id):
         """Finalize processing for a client whose data is complete"""        
         # Send EOF marker to next stage with a new operation ID
-        await self.send_data(client_id, [], True)
+        new_operation_id = self._get_next_message_id()
+        await self.send_data(client_id, [], True, operation_id=new_operation_id)
         
         # Clear WAL data for this client to free resources
         self.collected_data_persistence.clear(client_id)
@@ -307,7 +309,10 @@ class Worker:
 
     async def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
-        try:                
+        try:    
+            if operation_id is None:
+                operation_id = self._get_next_message_id()
+                
             message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id, self.node_id)
             success = await self.rabbitmq.publish(
                 exchange_name=self.exchange_name_producer,

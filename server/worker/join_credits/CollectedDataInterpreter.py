@@ -30,7 +30,6 @@ class CollectedDataInterpreter(StateInterpreterInterface):
                 movie_name = movie.get('name')
                 if movie_id and movie_name:
                     movie_data[movie_id] = movie_name
-            logging.debug(f"Transformed {len(data)} movies into {len(movie_data)} unique movie mappings")
         elif isinstance(data, dict):
             # Data is already in the correct format (or already transformed)
             movie_data = data
@@ -76,7 +75,6 @@ class CollectedDataInterpreter(StateInterpreterInterface):
             
         merged_data = {}
         
-        # Combine all movie entries, preferring longer names when duplicates exist
         for entry in data_entries:
             if not isinstance(entry, dict):
                 continue

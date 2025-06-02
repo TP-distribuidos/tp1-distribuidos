@@ -7,6 +7,13 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
 
+# WAL imports
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+# We'll create these interpreters later
+from ClientStatesInterpreter import ClientStatesInterpreter
+from CollectedDataInterpreter import CollectedDataInterpreter
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -49,12 +56,6 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # Client state tracking
-        self.client_states = {}  # {client_id: {'movies_done': bool}}
-        
-        # Data store for processing - only store movies, not credits
-        self.collected_data = {}  # {client_id: {movie_id: movie_name}}
-        
         # For requeue delay to avoid overwhelming the broker
         self.requeue_delay = REQUEUE_DELAY
         
@@ -63,6 +64,26 @@ class Worker:
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
+
+        # Initialize WAL persistence for client states
+        client_states_storage = FileSystemStorage()
+        client_states_interpreter = ClientStatesInterpreter()
+        self.client_states_persistence = WriteAheadLog(
+            state_interpreter=client_states_interpreter,
+            storage=client_states_storage,
+            service_name="join_credits_client_states",
+            base_dir="/app/persistence/client_states"
+        )
+
+        # Initialize WAL persistence for collected movie data
+        collected_data_storage = FileSystemStorage()
+        collected_data_interpreter = CollectedDataInterpreter()
+        self.collected_data_persistence = WriteAheadLog(
+            state_interpreter=collected_data_interpreter,
+            storage=collected_data_storage,
+            service_name="join_credits_collected_data",
+            base_dir="/app/persistence/collected_data"
+        )
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -159,41 +180,34 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            message_id = operation_id if operation_id else self._get_next_message_id()
 
-            # Initialize client state if this is a new client
-            if client_id not in self.client_states:
-                self.client_states[client_id] = {'movies_done': False}
-                
             if disconnect_marker:
-                await self.send_data(client_id, data, False, disconnect_marker=True, operation_id=operation_id)
-                self.client_states.pop(client_id, None)
-                self.collected_data.pop(client_id, None)
+                # Clear persistence stores and forward disconnect marker
+                self.client_states_persistence.clear(client_id)
+                self.collected_data_persistence.clear(client_id)
+                await self.send_data(client_id, data, False, disconnect_marker=True, operation_id=message_id)
+                await message.ack()
+                return
 
-            # Handle EOF marker for movies
+            # Handle EOF marker for movies - update client state
             elif eof_marker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
-                self.client_states[client_id]['movies_done'] = True
+                # Update client state to indicate movies are done
+                client_state = {'movies_done': True}
+                self.client_states_persistence.persist(client_id, self.node_id, client_state, message_id)
             
-            # Process movie data
+            # Simply pass the raw data to the state interpreter - no transformation here
             elif data:
-                # Initialize movie data storage for this client
-                if client_id not in self.collected_data:
-                    self.collected_data[client_id] = {}
-                
-                # Store movie data
-                for movie in data:
-                    movie_id = movie.get('id')
-                    movie_name = movie.get('name')
-                    if movie_id and movie_name:
-                        self.collected_data[client_id][movie_id] = movie_name
+                # Let state interpreter handle the transformation
+                self.collected_data_persistence.persist(client_id, self.node_id, data, message_id)
             
             await message.ack()
             
         except Exception as e:
             logging.error(f"Error processing movies message: {e}")
-            # Reject the message and requeue it
             await message.reject(requeue=True)
-    
+
     async def _process_credits_message(self, message):
         """Process a message from the credits queue"""
         try:
@@ -203,20 +217,20 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            message_id = operation_id if operation_id else self._get_next_message_id()
             
-            # Initialize client state if this is a new client
-            if client_id not in self.client_states:
-                self.client_states[client_id] = {'movies_done': False}
-                
             if disconnect_marker:
+                # Clear persistence stores and forward disconnect marker
+                self.client_states_persistence.clear(client_id)
+                self.collected_data_persistence.clear(client_id)
                 await self.send_data(client_id, data, False, disconnect_marker=True)
-                self.client_states.pop(client_id, None)
-                self.collected_data.pop(client_id, None)
                 await message.ack()
                 return
             
             # Check if we've received all movies for this client
-            movies_done = self.client_states[client_id]['movies_done']
+            client_state = self.client_states_persistence.retrieve(client_id) or {}
+            movies_done = client_state.get('movies_done', False)
+            
             if not movies_done:
                 # We haven't received all movies yet, reject and requeue the message
                 logging.debug(f"Not all movies received for client {client_id}, requeuing credits message")
@@ -229,36 +243,33 @@ class Worker:
                 await self._finalize_client(client_id)
             
             elif data:
-                new_operation_id = self._get_next_message_id()
-                if client_id in self.collected_data:
-                    joined_data = self._join_data(
-                        self.collected_data[client_id],
-                        data
-                    )
+                # Only retrieve the movie data when we need to join it with credits
+                collected_data = self.collected_data_persistence.retrieve(client_id) or {}
+                
+                # Join credits data with retrieved movie data
+                if collected_data:
+                    joined_data = self._join_data(collected_data, data)
                     if joined_data:
+                        new_operation_id = self._get_next_message_id()
                         await self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
             await message.ack()
             
         except Exception as e:
             logging.error(f"Error processing credits message: {e}")
-            # Reject the message and requeue it
             await message.reject(requeue=True)
-    
+
     async def _finalize_client(self, client_id):
         """Finalize processing for a client whose data is complete"""        
         # Send EOF marker to next stage with a new operation ID
         new_operation_id = self._get_next_message_id()
         await self.send_data(client_id, [], True, operation_id=new_operation_id)
         
-        # Clean up client data to free memory
-        if client_id in self.collected_data:
-            del self.collected_data[client_id]
+        # Clear WAL data for this client to free resources
+        self.collected_data_persistence.clear(client_id)
+        self.client_states_persistence.clear(client_id)
         
-        # Completely remove all traces of the client
-        del self.client_states[client_id]
-        
-        logging.info(f"Client {client_id} processing completed")
+        logging.info(f"Client {client_id} processing completed and WAL data cleared")
     
     def _join_data(self, movies_data, credits_data):
         """

@@ -7,7 +7,6 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import heapq
 from common.SentinelBeacon import SentinelBeacon
-import uuid
 
 
 logging.basicConfig(
@@ -22,6 +21,7 @@ load_dotenv()
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 # Constants
+NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE",)
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "top_actors_exchange")
@@ -48,12 +48,23 @@ class Worker:
         self.client_data = {}
         self.top_n = TOP_N
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -152,7 +163,7 @@ class Worker:
                 # If we have data for this client, send it to router producer queue
                 if client_id in self.client_data:
                     top_actors = self._get_top_actors(client_id)
-                    new_operation_id = str(uuid.uuid4())
+                    new_operation_id = self._get_next_message_id()
                     await self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
                     # Clean up client data after sending
                     del self.client_data[client_id]
@@ -224,7 +235,7 @@ class Worker:
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
             
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,

@@ -6,7 +6,6 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
-import uuid
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +17,7 @@ logging.basicConfig(
 )
 
 # Constants and configuration
+NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE", "average_sentiment_worker")
 COLLECTOR_QUEUE = os.getenv("COLLECTOR_QUEUE", "average_sentiment_collector_router")
 QUERY_5 = os.getenv("QUERY_5", "5")
@@ -34,6 +34,12 @@ class Worker:
         
         # Initialize client data dictionary to track sentiment data per client
         self.client_data = {}
+        
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -56,6 +62,11 @@ class Worker:
             
         return True
     
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+        
     async def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
@@ -109,7 +120,7 @@ class Worker:
 
             elif eof_marker:
                 logging.info(f"Received EOF marker for client_id '{client_id}'")
-                new_operation_id = str(uuid.uuid4())
+                new_operation_id = self._get_next_message_id()
                 
                 if client_id in self.client_data:
                     # Calculate final averages
@@ -184,7 +195,7 @@ class Worker:
     
     async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the producer queue with query in metadata"""
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
         success = await self.rabbitmq.publish_to_queue(
             queue_name=self.producer_queue_name,
             message=Serializer.serialize(message),

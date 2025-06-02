@@ -15,6 +15,9 @@ logging.basicConfig(
 
 load_dotenv()
 
+# Node identification
+NODE_ID = os.getenv("NODE_ID")
+
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 MIN_YEAR = 2000
 MAX_YEAR = 2010
@@ -48,11 +51,22 @@ class Worker:
         self.rabbitmq = RabbitMQClient()
 
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+        
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
 
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Worker initialized for consumer queues '{consumer_queue_names}', producer queue '{producer_queue_name}', exchange consumer '{exchange_name_consumer}' and exchange producer '{exchange_name_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -150,7 +164,9 @@ class Worker:
 
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
-                await self.send_data(client_id, data, QUERY_GT_YEAR, True)
+                # Generate a new operation ID for this EOF message
+                new_operation_id = self._get_next_message_id()
+                await self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
                 await message.ack()
                 return
             
@@ -172,7 +188,10 @@ class Worker:
 
     async def send_disconnect(self, client_id, query=""):
         """Send DISCONNECT notification to downstream components"""
-        message = Serializer.add_metadata(client_id, {}, False, query, True)
+        # Generate an operation ID for this message
+        operation_id = self._get_next_message_id()
+        
+        message = Serializer.add_metadata(client_id, {}, False, query, True, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
@@ -182,7 +201,10 @@ class Worker:
 
     async def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
         """Send data to the router queue with query type in metadata"""
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id)
+        if operation_id is None:
+            operation_id = self._get_next_message_id()
+            
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,

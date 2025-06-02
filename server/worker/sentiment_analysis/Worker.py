@@ -22,6 +22,7 @@ logging.basicConfig(
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+NODE_ID = os.getenv("NODE_ID")
 
 class SentimentWorker:
     def __init__(self, consumer_queue_name=CONSUMER_QUEUE, response_queue_name=PRODUCER_QUEUE):
@@ -31,6 +32,12 @@ class SentimentWorker:
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+        
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
         
         logging.info("Initializing sentiment analysis model...")
         # Load the sentiment analysis pipeline from transformers
@@ -42,6 +49,11 @@ class SentimentWorker:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queue '{response_queue_name}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -103,13 +115,17 @@ class SentimentWorker:
             operation_id = deserialized_message.get("operation_id")
             
             if disconnect_marker:
+                # Generate an operation ID for this message
+                new_operation_id = self._get_next_message_id()
+                
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
                     data=None,
                     eof_marker=False,
                     query=None,
                     disconnect_marker=True,
-                    operation_id=None
+                    operation_id=new_operation_id,
+                    node_id=self.node_id
                 )
                 
                 # Send processed data to response queue
@@ -124,12 +140,19 @@ class SentimentWorker:
             
             elif eof_marker:
                 logging.info(f"\033[93mReceived EOF marker for client_id '{client_id}'\033[0m")
-                # Pass through EOF marker to response queue
-                response_message = {
-                    "client_id": client_id,
-                    "data": [],
-                    "EOF_MARKER": True
-                }
+                # Generate an operation ID for the EOF message
+                new_operation_id = self._get_next_message_id()
+                
+                # Pass through EOF marker to response queue using add_metadata
+                response_message = Serializer.add_metadata(
+                    client_id=client_id,
+                    data=[],
+                    eof_marker=True,
+                    query=None,
+                    disconnect_marker=False,
+                    operation_id=new_operation_id,
+                    node_id=self.node_id
+                )
                 
                 await self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
@@ -145,6 +168,10 @@ class SentimentWorker:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
                 processed_data = await self._analyze_sentiment_and_calculate_ratios(data)
                 
+                # Use incremental ID if no operation_id is provided
+                if operation_id is None:
+                    operation_id = self._get_next_message_id()
+                    
                 # Prepare response message using the standardized add_metadata method
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
@@ -152,7 +179,8 @@ class SentimentWorker:
                     eof_marker=False,
                     query=None,
                     disconnect_marker=False,
-                    operation_id=operation_id
+                    operation_id=operation_id,
+                    node_id=self.node_id
                 )
                 
                 # Send processed data to response queue

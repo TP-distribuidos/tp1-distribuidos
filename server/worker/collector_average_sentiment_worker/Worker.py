@@ -6,7 +6,6 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
-import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +19,7 @@ load_dotenv()
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 # Constants
+NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "average_sentiment_exchange")
@@ -45,12 +45,23 @@ class Worker:
         # Store sentiment data from each worker
         self.client_data = {}
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Average Sentiment Collector initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -224,14 +235,14 @@ class Worker:
         }]
         
         # Send the final results
-        new_operation_id = str(uuid.uuid4())
+        new_operation_id = self._get_next_message_id()
         await self._send_data(client_id, result, True, new_operation_id)
     
     async def _send_data(self, client_id, data, eof_marker=False, operation_id=None):
         """Send data to the response queue"""
         queue_name = self.producer_queue_name[0]
         
-        message = Serializer.add_metadata(client_id, data, eof_marker, QUERY_5, False, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, QUERY_5, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,

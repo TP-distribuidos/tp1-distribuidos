@@ -6,7 +6,6 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
-import uuid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +17,9 @@ logging.basicConfig(
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+
+# Node identification
+NODE_ID = os.getenv("NODE_ID")
 
 # Constants
 MOVIES_ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE_MOVIES")
@@ -55,12 +57,23 @@ class Worker:
         
         # For requeue delay to avoid overwhelming the broker
         self.requeue_delay = REQUEUE_DELAY
+        
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Worker initialized for consumer queues '{consumer_queue_names}', producer queue '{producer_queue_name}' and exchange producer '{exchange_name_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -216,7 +229,7 @@ class Worker:
                 await self._finalize_client(client_id)
             
             elif data:
-                new_operation_id = str(uuid.uuid4())
+                new_operation_id = self._get_next_message_id()
                 if client_id in self.collected_data:
                     joined_data = self._join_data(
                         self.collected_data[client_id],
@@ -234,8 +247,9 @@ class Worker:
     
     async def _finalize_client(self, client_id):
         """Finalize processing for a client whose data is complete"""        
-        # Send EOF marker to next stage
-        await self.send_data(client_id, [], True)
+        # Send EOF marker to next stage with a new operation ID
+        new_operation_id = self._get_next_message_id()
+        await self.send_data(client_id, [], True, operation_id=new_operation_id)
         
         # Clean up client data to free memory
         if client_id in self.collected_data:
@@ -285,7 +299,10 @@ class Worker:
     async def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
         try:    
-            message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id)
+            if operation_id is None:
+                operation_id = self._get_next_message_id()
+                
+            message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id, self.node_id)
             success = await self.rabbitmq.publish(
                 exchange_name=self.exchange_name_producer,
                 routing_key=self.producer_queue_name,

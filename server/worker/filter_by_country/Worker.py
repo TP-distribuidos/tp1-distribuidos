@@ -19,6 +19,9 @@ load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
+# Node identification
+NODE_ID = os.getenv("NODE_ID")
+
 # Constants for query types - these match what the previous worker outputs
 QUERY_EQ_YEAR = "eq_year"
 QUERY_GT_YEAR = "gt_year"
@@ -54,12 +57,23 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -161,7 +175,9 @@ class Worker:
             # Handle EOF markers
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
-                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True)
+                # Generate a new operation ID for this EOF message
+                new_operation_id = self._get_next_message_id()
+                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, operation_id=new_operation_id)
                 await message.ack()
                 return
             
@@ -198,8 +214,11 @@ class Worker:
 
     async def send_disconnect(self, client_id, query=None):
         """Send DISCONNECT notification to all downstream components"""
+        # Generate an operation ID for this message
+        operation_id = self._get_next_message_id()
+        
         # Send to primary output queue (for next stage processing)
-        message = Serializer.add_metadata(client_id, None, False, query, True)
+        message = Serializer.add_metadata(client_id, None, False, query, True, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
@@ -224,7 +243,10 @@ class Worker:
 
     async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
         """Send data to the eq_one_country queue in our exchange"""
-        message = Serializer.add_metadata(client_id, data, eof_marker, None, False, operation_id)
+        if operation_id is None:
+            operation_id = self._get_next_message_id()
+            
+        message = Serializer.add_metadata(client_id, data, eof_marker, None, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
@@ -236,7 +258,10 @@ class Worker:
 
     async def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
         """Send data to the response queue in our exchange"""
-        message = Serializer.add_metadata(client_id, data, False, query, False, operation_id)
+        if operation_id is None:
+            operation_id = self._get_next_message_id()
+            
+        message = Serializer.add_metadata(client_id, data, False, query, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,

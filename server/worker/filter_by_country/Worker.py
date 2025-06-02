@@ -163,6 +163,7 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
             
             # Handle DISCONNECT notifications first
             if disconnect_marker:
@@ -176,8 +177,7 @@ class Worker:
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
-                new_operation_id = self._get_next_message_id()
-                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, operation_id=new_operation_id)
+                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True)
                 await message.ack()
                 return
             
@@ -191,15 +191,15 @@ class Worker:
                 data_eq_one_country, data_response_queue = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=operation_id)
+                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                 if data_response_queue:
-                    await self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=operation_id)
+                    await self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=new_operation_id)
                     
             elif query == QUERY_GT_YEAR:
                 data_eq_one_country, _ = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=operation_id)
+                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                     
             else:
                 logging.warning(f"Unknown query type: {query}, client ID: {client_id}")

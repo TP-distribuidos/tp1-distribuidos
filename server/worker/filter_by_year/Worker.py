@@ -154,6 +154,7 @@ class Worker:
             disconnect_marker = deserialized_message.get("DISCONNECT")
             query = deserialized_message.get("query", "")
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
 
             if disconnect_marker:
                 # Propagate DISCONNECT to downstream components
@@ -165,8 +166,7 @@ class Worker:
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
-                new_operation_id = self._get_next_message_id()
-                await self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
+                await self.send_data(client_id, data, QUERY_GT_YEAR, True)
                 await message.ack()
                 return
             
@@ -174,9 +174,9 @@ class Worker:
             if data:
                 data_eq_year, data_gt_year = self._filter_data(data)
                 if data_eq_year:
-                    await self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=operation_id)
+                    await self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=new_operation_id)
                 if data_gt_year:
-                    await self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=operation_id)
+                    await self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=new_operation_id)
             
             # Acknowledge message
             await message.ack()

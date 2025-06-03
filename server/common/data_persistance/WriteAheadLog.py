@@ -577,7 +577,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 
                 consolidated_data = self.state_interpreter.merge_data(all_business_data_items)
                 
-                logging.info(f"Successfully consolidated data from {len(all_business_data_items)} items across all nodes for client {client_id}")
                 return consolidated_data
                 
             except Exception as e:

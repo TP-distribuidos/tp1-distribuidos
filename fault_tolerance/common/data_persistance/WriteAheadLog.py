@@ -28,6 +28,9 @@ class WriteAheadLog(DataPersistenceInterface):
     LOG_EXTENSION = ".log"
     CHECKPOINT_PREFIX = "checkpoint_"
     CHECKPOINT_EXTENSION = ".log"
+    COUNTER_PREFIX = "counter_"
+    COUNTER_EXTENSION = ".log"
+
     
     STATUS_PROCESSING = "PROCESSING"
     STATUS_COMPLETED = "COMPLETED"
@@ -58,12 +61,142 @@ class WriteAheadLog(DataPersistenceInterface):
         
         logging.info(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
         
+        self._initialize_counter()
+        
         self._cleanup_redundant_logs()
 
         self._cleanup_checkpoints()
 
         self._load_processed_ids_and_log_counts()
         
+        
+    def _initialize_counter(self):
+        """
+        Initialize or recover the counter from files.
+        If no counter file exists, creates one with a value of 0.
+        If multiple valid counter files exist, keeps the newest valid one.
+        """
+        try:
+            # Get all counter files
+            counter_files = self._get_all_counter_files()
+            
+            if not counter_files:
+                logging.info("No counter files found, initializing counter to 0")
+                self.counter_value = 0
+                self._write_counter(self.counter_value)
+                return
+            
+            # Find the latest valid counter file
+            counter_files.sort(reverse=True)  # Sort by filename (timestamp) in descending order
+            latest_valid_counter = None
+            
+            for counter_file in counter_files:
+                try:
+                    content = self.storage.read_file(counter_file)
+                    if not content:
+                        continue
+                        
+                    content_lines = content.splitlines()
+                    if not content_lines:
+                        continue
+                        
+                    if content_lines[0] == self.STATUS_COMPLETED:
+                        latest_valid_counter = counter_file
+                        # Extract counter value
+                        if len(content_lines) > 1:
+                            try:
+                                self.counter_value = int(content_lines[1])
+                                logging.info(f"Recovered counter value: {self.counter_value}")
+                                break
+                            except (ValueError, TypeError):
+                                logging.warning(f"Invalid counter value in {counter_file}, trying next file")
+                except Exception as e:
+                    logging.warning(f"Error reading counter file {counter_file}: {e}")
+            
+            # If no valid counter found, initialize with 0
+            if latest_valid_counter is None:
+                logging.error("\033[31mNo valid counter files found, initializing counter to 0\033[0m")
+                self._write_counter(0)
+                self.counter_value = 0
+                return
+                
+            # Clean up any other counter files
+            for counter_file in counter_files:
+                if counter_file != latest_valid_counter:
+                    try:
+                        self.storage.delete_file(counter_file)
+                        logging.debug(f"Deleted redundant counter file: {counter_file}")
+                    except Exception as e:
+                        logging.warning(f"Error deleting redundant counter file {counter_file}: {e}")
+            
+        except Exception as e:
+            logging.error(f"Error initializing counter: {e}")
+            # Fallback to 0 if anything goes wrong
+            self.counter_value = 0
+            self._write_counter(0)
+    
+    def _get_all_counter_files(self) -> List[Path]:
+        """Get all counter files"""
+        pattern = f"{self.COUNTER_PREFIX}*{self.COUNTER_EXTENSION}"
+        return self.storage.list_files(self.base_dir, pattern)
+    
+    def _get_counter_file_path(self, counter_value: int) -> Path:
+        """Get the path for a counter file"""
+        return self.base_dir / f"{self.COUNTER_PREFIX}{counter_value}{self.COUNTER_EXTENSION}"
+    
+    def _write_counter(self, value: int) -> bool:
+        """
+        Write a new counter file using the two-phase commit approach.
+        
+        Args:
+            value: The counter value to write
+            
+        Returns:
+            bool: True if successfully written
+        """
+        counter_path = self._get_counter_file_path(value)
+        
+        try:
+            # Phase 1: Write with PROCESSING status
+            counter_content = f"{self.STATUS_PROCESSING}\n{value}"
+            if not self.storage.write_file(counter_path, counter_content):
+                logging.error(f"Failed to write counter file with value {value}")
+                return False
+            
+            # Phase 2: Update status to COMPLETED
+            if not self.storage.update_first_line(counter_path, self.STATUS_COMPLETED):
+                logging.error(f"Failed to update counter file status to COMPLETED for value {value}")
+                return False
+            
+            # Clean up old counter files
+            self._cleanup_old_counter_files(except_value=value)
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error writing counter file with value {value}: {e}")
+            return False
+    
+    def _cleanup_old_counter_files(self, except_value: int):
+        """
+        Delete all counter files except the one with the specified value.
+        
+        Args:
+            except_value: The counter value to keep
+        """
+        keep_file = self._get_counter_file_path(except_value)
+        
+        try:
+            counter_files = self._get_all_counter_files()
+            
+            for counter_file in counter_files:
+                if counter_file != keep_file:
+                    try:
+                        self.storage.delete_file(counter_file)
+                        logging.debug(f"Deleted old counter file: {counter_file}")
+                    except Exception as e:
+                        logging.warning(f"Error deleting old counter file {counter_file}: {e}")
+        except Exception as e:
+            logging.warning(f"Error cleaning up old counter files: {e}")
         
     def _load_processed_ids_and_log_counts(self):
         """
@@ -328,8 +461,8 @@ class WriteAheadLog(DataPersistenceInterface):
             formatted_data = json.dumps(checkpoint_structure)
 
             # TEST POINT 1: About to write checkpoint
-            logging.warning(f"TEST POINT 1: About to write checkpoint for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-            time.sleep(5)
+            # logging.warning(f"TEST POINT 1: About to write checkpoint for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+            # time.sleep(5)
 
 
             checkpoint_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
@@ -340,15 +473,15 @@ class WriteAheadLog(DataPersistenceInterface):
                 return False
             
             # TEST POINT 2: Checkpoint is PROCESSING but not yet COMPLETED
-            logging.warning(f"TEST POINT 2: Checkpoint written with PROCESSING status for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-            time.sleep(5)
+            # logging.warning(f"TEST POINT 2: Checkpoint written with PROCESSING status for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+            # time.sleep(5)
             
             success = self.storage.update_first_line(checkpoint_path, self.STATUS_COMPLETED)
             
             if success:
                 # TEST POINT 3: Right before deleting logs for this checkpoint
-                logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-                time.sleep(5)
+                # logging.warning(f"TEST POINT 3: About to delete {len(log_files)} logs for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+                # time.sleep(5)
                 
                 # Delete logs for this specific node
                 for log_file in log_files:
@@ -360,8 +493,8 @@ class WriteAheadLog(DataPersistenceInterface):
                 # Delete old checkpoint for this specific node
                 if latest_checkpoint:
                     # TEST POINT 4: Right before deleting old checkpoints
-                    logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
-                    time.sleep(5)
+                    # logging.warning(f"TEST POINT 4: About to delete old checkpoint {latest_checkpoint.name} for client {client_id}, node {node_id} - SLEEPING 5 SECONDS")
+                    # time.sleep(5)
 
                     try:
                         self.storage.delete_file(latest_checkpoint)
@@ -382,6 +515,60 @@ class WriteAheadLog(DataPersistenceInterface):
             logging.error(f"Error creating checkpoint for client {client_id}, node {node_id}: {e}")
             return False
     
+    def get_counter_value(self) -> int:
+        """
+        Get the current value of the counter.
+        
+        Returns:
+            int: The current counter value
+        """
+        return self.counter_value
+
+    def is_message_processed(self, client_id: str, node_id: str, message_id: int) -> bool:
+        """
+        Check if a message has already been processed and persisted.
+        
+        Args:
+            client_id: Client identifier
+            node_id: Node identifier within the client
+            message_id: Message ID to check
+            
+        Returns:
+            bool: True if the message has already been processed, False otherwise
+        """
+        # Create composite key for tracking processed IDs per node
+        node_key = f"{client_id}:{node_id}"
+        
+        if node_key not in self.processed_ids:
+            self.processed_ids[node_key] = None
+            return False
+            
+        # Check if we have a max processed ID for this client:node
+        max_processed_id = self.processed_ids[node_key]
+        if max_processed_id is not None:
+            if message_id <= max_processed_id:
+                logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, node {node_id}")
+                return True
+        
+        return False
+
+    def increment_counter(self) -> None:
+        """
+        Increment the counter.
+        
+        This method uses a two-phase commit approach:
+        1. Write the new counter value with PROCESSING status
+        2. Update the status to COMPLETED
+        """
+        self.counter_value += 1
+        success = self._write_counter(self.counter_value)
+        
+        if success:
+            logging.info(f"Counter incremented to {self.counter_value}")
+        else:
+            logging.error(f"Failed to increment counter, still at {self.counter_value}")
+            raise RuntimeError("Failed to increment counter")
+
     def persist(self, client_id: str, node_id: str, data: Any, message_id: int) -> bool:
         """
         Persist data for a client and node with write-ahead logging.

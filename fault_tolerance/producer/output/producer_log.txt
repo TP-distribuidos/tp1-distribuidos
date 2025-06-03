@@ -64,15 +64,15 @@ Value: 1
 Total batches sent: 7
 Value per batch: 1
 Total value sent: 7
+--- BATCH 7 ---
+Value: 1
+
 
 
 --- SUMMARY ---
 Total batches sent: 7
 Value per batch: 1
 Total value sent: 7
---- BATCH 7 ---
-Value: 1
-
 
 
 --- SUMMARY ---

@@ -178,19 +178,23 @@ class ConsumerWorker:
             # Generate a message ID if none exists
             if message_id is None:
                 logging.warning("Message received without ID field, generating one")
-                message_id = int(time.time() * 1000)  # Use timestamp as integer directly
+                raise ValueError("Message ID is required but not found in the message")
                 
             message_id = int(message_id) if not isinstance(message_id, int) else message_id
             
             # Default node_id if not provided
             if node_id is None:
-                logging.warning("Message received without node_id, using default")
-                node_id = "default_node"
+                raise ValueError("Node ID is required but not found in the message")
             
             logging.info(f"Received message - Message ID: {message_id}, Node ID: {node_id}")
             
             client_id = "default"
                         
+            if self.data_persistance.is_message_processed(client_id, node_id, message_id):
+                logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, skipping\033[0m")
+                await message.ack()
+                return
+
             #WE SEND TO NEXT QUEUE HERE IN REAL PROYECT
             
             # Persist message to WAL with node_id - let WAL handle any format normalization

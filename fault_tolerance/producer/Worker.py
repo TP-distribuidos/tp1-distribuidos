@@ -11,6 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
+# Import WAL and required interfaces
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileStorage import FileStorage
+from common.data_persistance.SimpleStateInterpreter import SimpleStateInterpreter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,11 +25,13 @@ logging.basicConfig(
 # Get environment variables
 PRODUCER_QUEUE = os.getenv("PRODUCER_QUEUE", "test_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9001))
-NUM_BATCHES = 7
-BATCH_INTERVAL = 2  # seconds
-NODE_ID = os.getenv("NODE_ID")
+NUM_BATCHES = int(os.getenv("NUM_BATCHES", 7))
+BATCH_INTERVAL = float(os.getenv("BATCH_INTERVAL", 2))  # seconds
+NODE_ID = os.getenv("NODE_ID", "default_node")
 # File to store sent messages for verification
 PRODUCER_LOG_FILE = "/app/output/producer_log.txt"
+# WAL persistence directory
+WAL_DIR = "/app/persistence/producer"
 
 class ProducerWorker:
     def __init__(self, producer_queue=PRODUCER_QUEUE):
@@ -43,10 +49,41 @@ class ProducerWorker:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
+        # Initialize Write-Ahead Log for counter persistence
+        self._initialize_wal()
+        
         # Initialize sentinel beacon
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT, "Producer Worker")
         
         logging.info(f"Producer Worker initialized to send to queue '{producer_queue}'")
+    
+    def _initialize_wal(self):
+        """Initialize the Write-Ahead Log for counter persistence"""
+        try:
+            # Create directory for WAL if it doesn't exist
+            os.makedirs(WAL_DIR, exist_ok=True)
+            
+            # Create simple implementations of required interfaces
+            state_interpreter = SimpleStateInterpreter()
+            storage = FileStorage()
+            
+            # Initialize WAL
+            self.wal = WriteAheadLog(
+                state_interpreter=state_interpreter,
+                storage=storage,
+                service_name="producer_counter",
+                base_dir=WAL_DIR
+            )
+            
+            # Get the current counter value
+            self.batch_counter = self.wal.get_counter_value()
+            logging.info(f"Recovered batch counter: {self.batch_counter}")
+            
+        except Exception as e:
+            logging.error(f"Error initializing WAL: {e}")
+            # Default to 0 if WAL initialization fails
+            self.batch_counter = 0
+            self.wal = None
     
     async def run(self):
         """Run the worker, connecting to RabbitMQ and sending messages"""
@@ -59,10 +96,22 @@ class ProducerWorker:
             logging.info(f"Producer Worker running and sending to queue '{self.producer_queue}'")
             
             # Send batches of messages
-            batch_count = 0
-            while self._running and batch_count < NUM_BATCHES:
-                await self._send_batch(batch_count + 1)
-                batch_count += 1
+            while self._running and self.batch_counter < NUM_BATCHES:
+                # Get the next batch number (current value + 1)
+                next_batch = self.batch_counter + 1
+                
+                # Send the batch with that number
+                await self._send_batch(next_batch)
+                
+                # If send was successful, increment the counter
+                if self.wal:
+                    self.wal.increment_counter()
+                    self.batch_counter = self.wal.get_counter_value()
+                    logging.info(f"Batch counter incremented to {self.batch_counter}")
+                else:
+                    # Fallback if WAL isn't available
+                    self.batch_counter += 1
+                
                 await asyncio.sleep(BATCH_INTERVAL)
             
             logging.info(f"Finished sending {NUM_BATCHES} batches")
@@ -126,8 +175,16 @@ class ProducerWorker:
                 message=Serializer.serialize(message),
                 persistent=True
             )
+            # Send duplicate message to simulate fault tolerance
+            success = await self.rabbitmq.publish_to_queue(
+                queue_name=self.producer_queue,
+                message=Serializer.serialize(message),
+                persistent=True
+            )
+            
             if not success:
                 logging.error(f"Failed to send message: {message}")
+                return False
             else:
                 logging.info(f"Sent batch {batch_number} with value 1")
             
@@ -135,8 +192,11 @@ class ProducerWorker:
             if batch_number == NUM_BATCHES:
                 self._write_summary_log()
             
+            return True
+            
         except Exception as e:
             logging.error(f"Error sending messages: {e}")
+            return False
     
     def _write_summary_log(self):
         """Write summary log of all values sent"""

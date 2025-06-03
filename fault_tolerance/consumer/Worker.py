@@ -27,15 +27,17 @@ logging.basicConfig(
 
 # Get environment variables
 CONSUMER_QUEUE = os.getenv("CONSUMER_QUEUE", "test_queue")
+RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE", "response_queue")  # Add response queue name
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9002))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/output/received_messages.txt")
 TARGET_BATCH = 7
 EXPECTED_PRODUCERS = int(os.getenv("EXPECTED_PRODUCERS", 3))  # Add this
 
 class ConsumerWorker:
-    def __init__(self, consumer_queue=CONSUMER_QUEUE):
+    def __init__(self, consumer_queue=CONSUMER_QUEUE, response_queue=RESPONSE_QUEUE):
         self._running = True
         self.consumer_queue = consumer_queue
+        self.response_queue = response_queue
         self.rabbitmq = RabbitMQClient()
         self.target_batch = TARGET_BATCH
         self.expected_producers = EXPECTED_PRODUCERS  # Store it
@@ -152,6 +154,12 @@ class ConsumerWorker:
         if not queue:
             logging.error(f"Failed to declare queue '{self.consumer_queue}'")
             return False
+            
+        # Declare the response queue
+        response_queue = await self.rabbitmq.declare_queue(self.response_queue, durable=True)
+        if not response_queue:
+            logging.error(f"Failed to declare response queue '{self.response_queue}'")
+            return False
         
         # Set up consumer
         success = await self.rabbitmq.consume(
@@ -171,6 +179,7 @@ class ConsumerWorker:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(message.body)
             
+            value = deserialized_message.get('value')
             # Extract message ID with fallbacks for compatibility
             message_id = deserialized_message.get('batch')
             node_id = deserialized_message.get('node_id')
@@ -195,7 +204,26 @@ class ConsumerWorker:
                 await message.ack()
                 return
 
-            #WE SEND TO NEXT QUEUE HERE IN REAL PROYECT
+            # Send to the response queue for further processing
+            response_message = {
+                'data': value,
+                'message_id': message_id,
+                'node_id': node_id,
+                'client_id': client_id,
+            }
+            
+            # Serialize and publish to response queue
+            serialized_response = Serializer.serialize(response_message)
+            publish_result = await self.rabbitmq.publish_to_queue(
+                self.response_queue,
+                serialized_response,
+                persistent=True
+            )
+            
+            if publish_result:
+                logging.info(f"Published response for message ID {message_id} to '{self.response_queue}'")
+            else:
+                logging.error(f"Failed to publish response for message ID {message_id} to '{self.response_queue}'")
             
             # Persist message to WAL with node_id - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, node_id, deserialized_message, message_id):

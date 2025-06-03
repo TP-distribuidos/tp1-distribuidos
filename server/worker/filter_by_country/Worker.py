@@ -177,7 +177,7 @@ class Worker:
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
-                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True)
+                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
                 await message.ack()
                 return
             

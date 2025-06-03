@@ -138,8 +138,8 @@ class RouterWorker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             query = deserialized_message.get("query")
-            operation_id = deserialized_message.get("operation_id", None)
-            node_id = deserialized_message.get("node_id", None)
+            operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
             
 
             if not client_id:
@@ -161,7 +161,7 @@ class RouterWorker:
                 
                 # Once we've received all expected EOF markers, send to all output queues
                 if self.end_of_file_received[client_id] >= self.number_of_producer_workers:
-                    await self._send_eof_to_all_queues(client_id, data, query)
+                    await self._send_eof_to_all_queues(client_id, data, query, operation_id, node_id)
                     self.end_of_file_received[client_id] = 0
                 await message.ack()
                 return
@@ -299,7 +299,7 @@ class RouterWorker:
             if not success:
                 logging.error(f"Failed to send DISCONNECT marker to queue {queue} for client {client_id}")
         
-    async def _send_eof_to_all_queues(self, client_id, data, query=None):
+    async def _send_eof_to_all_queues(self, client_id, data, query=None, operation_id=None, node_id=None):
         """Send EOF marker to all output queues for a specific client ID"""
         eof_message = Serializer.add_metadata(
             client_id=client_id,
@@ -307,7 +307,8 @@ class RouterWorker:
             eof_marker=True,
             query=query,
             disconnect_marker=False,
-            operation_id=None
+            operation_id=operation_id,
+            node_id=node_id
         )
         
         # For fanout exchanges, we only need to publish once with any routing key

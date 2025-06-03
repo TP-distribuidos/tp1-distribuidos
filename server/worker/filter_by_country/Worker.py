@@ -243,8 +243,6 @@ class Worker:
 
     async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
         """Send data to the eq_one_country queue in our exchange"""
-        if operation_id is None:
-            operation_id = self._get_next_message_id()
             
         message = Serializer.add_metadata(client_id, data, eof_marker, None, False, operation_id, self.node_id)
         success = await self.rabbitmq.publish(

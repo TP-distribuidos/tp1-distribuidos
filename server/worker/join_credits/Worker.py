@@ -38,7 +38,7 @@ ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "filtered_data_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 
-REQUEUE_DELAY = float(os.getenv("REQUEUE_DELAY", "0.1"))  # seconds
+REQUEUE_DELAY = float(os.getenv("REQUEUE_DELAY", "5"))  # seconds
 
 class Worker:
     def __init__(self, 
@@ -180,13 +180,13 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-            message_id = operation_id if operation_id else self._get_next_message_id()
+            node_id = deserialized_message.get("node_id", self.node_id)
 
             if disconnect_marker:
                 # Clear persistence stores and forward disconnect marker
                 self.client_states_persistence.clear(client_id)
                 self.collected_data_persistence.clear(client_id)
-                await self.send_data(client_id, data, False, disconnect_marker=True, operation_id=message_id)
+                await self.send_data(client_id, data, False, disconnect_marker=True)
                 await message.ack()
                 return
 
@@ -195,12 +195,12 @@ class Worker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
                 # Update client state to indicate movies are done
                 client_state = {'movies_done': True}
-                self.client_states_persistence.persist(client_id, self.node_id, client_state, message_id)
+                self.client_states_persistence.persist(client_id, node_id, client_state, operation_id)
             
             # Simply pass the raw data to the state interpreter - no transformation here
             elif data:
                 # Let state interpreter handle the transformation
-                self.collected_data_persistence.persist(client_id, self.node_id, data, message_id)
+                self.collected_data_persistence.persist(client_id, node_id, data, operation_id)
             
             await message.ack()
             
@@ -216,8 +216,6 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
-            operation_id = deserialized_message.get("operation_id")
-            message_id = operation_id if operation_id else self._get_next_message_id()
             
             if disconnect_marker:
                 # Clear persistence stores and forward disconnect marker

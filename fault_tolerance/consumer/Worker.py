@@ -77,6 +77,13 @@ class ConsumerWorker:
             base_dir="/app/persistence"
         )
         
+        # Log the recovered counter value
+        try:
+            counter_value = self.data_persistance.get_counter_value()
+            logging.info(f"Recovered message counter: {counter_value}")
+        except Exception as e:
+            logging.error(f"Error retrieving counter value: {e}")
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -179,7 +186,6 @@ class ConsumerWorker:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(message.body)
             
-            value = deserialized_message.get('value')
             # Extract message ID with fallbacks for compatibility
             message_id = deserialized_message.get('batch')
             node_id = deserialized_message.get('node_id')
@@ -198,17 +204,19 @@ class ConsumerWorker:
             logging.info(f"Received message - Message ID: {message_id}, Node ID: {node_id}")
             
             client_id = "default"
-                        
+            
             if self.data_persistance.is_message_processed(client_id, node_id, message_id):
                 logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, skipping\033[0m")
                 await message.ack()
                 return
 
+            new_message_id = self.data_persistance.get_counter_value()            
+
             # Send to the response queue for further processing
             response_message = {
-                'data': value,
-                'message_id': message_id,
-                'node_id': node_id,
+                'data': self.data_persistance.retrieve(client_id),
+                'message_id': new_message_id,
+                'node_id': "CONSUMER_NODE",
                 'client_id': client_id,
             }
             
@@ -225,8 +233,25 @@ class ConsumerWorker:
             else:
                 logging.error(f"Failed to publish response for message ID {message_id} to '{self.response_queue}'")
             
+            # TEST POINT 1. Right before persisting to WAL, we can log the message
+            logging.info(f"TEST POINT 1: Preparing to persist message {message_id} from node {node_id} to WAL. Sleep for 3 seconds")
+            time.sleep(3)
             # Persist message to WAL with node_id - let WAL handle any format normalization
             if self.data_persistance.persist(client_id, node_id, deserialized_message, message_id):
+                # TEST POINT 2. After successful persistence, we can log the message
+                logging.info(f"TEST POINT 2: Successfully persisted message {message_id} from node {node_id} to WAL and right before incrementing the counter. Sleep for 3 seconds")
+                time.sleep(3)
+                # Increment the counter after successful persistence
+                try:
+                    self.data_persistance.increment_counter()
+                    # TEST POINT 3. After incrementing the counter, we can log the new value
+                    logging.info(f"TEST POINT 3: Incremented message counter for client {client_id}. Sleep for 3 seconds")
+                    time.sleep(3)
+                    current_count = self.data_persistance.get_counter_value()
+                    logging.info(f"Message counter incremented to {current_count}")
+                except Exception as e:
+                    logging.error(f"Error incrementing counter: {e}")
+                
                 if message_id == self.target_batch:
                     logging.info(f"Received target batch {self.target_batch}, processing data")
                     await self._write_to_file(client_id)
@@ -273,11 +298,19 @@ class ConsumerWorker:
                     # Only clear data if we have received expected amount
                     should_clear = count >= min_expected_messages
                     
+                    # Get current counter value
+                    try:
+                        message_counter = self.data_persistance.get_counter_value()
+                    except Exception as e:
+                        logging.error(f"Error getting counter value: {e}")
+                        message_counter = "Unknown"
+                    
                     # Create a formatted summary text
                     summary_text = f"PROCESSING SUMMARY\n"
                     summary_text += f"==================\n"
                     summary_text += f"Total value accumulated: {total}\n"
                     summary_text += f"Number of batches processed: {count}\n"
+                    summary_text += f"Messages processed (counter): {message_counter}\n"
                     summary_text += f"Minimum expected messages: {min_expected_messages}\n"
                     summary_text += f"Status: {'✓ COMPLETE' if should_clear else '⏳ WAITING FOR MORE DATA'}\n"
                     

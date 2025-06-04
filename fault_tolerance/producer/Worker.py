@@ -13,8 +13,8 @@ from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
 # Import WAL and required interfaces
 from common.data_persistance.WriteAheadLog import WriteAheadLog
-from common.data_persistance.FileSystemStorage import FileSystemStorage
-from common.data_persistance.StateInterpreterInterface import StateInterpreterInterface
+from common.data_persistance.FileStorage import FileStorage
+from common.data_persistance.SimpleStateInterpreter import SimpleStateInterpreter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,8 +64,8 @@ class ProducerWorker:
             os.makedirs(WAL_DIR, exist_ok=True)
             
             # Create simple implementations of required interfaces
-            state_interpreter = StateInterpreterInterface()
-            storage = FileSystemStorage()
+            state_interpreter = SimpleStateInterpreter()
+            storage = FileStorage()
             
             # Initialize WAL
             self.wal = WriteAheadLog(
@@ -75,12 +75,14 @@ class ProducerWorker:
                 base_dir=WAL_DIR
             )
             
-            # Log the recovered counter value
-            counter_value = self.wal.get_counter_value()
-            logging.info(f"Recovered batch counter: {counter_value}")
+            # Get the current counter value
+            self.batch_counter = self.wal.get_counter_value()
+            logging.info(f"Recovered batch counter: {self.batch_counter}")
             
         except Exception as e:
             logging.error(f"Error initializing WAL: {e}")
+            # Default to 0 if WAL initialization fails
+            self.batch_counter = 0
             self.wal = None
     
     async def run(self):
@@ -94,30 +96,21 @@ class ProducerWorker:
             logging.info(f"Producer Worker running and sending to queue '{self.producer_queue}'")
             
             # Send batches of messages
-            while self._running:
-                # Check if we have a WAL
-                if self.wal is None:
-                    logging.error("WAL not initialized, cannot continue sending messages")
-                    break
-                
-                # Check if we've reached the batch limit
-                current_batch = self.wal.get_counter_value()
-                if current_batch >= NUM_BATCHES:
-                    logging.info(f"Reached batch limit: {current_batch}/{NUM_BATCHES}")
-                    break
-                
+            while self._running and self.batch_counter < NUM_BATCHES:
                 # Get the next batch number (current value + 1)
-                next_batch = current_batch + 1
+                next_batch = self.batch_counter + 1
                 
                 # Send the batch with that number
-                sent_successfully = await self._send_batch(next_batch)
+                await self._send_batch(next_batch)
                 
                 # If send was successful, increment the counter
-                if sent_successfully:
+                if self.wal:
                     self.wal.increment_counter()
-                    logging.info(f"Batch counter incremented to {self.wal.get_counter_value()}")
+                    self.batch_counter = self.wal.get_counter_value()
+                    logging.info(f"Batch counter incremented to {self.batch_counter}")
                 else:
-                    logging.error(f"Failed to send batch {next_batch}, not incrementing counter")
+                    # Fallback if WAL isn't available
+                    self.batch_counter += 1
                 
                 await asyncio.sleep(BATCH_INTERVAL)
             

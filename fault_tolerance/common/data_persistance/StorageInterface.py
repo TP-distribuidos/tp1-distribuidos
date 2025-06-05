@@ -157,6 +157,20 @@ class StorageInterface(abc.ABC):
         pass
         
     @abc.abstractmethod
+    def rename_file(self, old_path: Path, new_path: Path) -> bool:
+        """
+        Rename a file or directory.
+        
+        Args:
+            old_path: Path to rename from
+            new_path: Path to rename to
+            
+        Returns:
+            bool: True if successful
+        """
+        raise NotImplementedError("rename_file must be implemented by subclasses")
+
+    @abc.abstractmethod
     def update_first_line(self, path: Path, new_content: str) -> bool:
         """
         Update only the first line of a file, preserving the rest of the content

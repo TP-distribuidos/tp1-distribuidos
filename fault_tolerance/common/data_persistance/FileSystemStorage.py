@@ -59,6 +59,15 @@ class FileSystemStorage(StorageInterface):
         """Check if a file exists"""
         return os.path.isfile(path)
     
+    def rename_file(self, old_path: Path, new_path: Path) -> bool:
+        """Rename a file or directory."""
+        try:
+            os.rename(str(old_path), str(new_path))
+            return True
+        except Exception as e:
+            logging.error(f"Error renaming {old_path} to {new_path}: {e}")
+            return False
+    
     def delete_file(self, path: Path) -> bool:
         """Delete a file or directory"""
         try:

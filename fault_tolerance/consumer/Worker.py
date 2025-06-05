@@ -27,20 +27,24 @@ logging.basicConfig(
 
 # Get environment variables
 CONSUMER_QUEUE = os.getenv("CONSUMER_QUEUE", "test_queue")
-RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE", "response_queue")  # Add response queue name
+MONITORING_QUEUE = os.getenv("MONITORING_QUEUE", "monitoring_queue")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9002))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "/app/output/received_messages.txt")
 TARGET_BATCH = 7
-EXPECTED_PRODUCERS = int(os.getenv("EXPECTED_PRODUCERS", 3))  # Add this
+EXPECTED_PRODUCERS = int(os.getenv("EXPECTED_PRODUCERS", 3))
 
 class ConsumerWorker:
-    def __init__(self, consumer_queue=CONSUMER_QUEUE, response_queue=RESPONSE_QUEUE):
+    def __init__(self, consumer_queue=CONSUMER_QUEUE, monitoring_queue=MONITORING_QUEUE):
         self._running = True
         self.consumer_queue = consumer_queue
-        self.response_queue = response_queue
+        self.monitoring_queue = monitoring_queue
         self.rabbitmq = RabbitMQClient()
         self.target_batch = TARGET_BATCH
-        self.expected_producers = EXPECTED_PRODUCERS  # Store it
+        self.expected_producers = EXPECTED_PRODUCERS
+
+        # Add message processing queue
+        self.message_queue = asyncio.Queue()
+        self.process_task = None
 
         # Create output directory if it doesn't exist and ensure it has proper permissions
         output_dir = os.path.dirname(OUTPUT_FILE)
@@ -101,6 +105,8 @@ class ConsumerWorker:
                 logging.error("Failed to set up RabbitMQ connection. Exiting.")
                 return False
             
+            # Start message processing task
+            self.process_task = asyncio.create_task(self._process_message_queue())
             logging.info(f"Consumer Worker running and consuming from queue '{self.consumer_queue}'")
             
             # Process any pending client data from previous runs
@@ -120,6 +126,28 @@ class ConsumerWorker:
         finally:
             # Always clean up resources
             await self.cleanup()
+    
+    async def _process_message_queue(self):
+        """Process messages from the queue one at a time"""
+        while self._running:
+            try:
+                # Get message from queue (with timeout to allow graceful shutdown)
+                try:
+                    message = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                    
+                # Process the message (reuse your existing _process_message logic)
+                try:
+                    await self._process_message_internal(message)
+                except Exception as e:
+                    logging.error(f"Error processing queued message: {e}")
+                finally:
+                    self.message_queue.task_done()
+            except Exception as e:
+                logging.error(f"Error in message queue processor: {e}")
+                await asyncio.sleep(1)  # Prevent tight loop on persistent errors
+                
     
     async def cleanup(self):
         """Clean up resources properly"""
@@ -161,11 +189,11 @@ class ConsumerWorker:
         if not queue:
             logging.error(f"Failed to declare queue '{self.consumer_queue}'")
             return False
-            
-        # Declare the response queue
-        response_queue = await self.rabbitmq.declare_queue(self.response_queue, durable=True)
-        if not response_queue:
-            logging.error(f"Failed to declare response queue '{self.response_queue}'")
+        
+        # Declare the monitoring queue for forwarding messages
+        monitoring_queue = await self.rabbitmq.declare_queue(self.monitoring_queue, durable=True)
+        if not monitoring_queue:
+            logging.error(f"Failed to declare monitoring queue '{self.monitoring_queue}'")
             return False
         
         # Set up consumer
@@ -181,6 +209,10 @@ class ConsumerWorker:
         return True
     
     async def _process_message(self, message):
+        """Callback for RabbitMQ - just enqueue the message"""
+        await self.message_queue.put(message)
+    
+    async def _process_message_internal(self, message):
         """Process a message from the queue"""
         try:
             # Deserialize the message
@@ -205,63 +237,72 @@ class ConsumerWorker:
             
             client_id = "default"
             
+            # First check if the message is already processed (using WAL's API)
             if self.data_persistance.is_message_processed(client_id, node_id, message_id):
-                logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, skipping\033[0m")
-                await message.ack()
+                logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, acknowledging without incrementing counter\033[0m")
+                await message.ack()  # Acknowledge the message since it's already been processed
                 return
 
-            new_message_id = self.data_persistance.get_counter_value()            
-
-            # Send to the response queue for further processing
-            response_message = {
-                'data': self.data_persistance.retrieve(client_id),
-                'message_id': new_message_id,
-                'node_id': "CONSUMER_NODE",
-                'client_id': client_id,
+            # Forward message to monitoring queue for observation in RabbitMQ GUI
+            monitoring_message = {
+                "original_message": deserialized_message,
+                "received_timestamp": time.time(),
+                "processed_by": "consumer_worker",
+                "message_id": self.data_persistance.get_counter_value(),
             }
             
-            # Serialize and publish to response queue
-            serialized_response = Serializer.serialize(response_message)
-            publish_result = await self.rabbitmq.publish_to_queue(
-                self.response_queue,
-                serialized_response,
+            # Publish to monitoring queue
+            forwarding_success = await self.rabbitmq.publish_to_queue(
+                queue_name=self.monitoring_queue,
+                message=Serializer.serialize(monitoring_message),
                 persistent=True
             )
             
-            if publish_result:
-                logging.info(f"Published response for message ID {message_id} to '{self.response_queue}'")
+            if forwarding_success:
+                logging.info(f"Forwarded message {message_id} to monitoring queue")
             else:
-                logging.error(f"Failed to publish response for message ID {message_id} to '{self.response_queue}'")
+                logging.warning(f"Failed to forward message {message_id} to monitoring queue")
             
             # TEST POINT 1. Right before persisting to WAL, we can log the message
             logging.info(f"TEST POINT 1: Preparing to persist message {message_id} from node {node_id} to WAL. Sleep for 3 seconds")
-            time.sleep(3)
-            # Persist message to WAL with node_id - let WAL handle any format normalization
-            if self.data_persistance.persist(client_id, node_id, deserialized_message, message_id):
+            await asyncio.sleep(3)
+            
+            # Try to persist the message - this might raise exceptions or return False in different scenarios
+            try:
+                persist_result = self.data_persistance.persist(client_id, node_id, deserialized_message, message_id)
                 # TEST POINT 2. After successful persistence, we can log the message
                 logging.info(f"TEST POINT 2: Successfully persisted message {message_id} from node {node_id} to WAL and right before incrementing the counter. Sleep for 3 seconds")
-                time.sleep(3)
-                # Increment the counter after successful persistence
-                try:
-                    self.data_persistance.increment_counter()
-                    # TEST POINT 3. After incrementing the counter, we can log the new value
-                    logging.info(f"TEST POINT 3: Incremented message counter for client {client_id}. Sleep for 3 seconds")
-                    time.sleep(3)
-                    current_count = self.data_persistance.get_counter_value()
-                    logging.info(f"Message counter incremented to {current_count}")
-                except Exception as e:
-                    logging.error(f"Error incrementing counter: {e}")
+                await asyncio.sleep(3)
                 
-                if message_id == self.target_batch:
-                    logging.info(f"Received target batch {self.target_batch}, processing data")
-                    await self._write_to_file(client_id)
+                if persist_result:
+                    # Message was newly persisted, increment the counter
+                    try:
+                        # Increment the counter after successful persistence
+                        self.data_persistance.increment_counter()  # Remove await as it's not an async method
+                        # TEST POINT 3. After incrementing the counter, we can log the new value
+                        logging.info(f"TEST POINT 3: Incremented message counter for client {client_id}. Sleep for 3 seconds")
+                        await asyncio.sleep(3)
+                        current_count = self.data_persistance.get_counter_value()
+                        logging.info(f"Message counter incremented to {current_count}")
+                    except Exception as e:
+                        logging.error(f"Error incrementing counter: {e}")
+                    
+                    if message_id == self.target_batch:
+                        logging.info(f"Received target batch {self.target_batch}, processing data")
+                        await self._write_to_file(client_id)
+                    
+                    await message.ack()
+                else:
+                    # If persist returns False but didn't raise an exception, the message was:
+                    # - Either already processed (which we already checked above with is_message_processed)
+                    # - Or failed persistence for a non-fatal reason
+                    logging.warning(f"Message {message_id} from node {node_id} was not persisted because it is a duplicated message, so we acknowledge it anyway")
+                    await message.ack()  # Still acknowledge since we don't want to reprocess
                 
-                await message.ack()
-                
-            else:
-                # WAL persistence failed
-                logging.error(f"Failed to persist message {message_id} to WAL for node {node_id}")
-                await message.reject(requeue=True)
+            except RuntimeError as e:
+                # WAL persistence failed with a runtime error
+                logging.error(f"Failed to persist message {message_id} to WAL for node {node_id}: {e}")
+                await message.reject(requeue=True)  # Requeue the message to try again
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")

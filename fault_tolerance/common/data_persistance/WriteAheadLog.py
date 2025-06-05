@@ -524,34 +524,6 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         return self.counter_value
 
-    def is_message_processed(self, client_id: str, node_id: str, message_id: int) -> bool:
-        """
-        Check if a message has already been processed and persisted.
-        
-        Args:
-            client_id: Client identifier
-            node_id: Node identifier within the client
-            message_id: Message ID to check
-            
-        Returns:
-            bool: True if the message has already been processed, False otherwise
-        """
-        # Create composite key for tracking processed IDs per node
-        node_key = f"{client_id}:{node_id}"
-        
-        if node_key not in self.processed_ids:
-            self.processed_ids[node_key] = None
-            return False
-            
-        # Check if we have a max processed ID for this client:node
-        max_processed_id = self.processed_ids[node_key]
-        if max_processed_id is not None:
-            if message_id <= max_processed_id:
-                logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, node {node_id}")
-                return True
-        
-        return False
-
     def increment_counter(self) -> None:
         """
         Increment the counter.
@@ -591,6 +563,12 @@ class WriteAheadLog(DataPersistenceInterface):
         Returns:
             bool: True if successfully persisted
         """
+        # Check if client was cleared - do this first for efficiency
+        cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
+        if self.storage.file_exists(cleared_dir):
+            logging.info(f"Client {client_id} was previously cleared, skipping persistence for message {message_id}")
+            return False
+
         timestamp = str(int(time.time() * 1000))  # millisecond precision
         internal_id = f"{timestamp}_{message_id}"
         
@@ -608,7 +586,7 @@ class WriteAheadLog(DataPersistenceInterface):
         if max_processed_id is not None:
             if message_id <= max_processed_id:
                 logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, node {node_id}, skipping")
-                return True
+                return False
         
         # CHECK CHECKPOINT THRESHOLD BEFORE WRITING NEW LOG
         # This prevents infinite log accumulation if system crashes after writing but before checkpoint
@@ -642,11 +620,11 @@ class WriteAheadLog(DataPersistenceInterface):
             # 1. Write with PROCESSING status
             log_content = f"{self.STATUS_PROCESSING}\n{formatted_data}"
             if not self.storage.write_file(log_file_path, log_content):
-                return False
+                raise RuntimeError(f"Failed to write log file for client {client_id}, node {node_id}")
                 
             # 2. Update status to COMPLETED
             if not self.storage.update_first_line(log_file_path, self.STATUS_COMPLETED):
-                return False
+                raise RuntimeError(f"Failed to update log file status to COMPLETED for client {client_id}, node {node_id}")
             
             # Successfully persisted - update max processed ID for this node
             if self.processed_ids[node_key] is None:
@@ -675,7 +653,7 @@ class WriteAheadLog(DataPersistenceInterface):
             # Clean up any partial writes
             if self.storage.file_exists(log_file_path):
                 self.storage.delete_file(log_file_path)
-            return False
+            raise RuntimeError(f"Failed to persist data for client {client_id}, node {node_id}. Cleaned up partial write.") from e
     
     def retrieve(self, client_id: str) -> Any:
         """
@@ -785,7 +763,8 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def clear(self, client_id: str) -> bool:
         """
-        Clear all data for a client by deleting the entire client directory.
+        Clear a client's data but maintain a record to prevent duplicate processing.
+        Creates an empty directory with '_cleared' suffix and removes the original one.
         
         Args:
             client_id: Client identifier
@@ -794,9 +773,17 @@ class WriteAheadLog(DataPersistenceInterface):
             bool: True if successfully cleared
         """
         client_dir = self._get_client_dir(client_id)
+        cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
         
         try:
-            # Delete the entire client directory and all its contents recursively
+            # Delete the cleared directory if it already exists (from previous clear)
+            if self.storage.file_exists(cleared_dir):
+                self.storage.delete_file(cleared_dir)
+            
+            # Create an empty cleared directory
+            self.storage.create_directory(cleared_dir)
+            
+            # Delete the original client directory with all its contents
             self.storage.delete_file(client_dir)
             
             # Clear processed_ids and log_count for ALL nodes of this client
@@ -810,11 +797,46 @@ class WriteAheadLog(DataPersistenceInterface):
                 if key in self.log_count:
                     del self.log_count[key]
                     
-            logging.info(f"Cleared all data for client {client_id}: deleted client directory and {len(keys_to_remove)} tracking entries")
+            logging.info(f"Cleared all data for client {client_id}: created empty directory {cleared_dir.name} and removed {len(keys_to_remove)} tracking entries")
             return True
         except Exception as e:
             logging.error(f"Error clearing data for client {client_id}: {e}")
             return False
+
+    def is_message_processed(self, client_id: str, node_id: str, message_id: int) -> bool:
+        """
+        Check if a message has already been processed and persisted.
+        Also checks if client data was previously cleared.
+        
+        Args:
+            client_id: Client identifier
+            node_id: Node identifier within the client
+            message_id: Message ID to check
+            
+        Returns:
+            bool: True if the message has already been processed, False otherwise
+        """
+        # First check if this client was cleared previously
+        cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
+        if self.storage.file_exists(cleared_dir):
+            logging.info(f"Client {client_id} was previously cleared, treating message {message_id} from node {node_id} as already processed")
+            return True
+            
+        # Create composite key for tracking processed IDs per node
+        node_key = f"{client_id}:{node_id}"
+        
+        if node_key not in self.processed_ids:
+            self.processed_ids[node_key] = None
+            return False
+            
+        # Check if we have a max processed ID for this client:node
+        max_processed_id = self.processed_ids[node_key]
+        if max_processed_id is not None:
+            if message_id <= max_processed_id:
+                logging.info(f"Message ID {message_id} <= max processed ID {max_processed_id} for client {client_id}, node {node_id}")
+                return True
+        
+        return False
         
     def _cleanup_redundant_logs(self):
         """

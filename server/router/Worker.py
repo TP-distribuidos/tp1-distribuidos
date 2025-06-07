@@ -106,7 +106,8 @@ class RouterWorker:
                 success = self.rabbit_client.bind_queue(
                     queue_name=queue_name,
                     exchange_name=self.exchange_name,
-                    routing_key=queue_name
+                    routing_key=queue_name,
+                    exchange_type=self.exchange_type
                 )
                 if not success:
                     logging.error(f"Failed to bind queue '{queue_name}' to exchange '{self.exchange_name}'")
@@ -185,7 +186,8 @@ class RouterWorker:
                     exchange_name=self.exchange_name,
                     routing_key="",  # Routing key is ignored for fanout exchanges
                     message=Serializer.serialize(outgoing_message),
-                    persistent=True
+                    persistent=True,
+                    exchange_type=self.exchange_type  # Pass the exchange type
                 )
                 
                 if success:

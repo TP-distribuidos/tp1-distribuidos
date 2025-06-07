@@ -86,15 +86,15 @@ class RabbitMQClient:
             logging.error(f"Failed to declare queue '{name}': {e}")
             return False
     
-    def bind_queue(self, queue_name: str, exchange_name: str, routing_key: str) -> bool:
+    def bind_queue(self, queue_name: str, exchange_name: str, routing_key: str, exchange_type='direct') -> bool:
         """Bind queue to exchange with routing key"""
         try:
             if not self._channel:
                 if not self.connect():
                     return False
                 
-            # Ensure exchange and queue exist
-            if not self.declare_exchange(exchange_name):
+            # Ensure exchange and queue exist with the correct type
+            if not self.declare_exchange(exchange_name, exchange_type=exchange_type):
                 return False
                 
             if not self.declare_queue(queue_name):
@@ -112,15 +112,15 @@ class RabbitMQClient:
             logging.error(f"Failed to bind queue '{queue_name}' to exchange '{exchange_name}': {e}")
             return False
     
-    def publish(self, exchange_name: str, routing_key: str, message: str, persistent=True) -> bool:
+    def publish(self, exchange_name: str, routing_key: str, message: str, persistent=True, exchange_type='direct') -> bool:
         """Publish message to exchange with routing key"""
         try:
             if not self._channel or not self._connection.is_open:
                 if not self.connect():
                     return False
             
-            # Ensure exchange exists
-            if not self.declare_exchange(exchange_name):
+            # Ensure exchange exists with correct type
+            if not self.declare_exchange(exchange_name, exchange_type=exchange_type):
                 return False
                 
             properties = pika.BasicProperties(

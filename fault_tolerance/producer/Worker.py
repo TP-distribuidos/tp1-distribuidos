@@ -1,10 +1,8 @@
-import asyncio
 import logging
 import os
 import signal
 import sys
 import time
-import lorem
 
 # Add parent directory to Python path to allow imports from sibling directories
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +13,7 @@ from common.SentinelBeacon import SentinelBeacon
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
 from common.data_persistance.SimpleStateInterpreter import SimpleStateInterpreter
+import random
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,11 +82,11 @@ class ProducerWorker:
             logging.error(f"Error initializing WAL: {e}")
             self.wal = None
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and sending messages"""
         try:
             # Connect to RabbitMQ
-            if not await self._setup_rabbitmq():
+            if not self._setup_rabbitmq():
                 logging.error("Failed to set up RabbitMQ connection. Exiting.")
                 return False
             
@@ -110,7 +109,7 @@ class ProducerWorker:
                 next_batch = current_batch + 1
                 
                 # Send the batch with that number
-                sent_successfully = await self._send_batch(next_batch)
+                sent_successfully = self._send_batch(next_batch)
                 
                 # If send was successful, increment the counter
                 if sent_successfully:
@@ -119,48 +118,48 @@ class ProducerWorker:
                 else:
                     logging.error(f"Failed to send batch {next_batch}, not incrementing counter")
                 
-                await asyncio.sleep(BATCH_INTERVAL)
+                time.sleep(BATCH_INTERVAL)
             
             logging.info(f"Finished sending {NUM_BATCHES} batches")
             
             # Keep the worker running until shutdown is triggered
             while self._running:
-                await asyncio.sleep(1)
+                time.sleep(1)
                 
             return True
         finally:
             # Always clean up resources
-            await self.cleanup()
+            self.cleanup()
     
-    async def cleanup(self):
+    def cleanup(self):
         """Clean up resources properly"""
         logging.info("Cleaning up resources...")
         if hasattr(self, 'rabbitmq'):
             try:
-                await self.rabbitmq.close()
+                self.rabbitmq.close()
                 logging.info("RabbitMQ connection closed")
             except Exception as e:
                 logging.error(f"Error closing RabbitMQ connection: {e}")
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and producer queue"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # Declare the producer queue
-        queue = await self.rabbitmq.declare_queue(self.producer_queue, durable=True)
-        if not queue:
+        queue_declared = self.rabbitmq.declare_queue(self.producer_queue, durable=True)
+        if not queue_declared:
             logging.error(f"Failed to declare queue '{self.producer_queue}'")
             return False
         
         return True
     
-    async def _send_batch(self, batch_number):
+    def _send_batch(self, batch_number):
         """Send a batch of messages"""
         try:
             # Send the number 1 to be added up
@@ -177,19 +176,31 @@ class ProducerWorker:
                 f.write(f"Value: {message['value']}\n\n")
 
             logging.info(f"Sleeping 3 seconds before sending batch {batch_number}...")
-            await asyncio.sleep(3)  # Ensure file write is complete
+            time.sleep(3)  # Ensure file write is complete
+            
             # Send the message
-            success = await self.rabbitmq.publish_to_queue(
+            success = self.rabbitmq.publish_to_queue(
                 queue_name=self.producer_queue,
                 message=Serializer.serialize(message),
                 persistent=True
             )
+            
             # Send duplicate message to simulate fault tolerance
-            success = await self.rabbitmq.publish_to_queue(
+            success = self.rabbitmq.publish_to_queue(
                 queue_name=self.producer_queue,
                 message=Serializer.serialize(message),
                 persistent=True
             )
+
+            # Randomly send a third duplicate message with 25% probability
+            if random.random() < 0.25:
+                logging.info("Randomly sending a third duplicate message (25% chance)")
+                # Send duplicate message to simulate fault tolerance
+                success = self.rabbitmq.publish_to_queue(
+                    queue_name=self.producer_queue,
+                    message=Serializer.serialize(message),
+                    persistent=True
+                )
             
             if not success:
                 logging.error(f"Failed to send message: {message}")
@@ -231,3 +242,7 @@ class ProducerWorker:
         # Shut down the sentinel beacon
         if hasattr(self, 'sentinel_beacon'):
             self.sentinel_beacon.shutdown()
+
+if __name__ == "__main__":
+    worker = ProducerWorker()
+    worker.run()

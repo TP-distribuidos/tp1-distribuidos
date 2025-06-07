@@ -1,15 +1,7 @@
-import asyncio
 import logging
 import os
 import signal
-import sys
-
-import os
-import sys
 import time
-import signal
-import logging
-import asyncio
 
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
@@ -17,7 +9,6 @@ from common.SentinelBeacon import SentinelBeacon
 from ConsumerStateInterpreter import ConsumerStateInterpreter
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,10 +32,6 @@ class ConsumerWorker:
         self.rabbitmq = RabbitMQClient()
         self.target_batch = TARGET_BATCH
         self.expected_producers = EXPECTED_PRODUCERS
-
-        # Add message processing queue
-        self.message_queue = asyncio.Queue()
-        self.process_task = None
 
         # Create output directory if it doesn't exist and ensure it has proper permissions
         output_dir = os.path.dirname(OUTPUT_FILE)
@@ -92,21 +79,19 @@ class ConsumerWorker:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        # Initialize sentinel beacon
+        # Initialize sentinel beacon - needs to run in a separate thread
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT, "Consumer Worker")
         
         logging.info(f"Consumer Worker initialized to consume from queue '{consumer_queue}'")
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         try:
             # Connect to RabbitMQ
-            if not await self._setup_rabbitmq():
+            if not self._setup_rabbitmq():
                 logging.error("Failed to set up RabbitMQ connection. Exiting.")
                 return False
             
-            # Start message processing task
-            self.process_task = asyncio.create_task(self._process_message_queue())
             logging.info(f"Consumer Worker running and consuming from queue '{self.consumer_queue}'")
             
             # Process any pending client data from previous runs
@@ -114,93 +99,72 @@ class ConsumerWorker:
                 logging.info(f"Processing {len(self.clients_to_process)} clients with pending data")
                 for client_id in self.clients_to_process:
                     try:
-                        await self._write_to_file(client_id)
+                        self._write_to_file(client_id)
                     except Exception as e:
                         logging.error(f"Error processing pending data for client {client_id}: {e}")
             
-            # Keep the worker running until shutdown is triggered
+            # Start consuming messages (blocking call)
             while self._running:
-                await asyncio.sleep(1)
+                try:
+                    self.rabbitmq.start_consuming()
+                except Exception as e:
+                    logging.error(f"Error in consuming messages: {e}")
+                    if self._running:
+                        logging.info("Attempting to reconnect in 5 seconds...")
+                        time.sleep(5)
+                        self._setup_rabbitmq()
             
             return True
         finally:
             # Always clean up resources
-            await self.cleanup()
+            self.cleanup()
     
-    async def _process_message_queue(self):
-        """Process messages from the queue one at a time"""
-        while self._running:
-            try:
-                # Get message from queue (with timeout to allow graceful shutdown)
-                try:
-                    message = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
-                    
-                # Process the message (reuse your existing _process_message logic)
-                try:
-                    await self._process_message_internal(message)
-                except Exception as e:
-                    logging.error(f"Error processing queued message: {e}")
-                finally:
-                    self.message_queue.task_done()
-            except Exception as e:
-                logging.error(f"Error in message queue processor: {e}")
-                await asyncio.sleep(1)  # Prevent tight loop on persistent errors
-                
-    
-    async def cleanup(self):
+    def cleanup(self):
         """Clean up resources properly"""
         logging.info("Cleaning up resources...")
-        # Cancel all pending tasks that might be using the event loop
+        
+        # Stop consuming messages
         try:
-            # Don't cancel the current task (cleanup itself)
-            current_task = asyncio.current_task()
-            tasks = [t for t in asyncio.all_tasks() if t is not current_task]
-            if tasks:
-                logging.info(f"Cancelling {len(tasks)} pending tasks")
-                for task in tasks:
-                    task.cancel()
-                # Give them a chance to clean up
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if hasattr(self, 'rabbitmq'):
+                self.rabbitmq.stop_consuming()
         except Exception as e:
-            logging.error(f"Error cancelling tasks during cleanup: {e}")
+            logging.error(f"Error stopping consumer: {e}")
         
         # Close RabbitMQ connection
-        if hasattr(self, 'rabbitmq'):
-            try:
-                await self.rabbitmq.close()
+        try:
+            if hasattr(self, 'rabbitmq'):
+                self.rabbitmq.close()
                 logging.info("RabbitMQ connection closed")
-            except Exception as e:
-                logging.error(f"Error closing RabbitMQ connection: {e}")
+        except Exception as e:
+            logging.error(f"Error closing RabbitMQ connection: {e}")
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
-            wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(min(30, 2 ** retry_count))
+            return self._setup_rabbitmq(retry_count + 1)
         
         # Declare the consumer queue
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue, durable=True)
-        if not queue:
+        queue_declared = self.rabbitmq.declare_queue(self.consumer_queue, durable=True)
+        if not queue_declared:
             logging.error(f"Failed to declare queue '{self.consumer_queue}'")
             return False
         
         # Declare the monitoring queue for forwarding messages
-        monitoring_queue = await self.rabbitmq.declare_queue(self.monitoring_queue, durable=True)
-        if not monitoring_queue:
+        monitoring_queue_declared = self.rabbitmq.declare_queue(self.monitoring_queue, durable=True)
+        if not monitoring_queue_declared:
             logging.error(f"Failed to declare monitoring queue '{self.monitoring_queue}'")
             return False
         
-        # Set up consumer
-        success = await self.rabbitmq.consume(
+        # Set up consumer - EXPLICITLY SET PREFETCH
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue,
             callback=self._process_message,
-            no_ack=False
+            no_ack=False,
+            prefetch_count=1  # EXPLICITLY SET TO 1
         )
         if not success:
             logging.error(f"Failed to set up consumer for queue '{self.consumer_queue}'")
@@ -208,15 +172,11 @@ class ConsumerWorker:
             
         return True
     
-    async def _process_message(self, message):
-        """Callback for RabbitMQ - just enqueue the message"""
-        await self.message_queue.put(message)
-    
-    async def _process_message_internal(self, message):
-        """Process a message from the queue"""
+    def _process_message(self, channel, method, properties, body):
+        """Process a message from RabbitMQ"""
         try:
             # Deserialize the message
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract message ID with fallbacks for compatibility
             message_id = deserialized_message.get('batch')
@@ -239,8 +199,9 @@ class ConsumerWorker:
             
             # First check if the message is already processed (using WAL's API)
             if self.data_persistance.is_message_processed(client_id, node_id, message_id):
-                logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, acknowledging without incrementing counter\033[0m")
-                await message.ack()  # Acknowledge the message since it's already been processed
+                logging.info(f"\033[33mMessage {message_id} from node {node_id} already processed, acknowledging AND incrementing counter\033[0m")
+                self.data_persistance.increment_counter()  # Increment counter even for duplicates
+                channel.basic_ack(delivery_tag=method.delivery_tag)  # Acknowledge the message
                 return
 
             # Forward message to monitoring queue for observation in RabbitMQ GUI
@@ -252,7 +213,7 @@ class ConsumerWorker:
             }
             
             # Publish to monitoring queue
-            forwarding_success = await self.rabbitmq.publish_to_queue(
+            forwarding_success = self.rabbitmq.publish_to_queue(
                 queue_name=self.monitoring_queue,
                 message=Serializer.serialize(monitoring_message),
                 persistent=True
@@ -265,23 +226,23 @@ class ConsumerWorker:
             
             # TEST POINT 1. Right before persisting to WAL, we can log the message
             logging.info(f"TEST POINT 1: Preparing to persist message {message_id} from node {node_id} to WAL. Sleep for 3 seconds")
-            await asyncio.sleep(3)
+            time.sleep(3)
             
             # Try to persist the message - this might raise exceptions or return False in different scenarios
             try:
                 persist_result = self.data_persistance.persist(client_id, node_id, deserialized_message, message_id)
                 # TEST POINT 2. After successful persistence, we can log the message
                 logging.info(f"TEST POINT 2: Successfully persisted message {message_id} from node {node_id} to WAL and right before incrementing the counter. Sleep for 3 seconds")
-                await asyncio.sleep(3)
+                time.sleep(3)
                 
                 if persist_result:
                     # Message was newly persisted, increment the counter
                     try:
                         # Increment the counter after successful persistence
-                        self.data_persistance.increment_counter()  # Remove await as it's not an async method
+                        self.data_persistance.increment_counter()
                         # TEST POINT 3. After incrementing the counter, we can log the new value
                         logging.info(f"TEST POINT 3: Incremented message counter for client {client_id}. Sleep for 3 seconds")
-                        await asyncio.sleep(3)
+                        time.sleep(3)
                         current_count = self.data_persistance.get_counter_value()
                         logging.info(f"Message counter incremented to {current_count}")
                     except Exception as e:
@@ -289,27 +250,27 @@ class ConsumerWorker:
                     
                     if message_id == self.target_batch:
                         logging.info(f"Received target batch {self.target_batch}, processing data")
-                        await self._write_to_file(client_id)
+                        self._write_to_file(client_id)
                     
-                    await message.ack()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)  # Acknowledge the message
                 else:
                     # If persist returns False but didn't raise an exception, the message was:
                     # - Either already processed (which we already checked above with is_message_processed)
                     # - Or failed persistence for a non-fatal reason
                     logging.warning(f"Message {message_id} from node {node_id} was not persisted because it is a duplicated message, so we acknowledge it anyway")
-                    await message.ack()  # Still acknowledge since we don't want to reprocess
+                    channel.basic_ack(delivery_tag=method.delivery_tag)  # Acknowledge anyway
                 
             except RuntimeError as e:
                 # WAL persistence failed with a runtime error
                 logging.error(f"Failed to persist message {message_id} to WAL for node {node_id}: {e}")
-                await message.reject(requeue=True)  # Requeue the message to try again
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)  # Requeue the message
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            await message.reject(requeue=True)
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
     
-    async def _write_to_file(self, client_id):
+    def _write_to_file(self, client_id):
         """Write client_id's messages to output file - retrieves ALL nodes for the client"""
         try:
             # Retrieve consolidated data from ALL nodes for this client
@@ -360,7 +321,7 @@ class ConsumerWorker:
                         summary_text += f"Math check: {'✓ CORRECT' if total == count else '✗ MISMATCH'}\n"
                     
                     # Write to file
-                    await self._write_formatted_text(summary_text)
+                    self._write_to_file_sync(summary_text)
                     logging.info(f"Successfully wrote summary to file: total={total}, count={count}, clearing={should_clear}")
                     
                     # Only clear if we have enough data
@@ -378,22 +339,6 @@ class ConsumerWorker:
             
         except Exception as e:
             logging.error(f"Error writing to file: {e}")
-    
-    async def _write_formatted_text(self, formatted_text):
-        """Write formatted text to file with proper error handling"""
-        try:
-            # Try to get the running loop, and handle the case where there's no loop
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._write_to_file_sync, formatted_text)
-            except RuntimeError:
-                # If there's no running event loop, perform synchronous write
-                logging.info("No running event loop, performing synchronous write")
-                self._write_to_file_sync(formatted_text)
-        except Exception as e:
-            logging.error(f"Error during file write operation: {e}")
-            # Fall back to synchronous write
-            self._write_to_file_sync(formatted_text)
     
     def _format_text_with_linebreaks(self, text, line_length=100):
         """Format text with line breaks after each full stop (period)"""
@@ -424,6 +369,16 @@ class ConsumerWorker:
         logging.info("Shutting down consumer worker...")
         self._running = False
         
+        # Stop consuming messages
+        try:
+            self.rabbitmq.stop_consuming()
+        except Exception as e:
+            logging.error(f"Error stopping consumer: {e}")
+        
         # Shut down the sentinel beacon
         if hasattr(self, 'sentinel_beacon'):
             self.sentinel_beacon.shutdown()
+
+if __name__ == "__main__":
+    worker = ConsumerWorker()
+    worker.run()

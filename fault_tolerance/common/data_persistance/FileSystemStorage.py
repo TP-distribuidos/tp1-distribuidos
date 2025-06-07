@@ -56,8 +56,8 @@ class FileSystemStorage(StorageInterface):
             return False
     
     def file_exists(self, path: Path) -> bool:
-        """Check if a file exists"""
-        return os.path.isfile(path)
+        """Check if a file or directory exists"""
+        return os.path.exists(path)
     
     def rename_file(self, old_path: Path, new_path: Path) -> bool:
         """Rename a file or directory."""

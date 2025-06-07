@@ -82,6 +82,26 @@ services:
       - ./common:/app/common
       - ./consumer/persistence:/app/persistence
 
+  monitoring_consumer:
+    build:
+      context: ./monitoring_consumer
+      dockerfile: Dockerfile
+    environment:
+      - MONITORING_QUEUE=monitoring_queue
+      - SENTINEL_PORT=9003
+      - OUTPUT_FILE=/app/output/monitoring_summary.txt
+      - EXPECTED_PRODUCERS=3
+    ports:
+      - "9003:9003"
+    depends_on:
+      - rabbitmq
+      - consumer_worker
+    volumes:
+      - ./monitoring_consumer:/app
+      - ./rabbitmq:/app/rabbitmq
+      - ./common:/app/common
+      - ./monitoring_consumer/persistence:/app/persistence/monitoring
+
   sentinel1:
     build:
       context: ./sentinel

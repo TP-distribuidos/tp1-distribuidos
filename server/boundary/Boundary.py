@@ -186,7 +186,7 @@ class Boundary:
                 proto = self.protocol()
                 
                 serialized_data = json.dumps(data)
-                proto.send_all_sync(client_socket, serialized_data, query)
+                proto.send_all(client_socket, serialized_data, query)
                 
             except Exception as e:
                 logging.error(f"Failed to send data to client {client_id}: {e}")
@@ -446,10 +446,10 @@ class Boundary:
     Receive a CSV batch from the socket
     First read 4 bytes to get the length, then read the actual data
     """
-    length_bytes = proto.recv_exact_sync(sock, 4)
+    length_bytes = proto.recv_exact(sock, 4)
     msg_length = int.from_bytes(length_bytes, byteorder='big')
 
-    data_bytes = proto.recv_exact_sync(sock, msg_length)
+    data_bytes = proto.recv_exact(sock, msg_length)
     data = proto.decode(data_bytes)
 
     return data

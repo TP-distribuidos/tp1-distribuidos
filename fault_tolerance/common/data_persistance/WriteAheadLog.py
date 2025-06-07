@@ -307,6 +307,13 @@ class WriteAheadLog(DataPersistenceInterface):
     
     def _get_client_dir(self, client_id: str) -> Path:
         """Get the directory path for a specific client's logs"""
+        # FIRST check if this client was cleared
+        cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
+        if self.storage.file_exists(cleared_dir):
+            # Client was cleared, don't recreate the directory!
+            raise ValueError(f"Client {client_id} was previously cleared, cannot recreate directory")
+            
+        # Client wasn't cleared, proceed normally
         client_dir = self.base_dir / client_id
         self.storage.create_directory(client_dir)
         return client_dir
@@ -563,11 +570,12 @@ class WriteAheadLog(DataPersistenceInterface):
         Returns:
             bool: True if successfully persisted
         """
-        # Check if client was cleared - do this first for efficiency
+        # First check if this client was cleared (no need to create dir to check this)
         cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
         if self.storage.file_exists(cleared_dir):
             logging.info(f"Client {client_id} was previously cleared, skipping persistence for message {message_id}")
             return False
+        
 
         timestamp = str(int(time.time() * 1000))  # millisecond precision
         internal_id = f"{timestamp}_{message_id}"

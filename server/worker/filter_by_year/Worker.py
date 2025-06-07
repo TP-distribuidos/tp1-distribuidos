@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import signal
 import os
+import time
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
@@ -68,35 +68,37 @@ class Worker:
         self.message_counter += 1
         return self.message_counter
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Worker running and consuming from queue '{self.consumer_queue_names}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
-            
+        # Start consuming messages (blocking call)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            self._handle_shutdown()
+        
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # -------------------- CONSUMER --------------------
         # Declare queues (idempotent operation)
         for queue_name in self.consumer_queue_names:
-            queue = await self.rabbitmq.declare_queue(queue_name, durable=True)
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
             if not queue:
                 return False
         # --------------------------------------------------
@@ -104,7 +106,7 @@ class Worker:
 
         # -------------------- PRODUCER --------------------
         # Declare exchange (idempotent operation)
-        exchange = await self.rabbitmq.declare_exchange(
+        exchange = self.rabbitmq.declare_exchange(
             name=self.exchange_name_producer,
             exchange_type=self.exchange_type_producer,
             durable=True
@@ -114,12 +116,12 @@ class Worker:
             return False
         
         # Declare the producer queue (router input queue)
-        queue = await self.rabbitmq.declare_queue(self.producer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.producer_queue_name, durable=True)
         if not queue:
             return False        
         
         # Bind queue to exchange
-        success = await self.rabbitmq.bind_queue(
+        success = self.rabbitmq.bind_queue(
             queue_name=self.producer_queue_name,
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name
@@ -131,7 +133,7 @@ class Worker:
         
         # Set up consumers
         for queue_name in self.consumer_queue_names:
-            success = await self.rabbitmq.consume(
+            success = self.rabbitmq.consume(
                 queue_name=queue_name,
                 callback=self._process_message,
                 no_ack=False
@@ -142,10 +144,10 @@ class Worker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, channel, method, properties, body):
         """Process a message from the queue"""
         try:
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id and data from the deserialized message
             client_id = deserialized_message.get("client_id")
@@ -158,54 +160,53 @@ class Worker:
 
             if disconnect_marker:
                 # Propagate DISCONNECT to downstream components
-                await self.send_disconnect(client_id, query)
-                await message.ack()
+                self.send_disconnect(client_id, query)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
-
 
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
-                await self.send_data(client_id, data, QUERY_GT_YEAR, True)
-                await message.ack()
+                self.send_data(client_id, data, QUERY_GT_YEAR, True)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             # Process the movie data
             if data:
                 data_eq_year, data_gt_year = self._filter_data(data)
                 if data_eq_year:
-                    await self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=new_operation_id)
+                    self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=new_operation_id)
                 if data_gt_year:
-                    await self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=new_operation_id)
+                    self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=new_operation_id)
             
             # Acknowledge message
-            await message.ack()
+            channel.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            await message.reject(requeue=True)
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
 
-    async def send_disconnect(self, client_id, query=""):
+    def send_disconnect(self, client_id, query=""):
         """Send DISCONNECT notification to downstream components"""
         # Generate an operation ID for this message
         operation_id = self._get_next_message_id()
         
         message = Serializer.add_metadata(client_id, {}, False, query, True, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
             message=Serializer.serialize(message),
             persistent=True
         )
 
-    async def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
+    def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
         """Send data to the router queue with query type in metadata"""
         if operation_id is None:
             operation_id = self._get_next_message_id()
             
         message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_name,
             message=Serializer.serialize(message),
@@ -252,13 +253,17 @@ class Worker:
         
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""
+        if not self._running:
+            return
+            
         logging.info(f"Shutting down worker...")
         self._running = False
         
-        # Close RabbitMQ connection - note we need to create a task
-        # since this is called from a signal handler
+        # Close RabbitMQ connection
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.stop_consuming()
+            self.rabbitmq.close()
+            
         # Shut down the sentinel beacon
         if hasattr(self, 'sentinel_beacon'):
             self.sentinel_beacon.shutdown()

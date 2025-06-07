@@ -1,6 +1,6 @@
-import asyncio
 import logging
 import signal
+import time
 import os
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
@@ -61,7 +61,7 @@ class RouterWorker:
                 
         return all_queues
 
-    async def _setup(self, retry_count=1):
+    def _setup(self, retry_count=1):
         """Setup connections, exchanges, and declare queues with retry mechanism
         
         Args:
@@ -70,23 +70,23 @@ class RouterWorker:
             bool: True if setup succeeds, False otherwise
         """
         # Connect to RabbitMQ
-        connected = await self.rabbit_client.connect()
+        connected = self.rabbit_client.connect()
         if not connected:
                 
             wait_time = min(30, 2 ** retry_count)
             logging.error(f"Failed to connect to RabbitMQ, retrying in {wait_time} seconds...")
-            await asyncio.sleep(wait_time)
-            return await self._setup(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup(retry_count + 1)
         
         try:
             # Declare input queue
-            queue = await self.rabbit_client.declare_queue(self.input_queue, durable=True)
+            queue = self.rabbit_client.declare_queue(self.input_queue, durable=True)
             if not queue:
                 logging.error(f"Failed to declare input queue '{self.input_queue}'")
                 return False
             
             # Declare exchange
-            exchange = await self.rabbit_client.declare_exchange(
+            exchange = self.rabbit_client.declare_exchange(
                 name=self.exchange_name,
                 exchange_type=self.exchange_type,
                 durable=True
@@ -97,13 +97,13 @@ class RouterWorker:
                 
                 # Declare and bind all output queues
             for queue_name in self._get_all_queue_names():
-                queue = await self.rabbit_client.declare_queue(queue_name, durable=True)
+                queue = self.rabbit_client.declare_queue(queue_name, durable=True)
 
                 if not queue:
                     logging.error(f"Failed to declare output queue '{queue_name}'")
                     return False
                     
-                success = await self.rabbit_client.bind_queue(
+                success = self.rabbit_client.bind_queue(
                     queue_name=queue_name,
                     exchange_name=self.exchange_name,
                     routing_key=queue_name
@@ -119,18 +119,18 @@ class RouterWorker:
                 
             wait_time = min(30, 2 ** retry_count)
             logging.error(f"Error setting up RabbitMQ: {e}. Retrying in {wait_time} seconds...")
-            await asyncio.sleep(wait_time)
+            time.sleep(wait_time)
             
             # Ensure connection is properly closed before retrying
-            await self.rabbit_client.close()
+            self.rabbit_client.close()
             
-            return await self._setup(retry_count + 1)
+            return self._setup(retry_count + 1)
             
-    async def _process_message(self, message):
+    def _process_message(self, ch, method, properties, body):
         """Process an incoming message and route it to the next queue"""
         try:
             # Deserialize the message
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract the necessary information from the message
             client_id = deserialized_message.get("client_id")
@@ -144,14 +144,14 @@ class RouterWorker:
 
             if not client_id:
                 logging.warning("Received message with missing client_id")
-                await message.ack()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             # Handle DISCONNECT marker - immediate propagation to all queues
             if disconnect_marker:
-                await self._send_disconnect_to_all_queues(client_id, query)
+                self._send_disconnect_to_all_queues(client_id, query)
                 self.end_of_file_received.pop(client_id, None)
-                await message.ack()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             # Handle EOF marker specially - we need to count them and possibly send to all queues
@@ -161,9 +161,9 @@ class RouterWorker:
                 
                 # Once we've received all expected EOF markers, send to all output queues
                 if self.end_of_file_received[client_id] >= self.number_of_producer_workers:
-                    await self._send_eof_to_all_queues(client_id, data, query, operation_id, node_id)
+                    self._send_eof_to_all_queues(client_id, data, query, operation_id, node_id)
                     self.end_of_file_received[client_id] = 0
-                await message.ack()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Prepare message to publish using the centralized Serializer.add_metadata method
@@ -181,7 +181,7 @@ class RouterWorker:
             # Process message based on exchange type
             if self.exchange_type == "fanout":
                 # For fanout exchanges, just publish once with empty routing key
-                success = await self.rabbit_client.publish(
+                success = self.rabbit_client.publish(
                     exchange_name=self.exchange_name,
                     routing_key="",  # Routing key is ignored for fanout exchanges
                     message=Serializer.serialize(outgoing_message),
@@ -189,10 +189,10 @@ class RouterWorker:
                 )
                 
                 if success:
-                    await message.ack()
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
                 else:
                     logging.error(f"Failed to forward message to fanout exchange")
-                    await message.reject(requeue=True)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 # For direct exchanges, use the load balancer
                 queue_distribution = self.balancer.select_target_queues(data)
@@ -200,7 +200,7 @@ class RouterWorker:
                 for queue, items in queue_distribution.items():
                     # Publish the message to the selected queue
                     outgoing_message["data"] = items
-                    publish_success = await self.rabbit_client.publish(
+                    publish_success = self.rabbit_client.publish(
                         exchange_name=self.exchange_name,
                         routing_key=queue,
                         message=Serializer.serialize(outgoing_message),
@@ -210,18 +210,18 @@ class RouterWorker:
                         success = False
                         logging.error(f"Failed to forward message to queue: {queue}")
                 if success:
-                    await message.ack()
+                    ch.basic_ack(delivery_tag=method.delivery_tag)
                 else:
-                    await message.reject(requeue=True)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject and requeue the message
-            await message.reject(requeue=True)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
-    async def run(self):
+    def run(self):
         """Run the router worker"""
-        if not await self._setup():
+        if not self._setup():
             logging.error("Failed to set up RabbitMQ connections")
             return
         
@@ -229,7 +229,7 @@ class RouterWorker:
         logging.info(f"Starting to consume from {self.input_queue}")
         
         # Set up consumer
-        success = await self.rabbit_client.consume(
+        success = self.rabbit_client.consume(
             queue_name=self.input_queue,
             callback=self._process_message,
             no_ack=False
@@ -239,19 +239,21 @@ class RouterWorker:
             logging.error(f"Failed to set up consumer for queue '{self.input_queue}'")
             return
         
-        # Keep the worker running
+        # Start consuming messages (this will block until shutdown)
         try:
-            while self.running:
-                await asyncio.sleep(1)
+            self.rabbit_client.start_consuming()
+        except KeyboardInterrupt:
+            logging.info("Received keyboard interrupt, shutting down...")
+            self.running = False
         except Exception as e:
             logging.error(f"Error in router worker: {e}")
         finally:
-            await self.stop()
+            self.stop()
     
-    async def stop(self):
+    def stop(self):
         """Stop the router worker"""
         self.running = False
-        await self.rabbit_client.close()
+        self.rabbit_client.close()
         logging.info("Router worker stopped")
     
     def _handle_shutdown(self, *_):
@@ -259,14 +261,14 @@ class RouterWorker:
         logging.info("Shutting down router worker...")
         self.running = False
         
-        # Close RabbitMQ connection - create a task since this is called from a signal handler
+        # Close RabbitMQ connection
         if hasattr(self, 'rabbit_client'):
-            asyncio.create_task(self.rabbit_client.close())
+            self.rabbit_client.close()
         # Shut down the sentinel beacon
         if hasattr(self, 'sentinel_beacon'):
             self.sentinel_beacon.shutdown()
 
-    async def _send_disconnect_to_all_queues(self, client_id, query=None):
+    def _send_disconnect_to_all_queues(self, client_id, query=None):
         """Send DISCONNECT marker to all output queues for a specific client ID"""
         disconnect_message = Serializer.add_metadata(
             client_id=client_id,
@@ -280,7 +282,7 @@ class RouterWorker:
         # For fanout exchanges, we only need to publish once with any routing key
         if self.exchange_type == "fanout":
             # Just publish once to the exchange - it will distribute to all bound queues
-            success = await self.rabbit_client.publish(
+            success = self.rabbit_client.publish(
                 exchange_name=self.exchange_name,
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(disconnect_message),
@@ -290,7 +292,7 @@ class RouterWorker:
         # For direct and other exchanges, send to each queue explicitly
         all_queues = self._get_all_queue_names()
         for queue in all_queues:
-            success = await self.rabbit_client.publish(
+            success = self.rabbit_client.publish(
                 exchange_name=self.exchange_name,
                 routing_key=queue,
                 message=Serializer.serialize(disconnect_message),
@@ -299,7 +301,7 @@ class RouterWorker:
             if not success:
                 logging.error(f"Failed to send DISCONNECT marker to queue {queue} for client {client_id}")
         
-    async def _send_eof_to_all_queues(self, client_id, data, query=None, operation_id=None, node_id=None):
+    def _send_eof_to_all_queues(self, client_id, data, query=None, operation_id=None, node_id=None):
         """Send EOF marker to all output queues for a specific client ID"""
         eof_message = Serializer.add_metadata(
             client_id=client_id,
@@ -314,7 +316,7 @@ class RouterWorker:
         # For fanout exchanges, we only need to publish once with any routing key
         if self.exchange_type == "fanout":
             # Just publish once to the exchange - it will distribute to all bound queues
-            success = await self.rabbit_client.publish(
+            success = self.rabbit_client.publish(
                 exchange_name=self.exchange_name,
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(eof_message),
@@ -329,7 +331,7 @@ class RouterWorker:
         # For direct and other exchanges, send to each queue explicitly
         all_queues = self._get_all_queue_names()
         for queue in all_queues:
-            success = await self.rabbit_client.publish(
+            success = self.rabbit_client.publish(
                 exchange_name=self.exchange_name,
                 routing_key=queue,
                 message=Serializer.serialize(eof_message),

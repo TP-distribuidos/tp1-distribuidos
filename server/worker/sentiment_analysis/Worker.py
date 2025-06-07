@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import signal
 import time
@@ -55,42 +54,48 @@ class SentimentWorker:
         self.message_counter += 1
         return self.message_counter
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Sentiment Analysis Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
+        # Start consuming messages (this will block until shutdown)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            logging.info("Received keyboard interrupt, shutting down...")
+            self._running = False
+        except Exception as e:
+            logging.error(f"Error during message consumption: {e}")
+            return False
             
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # Declare queues (idempotent operation)
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             return False
             
-        response_queue = await self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
+        response_queue = self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
         if not response_queue:
             return False
 
         # Set up consumer
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False,
@@ -102,10 +107,10 @@ class SentimentWorker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, ch, method, properties, body):
         """Process a message from the queue"""
         try:
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id and data from the deserialized message
             client_id = deserialized_message.get("client_id")
@@ -129,7 +134,7 @@ class SentimentWorker:
                 )
                 
                 # Send processed data to response queue
-                success = await self.rabbitmq.publish_to_queue(
+                success = self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
@@ -154,19 +159,19 @@ class SentimentWorker:
                     node_id=self.node_id
                 )
                 
-                await self.rabbitmq.publish_to_queue(
+                self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
                 
-                await message.ack()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             # Process the movie data for sentiment analysis
             elif data:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
-                processed_data = await self._analyze_sentiment_and_calculate_ratios(data)
+                processed_data = self._analyze_sentiment_and_calculate_ratios(data)
                 
                 # Use incremental ID if no operation_id is provided
                 if operation_id is None:
@@ -184,7 +189,7 @@ class SentimentWorker:
                 )
                 
                 # Send processed data to response queue
-                success = await self.rabbitmq.publish_to_queue(
+                success = self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
@@ -196,13 +201,13 @@ class SentimentWorker:
                 logging.warning(f"Received empty data from client {client_id}")
             
             # Acknowledge message
-            await message.ack()
+            ch.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")
-            await message.reject(requeue=False)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-    async def _analyze_sentiment_and_calculate_ratios(self, data):
+    def _analyze_sentiment_and_calculate_ratios(self, data):
         processed_movies = []
         start_time = time.time()
         
@@ -256,8 +261,8 @@ class SentimentWorker:
                     logging.error(f"Error processing movie {movie.get('original_title', 'Unknown')}: {e}")
                     continue
             
-            # Sleep a tiny bit to allow other async operations to run
-            await asyncio.sleep(0.01)
+            # Sleep a tiny bit to allow other operations to run
+            time.sleep(0.01)
         
         total_time = time.time() - start_time
         
@@ -299,4 +304,4 @@ class SentimentWorker:
         logging.info(f"Shutting down sentiment analysis worker...")
         self._running = False
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.close()

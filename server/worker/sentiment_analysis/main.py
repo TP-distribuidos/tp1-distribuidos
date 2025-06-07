@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from dotenv import load_dotenv
@@ -11,7 +10,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-async def main():
+def main():
     """Main entry point for the sentiment analysis worker service"""
     # Load environment variables
     load_dotenv()
@@ -20,34 +19,30 @@ async def main():
     consumer_queue = os.getenv("ROUTER_CONSUME_QUEUE")
     producer_queue = os.getenv("ROUTER_PRODUCER_QUEUE")
     
-    # Add retry logic for service initialization
-    retry_count = 0
-    
-    while True:
-        try:
-            # Create worker with the environment configuration
-            worker = SentimentWorker(
-                consumer_queue_name=consumer_queue,
-                response_queue_name=producer_queue
-            )
+    try:
+        # Create worker with the environment configuration
+        worker = SentimentWorker(
+            consumer_queue_name=consumer_queue,
+            response_queue_name=producer_queue
+        )
+        
+        success = worker.run()
+        
+        if success:
+            logging.info("Sentiment worker completed successfully")
+        else:
+            logging.error("Sentiment worker failed to run properly")
             
-            success = await worker.run()
-            
-            if success:
-                break  # Worker completed successfully
-            else:
-                logging.error("Sentiment worker failed to run properly")
-                retry_count += 1
-                
-        except Exception as e:
-            retry_count += 1
-            logging.error(f"Error running sentiment worker: {e}. Retry {retry_count}")
-
-        wait_time = min(30, 2 ** retry_count)  # Exponential backoff with a cap
-        logging.info(f"Waiting {wait_time} seconds before retrying...")
-        await asyncio.sleep(wait_time)
+    except Exception as e:
+        logging.error(f"Error running sentiment worker: {e}")
+        raise
 
 
 if __name__ == "__main__":
     logging.info("Starting sentiment analysis worker service...")
-    asyncio.run(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Worker stopped by user")
+    except Exception as e:
+        logging.error(f"Error in main: {e}")

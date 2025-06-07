@@ -1,11 +1,11 @@
-import asyncio
 import logging
 import signal
 import os
+import time
+import threading
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
-import heapq
 from common.SentinelBeacon import SentinelBeacon
 
 
@@ -23,7 +23,7 @@ SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 # Constants
 NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
-RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE",)
+RESPONSE_QUEUE = os.getenv("RESPONSE_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "top_actors_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 TOP_N = int(os.getenv("TOP_N", 10))
@@ -66,34 +66,41 @@ class Worker:
         self.message_counter += 1
         return self.message_counter
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
+        # Start consuming messages (blocking call)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt received")
+        except Exception as e:
+            logging.error(f"Error in consuming messages: {e}")
+            return False
+        finally:
+            self._cleanup()
             
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # -------------------- CONSUMER --------------------
         # Declare input queue
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             logging.error(f"Failed to declare consumer queue '{self.consumer_queue_name}'")
             return False
@@ -101,7 +108,7 @@ class Worker:
 
         # -------------------- PRODUCER --------------------
         # Declare exchange
-        exchange = await self.rabbitmq.declare_exchange(
+        exchange = self.rabbitmq.declare_exchange(
             name=self.exchange_name_producer,
             exchange_type=self.exchange_type_producer,
             durable=True
@@ -112,13 +119,13 @@ class Worker:
         
         # Declare output queues
         for queue_name in self.producer_queue_name:
-            queue = await self.rabbitmq.declare_queue(queue_name, durable=True)
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
             if not queue:
                 logging.error(f"Failed to declare producer queue '{queue_name}'")
                 return False        
             
             # Bind queues to exchange
-            success = await self.rabbitmq.bind_queue(
+            success = self.rabbitmq.bind_queue(
                 queue_name=queue_name,
                 exchange_name=self.exchange_name_producer,
                 routing_key=queue_name
@@ -129,7 +136,7 @@ class Worker:
         # --------------------------------------------------
         
         # Set up consumer for the input queue
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False
@@ -141,11 +148,11 @@ class Worker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, ch, method, properties, body):
         """Process a message and update top actors for the client"""
         try:
             # Deserialize the message
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id, data and EOF marker
             client_id = deserialized_message.get("client_id")
@@ -164,7 +171,7 @@ class Worker:
                 if client_id in self.client_data:
                     top_actors = self._get_top_actors(client_id)
                     new_operation_id = self._get_next_message_id()
-                    await self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
+                    self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
                     # Clean up client data after sending
                     del self.client_data[client_id]
                     logging.info(f"Sent top 10 actors for client {client_id} and cleaned up COLLECTOR")
@@ -176,12 +183,13 @@ class Worker:
             else:
                 logging.warning(f"Received message with no data for client {client_id}")
             
-            await message.ack()
+            # Acknowledge the message
+            ch.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            await message.reject(requeue=True)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
     def _update_top_actors(self, client_id, actor_data_batch):
         """
@@ -229,14 +237,13 @@ class Worker:
         
         return top_actors
     
-    
-    async def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
+    def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
         """Send data to the specified router producer queue"""
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
             
         message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
             message=Serializer.serialize(message),
@@ -251,7 +258,15 @@ class Worker:
         logging.info(f"Shutting down worker...")
         self._running = False
         
-        # Close RabbitMQ connection - note we need to create a task
-        # since this is called from a signal handler
+        # Stop consuming and close connection
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.stop_consuming()
+    
+    def _cleanup(self):
+        """Clean up resources"""
+        try:
+            if hasattr(self, 'rabbitmq'):
+                self.rabbitmq.close()
+                logging.info("RabbitMQ connection closed")
+        except Exception as e:
+            logging.error(f"Error during cleanup: {e}")

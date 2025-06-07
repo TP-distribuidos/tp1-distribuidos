@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import signal
 import os
+import time
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
@@ -75,34 +75,41 @@ class Worker:
         self.message_counter += 1
         return self.message_counter
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
+        # Start consuming messages (blocking call)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt received")
+        except Exception as e:
+            logging.error(f"Error in consuming messages: {e}")
+            return False
+        finally:
+            self._cleanup()
             
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # -------------------- CONSUMER --------------------
         # Declare input queue (from router)
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             logging.error(f"Failed to declare consumer queue '{self.consumer_queue_name}'")
             return False
@@ -110,7 +117,7 @@ class Worker:
 
         # -------------------- PRODUCER --------------------
         # Declare exchange
-        exchange = await self.rabbitmq.declare_exchange(
+        exchange = self.rabbitmq.declare_exchange(
             name=self.exchange_name_producer,
             exchange_type=self.exchange_type_producer,
             durable=True
@@ -121,13 +128,13 @@ class Worker:
         
         # Declare output queues
         for queue_name in self.producer_queue_names:
-            queue = await self.rabbitmq.declare_queue(queue_name, durable=True)
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
             if not queue:
                 logging.error(f"Failed to declare producer queue '{queue_name}'")
                 return False        
             
             # Bind queues to exchange
-            success = await self.rabbitmq.bind_queue(
+            success = self.rabbitmq.bind_queue(
                 queue_name=queue_name,
                 exchange_name=self.exchange_name_producer,
                 routing_key=queue_name
@@ -138,7 +145,7 @@ class Worker:
         # --------------------------------------------------
         
         # Set up consumer for the input queue
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False
@@ -150,11 +157,11 @@ class Worker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, ch, method, properties, body):
         """Process a message based on its query type"""
         try:
             # Deserialize the message
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id, data, and query from the deserialized message
             client_id = deserialized_message.get("client_id")
@@ -169,21 +176,21 @@ class Worker:
             if disconnect_marker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 # Propagate DISCONNECT to all downstream components
-                await self.send_disconnect(client_id, query)
-                await message.ack()
+                self.send_disconnect(client_id, query)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Handle EOF markers
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
-                await self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
-                await message.ack()
+                self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             if not data:
                 logging.warning(f"Received message with no data, client ID: {client_id}")
-                await message.ack()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Regular message processing...
@@ -191,35 +198,35 @@ class Worker:
                 data_eq_one_country, data_response_queue = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
+                    self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                 if data_response_queue:
-                    await self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=new_operation_id)
+                    self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=new_operation_id)
                     
             elif query == QUERY_GT_YEAR:
                 data_eq_one_country, _ = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    await self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
+                    self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                     
             else:
                 logging.warning(f"Unknown query type: {query}, client ID: {client_id}")
             
             # Acknowledge message
-            await message.ack()
+            ch.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            await message.reject(requeue=True)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
-    async def send_disconnect(self, client_id, query=None):
+    def send_disconnect(self, client_id, query=None):
         """Send DISCONNECT notification to all downstream components"""
         # Generate an operation ID for this message
         operation_id = self._get_next_message_id()
         
         # Send to primary output queue (for next stage processing)
         message = Serializer.add_metadata(client_id, None, False, query, True, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
             message=Serializer.serialize(message),
@@ -241,11 +248,11 @@ class Worker:
 
         return projected_data
 
-    async def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
+    def send_eq_one_country(self, client_id, data, queue_name=ROUTER_PRODUCER_QUEUE, eof_marker=False, operation_id=None):
         """Send data to the eq_one_country queue in our exchange"""
             
         message = Serializer.add_metadata(client_id, data, eof_marker, None, False, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
             message=Serializer.serialize(message),
@@ -254,13 +261,13 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data to eq_one_country queue")
 
-    async def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
+    def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
         """Send data to the response queue in our exchange"""
         if operation_id is None:
             operation_id = self._get_next_message_id()
             
         message = Serializer.add_metadata(client_id, data, False, query, False, operation_id, self.node_id)
-        success = await self.rabbitmq.publish(
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
             message=Serializer.serialize(message),
@@ -320,7 +327,15 @@ class Worker:
         logging.info(f"Shutting down worker...")
         self._running = False
         
-        # Close RabbitMQ connection - note we need to create a task
-        # since this is called from a signal handler
+        # Stop consuming and close connection
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.stop_consuming()
+    
+    def _cleanup(self):
+        """Clean up resources"""
+        try:
+            if hasattr(self, 'rabbitmq'):
+                self.rabbitmq.close()
+                logging.info("RabbitMQ connection closed")
+        except Exception as e:
+            logging.error(f"Error during cleanup: {e}")

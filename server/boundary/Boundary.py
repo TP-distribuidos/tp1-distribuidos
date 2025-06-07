@@ -1,9 +1,11 @@
-import asyncio
 import logging
 import signal
 import socket
 import uuid
 import os
+import threading
+import time
+import select
 from Protocol import Protocol
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 import csv
@@ -44,14 +46,15 @@ class Boundary:
                credits_router_queue=CREDITS_ROUTER_QUEUE, ratings_router_queue=RATINGS_ROUTER_QUEUE,
                movies_router_q5_queue=MOVIES_ROUTER_Q5_QUEUE):
     self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self._server_socket.bind(("", port))
     self._server_socket.listen(listen_backlog)
-    self._server_socket.setblocking(False)
     self._running = True
     self._client_sockets = []
-    self._client_tasks = {}
+    self._client_threads = {}
+    self._lock = threading.Lock()  # Thread synchronization lock
     self.protocol = Protocol
-    self.id = uuid.uuid4()
+    self.id = str(uuid.uuid4())
     
     self.message_counter = 0
     
@@ -76,50 +79,65 @@ class Boundary:
 # ------------------------------------------------------------------ #
 # main accept‑loop                                                   #
 # ------------------------------------------------------------------ #
-  async def run(self):
-    loop = asyncio.get_running_loop()
+  def run(self):
     logging.info(f"Listening on {self._server_socket.getsockname()[1]}")
     
     # Set up RabbitMQ
-    await self._setup_rabbitmq()
+    self._setup_rabbitmq()
 
-    # Start response queue consumer task
-    asyncio.create_task(self._handle_response_queue())
+    # Start response queue consumer thread
+    response_thread = threading.Thread(target=self._handle_response_queue, daemon=True)
+    response_thread.start()
 
+    # Accept clients in the main thread
+    self._accept_clients()
+
+  def _accept_clients(self):
+    """Accept new client connections in a loop"""
     while self._running:
       try:
-        client_sock, addr = await loop.sock_accept(self._server_socket)
-        client_id = str(uuid.uuid4())  # Convert UUID to string immediately
-        logging.info(self.green(f'client id {client_id}'))
-      except asyncio.CancelledError:
-        break
+        # Use select with a timeout to make the loop interruptible
+        readable, _, _ = select.select([self._server_socket], [], [], 1.0)
+        if self._server_socket in readable:
+          client_sock, addr = self._server_socket.accept()
+          client_id = str(uuid.uuid4())
+          logging.info(self.green(f'client id {client_id}'))
+          logging.info(f"New client {addr[0]}:{addr[1]}")
+          
+          with self._lock:
+            self._client_sockets.append({client_id: client_sock})
+          
+          # Start client handling in a new thread
+          client_thread = threading.Thread(
+            target=self._handle_client_connection,
+            args=(client_sock, addr, client_id),
+            daemon=True
+          )
+          with self._lock:
+            self._client_threads[client_id] = client_thread
+          client_thread.start()
       except Exception as exc:
-        logging.error(f"Accept failed: {exc}")
-        continue
-
-      logging.info(f"New client {addr[0]}:{addr[1]}")
-      self._client_sockets.append({client_id: client_sock})
-      client_task = asyncio.create_task(self._handle_client_connection(client_sock, addr, client_id))
-      self._client_tasks[client_id] = client_task
+        if self._running:  # Only log if we're supposed to be running
+          logging.error(f"Accept failed: {exc}")
 
   def _get_next_message_id(self):
     """Get the next incremental message ID for this node"""
-    self.message_counter += 1
-    return self.message_counter
+    with self._lock:
+      self.message_counter += 1
+      return self.message_counter
 
 # ------------------------------------------------------------------ #
 # response queue consumer logic                                      #
 # ------------------------------------------------------------------ #
-  async def _handle_response_queue(self):
+  def _handle_response_queue(self):
     """
-    Handle messages from the response queue.
-    This method blocks waiting for messages without consuming CPU.
+    Handle messages from the response queue in a separate thread.
     """
     try:
-        logging.info(self.green(f"Client_socket: {self._client_sockets}"))
+        logging.info(self.green(f"Starting response queue consumer thread"))
         
-        # Set up consumer - this blocks waiting for messages
-        await self.rabbitmq.consume(
+        # Set up RabbitMQ consumer
+        self.rabbitmq.consume(
             queue_name=RESPONSE_QUEUE,
             callback=self._process_response_message,
             no_ack=False
@@ -127,18 +145,17 @@ class Boundary:
         
         logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
         
-        # Keep this task alive while the service is running
-        while self._running:
-            await asyncio.sleep(1)
+        # Start consuming (blocking call)
+        self.rabbitmq.start_consuming()
             
     except Exception as e:
         logging.error(f"Error in response queue handler: {e}")
 
-  async def _process_response_message(self, message):
+  def _process_response_message(self, channel, method, properties, body):
     """Process messages from the response queue"""
     try:
         # Deserialize the message
-        deserialized_message = Serializer.deserialize(message.body)
+        deserialized_message = Serializer.deserialize(body)
         
         # Extract client_id and data from the deserialized message
         client_id = deserialized_message.get("client_id")
@@ -147,7 +164,7 @@ class Boundary:
 
         if not data:
             logging.warning(f"Response message contains no data")
-            await message.ack()
+            channel.basic_ack(delivery_tag=method.delivery_tag)
             return
         
         # Convert data to list if it's not already
@@ -156,19 +173,20 @@ class Boundary:
         
         # Find the client socket by client_id
         client_socket = None
-        for client_dict in self._client_sockets:
-            if client_id in client_dict:
-                client_socket = client_dict[client_id]
-                break
+        with self._lock:
+            for client_dict in self._client_sockets:
+                if client_id in client_dict:
+                    client_socket = client_dict[client_id]
+                    break
         
         # Send the data to the client if the socket is found
         if client_socket:
             try:
                 # Prepare data for sending
-                proto = self.protocol(asyncio.get_running_loop())
+                proto = self.protocol()
                 
                 serialized_data = json.dumps(data)
-                await proto.send_all(client_socket, serialized_data, query)
+                proto.send_all_sync(client_socket, serialized_data, query)
                 
             except Exception as e:
                 logging.error(f"Failed to send data to client {client_id}: {e}")
@@ -176,19 +194,18 @@ class Boundary:
             logging.warning(f"Client socket not found for client ID: {client_id}")
         
         # Acknowledge message
-        await message.ack()
+        channel.basic_ack(delivery_tag=method.delivery_tag)
         
     except Exception as e:
         logging.error(f"Error processing response message: {e}")
         # Reject message but don't requeue
-        await message.reject(requeue=False)
+        channel.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
 
 # ------------------------------------------------------------------ #
 # per‑client logic                                                   #
 # ------------------------------------------------------------------ #
-  async def _handle_client_connection(self, sock, addr, client_id):
-    loop = asyncio.get_running_loop()
-    proto = self.protocol(loop)
+  def _handle_client_connection(self, sock, addr, client_id):
+    proto = self.protocol()
     logging.info(self.green(f"Client ID: {client_id} successfully started"))
     csvs_received = 0
     client_addr = f"{addr[0]}:{addr[1]}"
@@ -197,9 +214,9 @@ class Boundary:
         data = ''
         while True:
             try:
-                data = await self._receive_csv_batch(sock, proto)
+                data = self._receive_csv_batch(sock, proto)
                 if data == EOF_MARKER:
-                    await self._send_eof_marker(csvs_received, client_id)
+                    self._send_eof_marker(csvs_received, client_id)
                     csvs_received += 1
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
@@ -210,28 +227,28 @@ class Boundary:
 
                     # Send data for Q1 to the movies router
                     prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=operation_id, node_id=self.id)
-                    await self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+                    self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
                     # Send data for Q5 to the reviews router
                     prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=operation_id, node_id=self.id)
-                    await self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                    self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
                 
                 elif csvs_received == CREDITS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q4)
                     filtered_data = self._remove_cast_extra_data(filtered_data)
                     prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
-                    await self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+                    self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
                 
                 elif csvs_received == RATINGS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q3)
                     filtered_data = self._remove_ratings_with_0_rating(filtered_data)
                     prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
-                    await self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+                    self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                 
             except ConnectionError:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                await self._send_disconnect_marker(client_id)
+                self._send_disconnect_marker(client_id)
                 self._cleanup_client_resources(client_id)
                 break
                
@@ -240,10 +257,10 @@ class Boundary:
         logging.exception(exc)
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
-        await self._send_disconnect_marker(client_id)
+        self._send_disconnect_marker(client_id)
         self._cleanup_client_resources(client_id)
 
-  async def _send_disconnect_marker(self, client_id):
+  def _send_disconnect_marker(self, client_id):
     """
     Send DISCONNECT marker to all router queues for a specific client
     
@@ -256,19 +273,19 @@ class Boundary:
     # Send to all router queues
     for router_queue in [self.movies_router_queue, self.movies_router_q5_queue, 
                         self.credits_router_queue, self.ratings_router_queue]:
-        await self._send_data_to_rabbitmq_queue(prepared_data, router_queue)
+        self._send_data_to_rabbitmq_queue(prepared_data, router_queue)
     
     logging.info(f"\033[91mSent DISCONNECT markers to all routers for client {client_id}\033[0m")
 
-  async def _send_eof_marker(self, csvs_received, client_id):
+  def _send_eof_marker(self, csvs_received, client_id):
         prepared_data = Serializer.add_metadata(client_id, None, eof_marker=True)
         if csvs_received == MOVIES_CSV:
-           await self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_queue)
-           await self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_q5_queue)
+           self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_queue)
+           self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_q5_queue)
         elif csvs_received == CREDITS_CSV:
-            await self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+            self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
         elif csvs_received == RATINGS_CSV:
-           await self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+           self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
   
   def _cleanup_client_resources(self, client_id):
     """
@@ -278,24 +295,24 @@ class Boundary:
       client_id: The ID of the client to clean up
     """
     # Remove the client socket
-    for i, client_dict in enumerate(self._client_sockets):
-      if client_id in client_dict:
-        # Close the socket if it's still open
-        try:
-          sock = client_dict[client_id]
-          sock.close()
-        except Exception as e:
-          logging.warning(f"Error closing socket for client {client_id}: {e}")
-        
-        # Remove from the list
-        del self._client_sockets[i]
-        break
+    with self._lock:
+      for i, client_dict in enumerate(self._client_sockets):
+        if client_id in client_dict:
+          # Close the socket if it's still open
+          try:
+            sock = client_dict[client_id]
+            sock.close()
+          except Exception as e:
+            logging.warning(f"Error closing socket for client {client_id}: {e}")
+          
+          # Remove from the list
+          del self._client_sockets[i]
+          break
 
-    # Remove the task from tracking dictionary
-    # The task is already ending naturally so we don't need to cancel it
-    if client_id in self._client_tasks:
-      del self._client_tasks[client_id]
-      
+      # Remove the thread from tracking dictionary
+      if client_id in self._client_threads:
+        del self._client_threads[client_id]
+        
     logging.info(f"\033[94mCleaned up resources for client {client_id}\033[0m")
 
   def _remove_ratings_with_0_rating(self, data):
@@ -424,15 +441,15 @@ class Boundary:
         return result
   
   # TODO: Move to protocol class
-  async def _receive_csv_batch(self, sock, proto):
+  def _receive_csv_batch(self, sock, proto):
     """
     Receive a CSV batch from the socket
     First read 4 bytes to get the length, then read the actual data
     """
-    length_bytes = await proto.recv_exact(sock, 4)
+    length_bytes = proto.recv_exact_sync(sock, 4)
     msg_length = int.from_bytes(length_bytes, byteorder='big')
 
-    data_bytes = await proto.recv_exact(sock, msg_length)
+    data_bytes = proto.recv_exact_sync(sock, msg_length)
     data = proto.decode(data_bytes)
 
     return data
@@ -441,24 +458,24 @@ class Boundary:
 # Rabbit-Related-Section                                                  #
 # ----------------------------------------------------------------------- #
 
-  async def _setup_rabbitmq(self, retry_count=1):
-    connected = await self.rabbitmq.connect()
+  def _setup_rabbitmq(self, retry_count=1):
+    connected = self.rabbitmq.connect()
     if not connected:
         logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
         wait_time = min(30, 2 ** retry_count)
-        await asyncio.sleep(wait_time)
-        return await self._setup_rabbitmq(retry_count + 1)
+        time.sleep(wait_time)
+        return self._setup_rabbitmq(retry_count + 1)
     
     # Declare all necessary queues
-    await self.rabbitmq.declare_queue(self.movies_router_queue, durable=True)
-    await self.rabbitmq.declare_queue(self.movies_router_q5_queue, durable=True)
-    await self.rabbitmq.declare_queue(self.credits_router_queue, durable=True)
-    await self.rabbitmq.declare_queue(self.ratings_router_queue, durable=True)
-    await self.rabbitmq.declare_queue(RESPONSE_QUEUE, durable=True)
+    self.rabbitmq.declare_queue(self.movies_router_queue, durable=True)
+    self.rabbitmq.declare_queue(self.movies_router_q5_queue, durable=True)
+    self.rabbitmq.declare_queue(self.credits_router_queue, durable=True)
+    self.rabbitmq.declare_queue(self.ratings_router_queue, durable=True)
+    self.rabbitmq.declare_queue(RESPONSE_QUEUE, durable=True)
     
     logging.info("All router queues declared successfully")
   
-  async def _send_data_to_rabbitmq_queue(self, data, queue_name):
+  def _send_data_to_rabbitmq_queue(self, data, queue_name):
     """
     Send the data to RabbitMQ queue after serializing it
     
@@ -470,7 +487,7 @@ class Boundary:
         # Serialize the data to binary
         serialized_data = Serializer.serialize(data)
         
-        success = await self.rabbitmq.publish_to_queue(
+        success = self.rabbitmq.publish_to_queue(
             queue_name=queue_name,
             message=serialized_data,
             persistent=True
@@ -488,21 +505,25 @@ class Boundary:
   def _handle_shutdown(self, *_):
     logging.info(f"Shutting down server")
     self._running = False
-    self._server_socket.close()
     
-    # Cancel all client tasks
-    for client_id, task in self._client_tasks.items():
-      if not task.done():
-        task.cancel()
-    
-    # Close RabbitMQ connection
-    asyncio.create_task(self.rabbitmq.close())
+    # Stop RabbitMQ consumer first
+    if hasattr(self, 'rabbitmq'):
+        self.rabbitmq.stop_consuming()
     
     # Close all client sockets
-    for client_dict in self._client_sockets:
-      for _, sock in client_dict.items():
-        try:
-          sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-          pass
-        sock.close()
+    with self._lock:
+        for client_dict in self._client_sockets:
+            for _, sock in client_dict.items():
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+    
+    # Close the server socket
+    if hasattr(self, '_server_socket'):
+        self._server_socket.close()
+    
+    # Close RabbitMQ connection
+    if hasattr(self, 'rabbitmq'):
+        self.rabbitmq.close()

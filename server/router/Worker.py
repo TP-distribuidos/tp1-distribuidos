@@ -288,7 +288,8 @@ class RouterWorker:
                 exchange_name=self.exchange_name,
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(disconnect_message),
-                persistent=True
+                persistent=True,
+                exchange_type=self.exchange_type  # Add this line
             )
         
         # For direct and other exchanges, send to each queue explicitly
@@ -322,7 +323,8 @@ class RouterWorker:
                 exchange_name=self.exchange_name,
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(eof_message),
-                persistent=True
+                persistent=True,
+                exchange_type=self.exchange_type  # Add this line
             )
             if not success:
                 logging.error(f"Failed to send EOF marker to fanout exchange for client {client_id}")

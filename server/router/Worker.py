@@ -206,7 +206,8 @@ class RouterWorker:
                         exchange_name=self.exchange_name,
                         routing_key=queue,
                         message=Serializer.serialize(outgoing_message),
-                        persistent=True
+                        persistent=True,
+                        exchange_type=self.exchange_type
                     )
                     if not publish_success:
                         success = False
@@ -289,8 +290,11 @@ class RouterWorker:
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(disconnect_message),
                 persistent=True,
-                exchange_type=self.exchange_type  # Add this line
+                exchange_type=self.exchange_type  # Make sure to pass the exchange type
             )
+            if not success:
+                logging.error(f"Failed to send DISCONNECT marker to fanout exchange for client {client_id}")
+            return
         
         # For direct and other exchanges, send to each queue explicitly
         all_queues = self._get_all_queue_names()
@@ -299,11 +303,12 @@ class RouterWorker:
                 exchange_name=self.exchange_name,
                 routing_key=queue,
                 message=Serializer.serialize(disconnect_message),
-                persistent=True
+                persistent=True,
+                exchange_type=self.exchange_type  # Make sure to pass the exchange type
             )
             if not success:
                 logging.error(f"Failed to send DISCONNECT marker to queue {queue} for client {client_id}")
-        
+    
     def _send_eof_to_all_queues(self, client_id, data, query=None, operation_id=None, node_id=None):
         """Send EOF marker to all output queues for a specific client ID"""
         eof_message = Serializer.add_metadata(
@@ -324,7 +329,7 @@ class RouterWorker:
                 routing_key="",  # Routing key is ignored for fanout exchanges
                 message=Serializer.serialize(eof_message),
                 persistent=True,
-                exchange_type=self.exchange_type  # Add this line
+                exchange_type=self.exchange_type  # Make sure to pass the exchange type
             )
             if not success:
                 logging.error(f"Failed to send EOF marker to fanout exchange for client {client_id}")
@@ -339,7 +344,8 @@ class RouterWorker:
                 exchange_name=self.exchange_name,
                 routing_key=queue,
                 message=Serializer.serialize(eof_message),
-                persistent=True
+                persistent=True,
+                exchange_type=self.exchange_type  # Make sure to pass the exchange type
             )
             if not success:
                 logging.error(f"Failed to send EOF marker to queue {queue} for client {client_id}")

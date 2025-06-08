@@ -147,15 +147,15 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
 
             if disconnect_marker:
-                self.send_data(client_id, data, False, disconnect_marker=True)
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
                 self.averages.pop(client_id, None)
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
-                self.send_data(client_id, data, True)
+                self.send_data(client_id, data, True, operation_id=new_operation_id)
             elif data:
-                new_operation_id = self._get_next_message_id()
                 self._update_averages(client_id, data)
                 # Transform dict of movies into a list of dicts with ID included
                 transformed_data = [

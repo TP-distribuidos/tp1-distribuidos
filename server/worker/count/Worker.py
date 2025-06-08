@@ -18,7 +18,7 @@ logging.basicConfig(
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
-NODE_ID = os.getenv("NODE_ID", "count_node_unknown")  # Add NODE_ID
+NODE_ID = os.getenv("NODE_ID") 
 
 # Output queues and exchange
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
@@ -152,18 +152,16 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
 
             if disconnect_marker:
                 # Get message ID for this operation
-                message_id = self._get_next_message_id()
-                self.send_data(client_id, data, False, disconnect_marker=True, message_id=message_id)
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
                 self.participations.pop(client_id, None)
 
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
-                # Get message ID for this operation
-                message_id = self._get_next_message_id()
-                self.send_data(client_id, data, True, query, message_id=message_id)
+                self.send_data(client_id, data, True, query, operation_id=new_operation_id)
             elif data:
                 # TODO: This is not necessarily anymore, it could be just an "anonymous" dict
                 self.participations[client_id] = {}
@@ -173,9 +171,7 @@ class Worker:
                         self.participations[client_id][actor_name] = 0
                     self.participations[client_id][actor_name] += 1
                 parsed_data = self._parse_data(self.participations[client_id])
-                # Get message ID for this operation
-                message_id = self._get_next_message_id()
-                self.send_data(client_id, parsed_data, False, query, operation_id=operation_id, message_id=message_id)
+                self.send_data(client_id, parsed_data, False, query, operation_id=new_operation_id)
             else:
                 logging.warning(f"No data in message: {deserialized_message}")
 
@@ -195,10 +191,10 @@ class Worker:
             parsed_data.append({"name": actor, "count": count})
         return parsed_data
 
-    def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None, message_id=None):
+    def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata and WAL metadata"""
 
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, message_id, self.node_id)        
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)        
         
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
@@ -209,7 +205,7 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data with query '{query}' to router queue")
         else:
-            logging.debug(f"Sent message to router queue for client {client_id} with node_id {self.node_id}, message_id {message_id}")
+            logging.debug(f"Sent message to router queue for client {client_id} with node_id {self.node_id}, message_id {operation_id}")
 
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""

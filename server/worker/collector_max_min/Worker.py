@@ -158,6 +158,11 @@ class Worker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
 
             elif eof_marker:
+                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                
                 # If we have data for this client, send it to router producer queue
                 data_persisted = None
                 try:
@@ -175,9 +180,6 @@ class Worker:
                 self.data_persistence.increment_counter()
                 logging.info(f"Sent top 10 actors for client {client_id} and cleaned up")
             elif data:
-                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                    channel.basic_ack(delivery_tag=method.delivery_tag)
-                    return
                 self.data_persistence.persist(client_id, node_id, data, operation_id)
             else:
                 logging.warning(f"Received message with no data for client {client_id}")

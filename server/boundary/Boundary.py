@@ -6,13 +6,13 @@ import os
 import threading
 import time
 import select
-from Protocol import Protocol
-from rabbitmq.Rabbitmq_client import RabbitMQClient
 import csv
 from io import StringIO
 from common.Serializer import Serializer
 import json
 from dotenv import load_dotenv
+from ThreadLocalRabbitMQ import ThreadLocalRabbitMQ
+from Protocol import Protocol
 
 # Load environment variables
 load_dotenv()
@@ -59,7 +59,7 @@ class Boundary:
     self.message_counter = 0
     
     # Create RabbitMQ client instance
-    self.rabbitmq = RabbitMQClient()  # Using default parameters
+    self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
     
     # Router queues for different CSV types
     self.movies_router_queue = movies_router_queue
@@ -137,7 +137,7 @@ class Boundary:
         logging.info(self.green(f"Starting response queue consumer thread"))
         
         # Set up RabbitMQ consumer
-        self.rabbitmq.consume(
+        self.rabbitmq.client.consume(
             queue_name=RESPONSE_QUEUE,
             callback=self._process_response_message,
             no_ack=False
@@ -146,7 +146,7 @@ class Boundary:
         logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
         
         # Start consuming (blocking call)
-        self.rabbitmq.start_consuming()
+        self.rabbitmq.client.start_consuming()
             
     except Exception as e:
         logging.error(f"Error in response queue handler: {e}")
@@ -459,7 +459,7 @@ class Boundary:
 # ----------------------------------------------------------------------- #
 
   def _setup_rabbitmq(self, retry_count=1):
-    connected = self.rabbitmq.connect()
+    connected = self.rabbitmq.client.connect()
     if not connected:
         logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
         wait_time = min(30, 2 ** retry_count)
@@ -467,11 +467,11 @@ class Boundary:
         return self._setup_rabbitmq(retry_count + 1)
     
     # Declare all necessary queues
-    self.rabbitmq.declare_queue(self.movies_router_queue, durable=True)
-    self.rabbitmq.declare_queue(self.movies_router_q5_queue, durable=True)
-    self.rabbitmq.declare_queue(self.credits_router_queue, durable=True)
-    self.rabbitmq.declare_queue(self.ratings_router_queue, durable=True)
-    self.rabbitmq.declare_queue(RESPONSE_QUEUE, durable=True)
+    self.rabbitmq.client.declare_queue(self.movies_router_queue, durable=True)
+    self.rabbitmq.client.declare_queue(self.movies_router_q5_queue, durable=True)
+    self.rabbitmq.client.declare_queue(self.credits_router_queue, durable=True)
+    self.rabbitmq.client.declare_queue(self.ratings_router_queue, durable=True)
+    self.rabbitmq.client.declare_queue(RESPONSE_QUEUE, durable=True)
     
     logging.info("All router queues declared successfully")
   
@@ -487,7 +487,7 @@ class Boundary:
         # Serialize the data to binary
         serialized_data = Serializer.serialize(data)
         
-        success = self.rabbitmq.publish_to_queue(
+        success = self.rabbitmq.client.publish_to_queue(
             queue_name=queue_name,
             message=serialized_data,
             persistent=True
@@ -508,7 +508,7 @@ class Boundary:
     
     # Stop RabbitMQ consumer first
     if hasattr(self, 'rabbitmq'):
-        self.rabbitmq.stop_consuming()
+        self.rabbitmq.client.stop_consuming()
     
     # Close all client sockets
     with self._lock:
@@ -526,4 +526,4 @@ class Boundary:
     
     # Close RabbitMQ connection
     if hasattr(self, 'rabbitmq'):
-        self.rabbitmq.close()
+      self.rabbitmq.close_all()

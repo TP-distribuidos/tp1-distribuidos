@@ -2,7 +2,6 @@ import logging
 import signal
 import os
 import time
-from typing import Dict, List, Any
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
@@ -10,10 +9,7 @@ import heapq
 from collections import defaultdict
 import uuid
 from common.SentinelBeacon import SentinelBeacon
-# WAL imports
-from common.data_persistance.WriteAheadLog import WriteAheadLog
-from common.data_persistance.FileSystemStorage import FileSystemStorage
-from TopStateInterpreter import TopStateInterpreter
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +27,6 @@ EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "top_actors_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 TOP_N = int(os.getenv("TOP_N", 10))
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
-NODE_ID = os.getenv("NODE_ID")
 
 class Worker:
     def __init__(self, 
@@ -49,27 +44,14 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # WAL REPLACES IN-MEMORY STORAGE!
-        # No more self.client_data = {} - WAL handles persistence
+        self.client_data = {}
         self.top_n = TOP_N
-        self.node_id = NODE_ID
-        
-        # Initialize WAL
-        storage = FileSystemStorage()
-        state_interpreter = TopStateInterpreter()
-        self.wal = WriteAheadLog(
-            state_interpreter=state_interpreter,
-            storage=storage,
-            service_name="top_worker",
-            base_dir="/app/persistence"
-        )
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Top Worker initialized with WAL persistence")
-        logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_name}'")
+        logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
     def run(self):
@@ -129,7 +111,8 @@ class Worker:
             success = self.rabbitmq.bind_queue(
                 queue_name=queue_name,
                 exchange_name=self.exchange_name_producer,
-                routing_key=queue_name
+                routing_key=queue_name,
+                exchange_type=self.exchange_type_producer
             )
             if not success:
                 logging.error(f"Failed to bind queue '{queue_name}' to exchange '{self.exchange_name_producer}'")
@@ -150,7 +133,7 @@ class Worker:
         return True
     
     def _process_message(self, channel, method, properties, body):
-        """Process a message and update top actors for the client using WAL"""
+        """Process a message and update top actors for the client"""
         try:
             # Deserialize the message
             deserialized_message = Serializer.deserialize(body)
@@ -162,44 +145,28 @@ class Worker:
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
             operation_id = deserialized_message.get("operation_id", None)
             
-            # Extract WAL metadata from count workers
-            node_id = deserialized_message.get("node_id")
-            message_id = operation_id
-
             if disconnect_marker:
-                # Clear WAL data for this client on disconnect
-                self.wal.clear(client_id)
                 self._send_data(client_id, data, self.producer_queue_name[0], False, disconnect_marker=True)
+                self.client_data.pop(client_id, None)
             
             elif eof_marker:
-                # Retrieve consolidated data from WAL and send top actors
-                current_data = self.wal.retrieve(client_id)
-                
-                if current_data:
-                    top_actors = self._get_top_actors_from_dict(current_data)
-                    new_operation_id = str(uuid.uuid4())
+                new_operation_id = str(uuid.uuid4())
+                # If we have data for this client, send it to router producer queue
+                if client_id in self.client_data:
+                    top_actors = self._get_top_actors(client_id)
                     self._send_data(client_id, top_actors, self.producer_queue_name[0], operation_id=new_operation_id)
                     self._send_data(client_id, [], self.producer_queue_name[0], True)
-                    
-                    # Clean up WAL data after sending
-                    self.wal.clear(client_id)
-                    logging.info(f"Sent top actors for client {client_id} and cleared WAL data")
+                    # Clean up client data after sending
+                    del self.client_data[client_id]
+                    logging.info(f"Sent top actors for client {client_id} and cleaned up")
                 else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found in WAL")
-                    
-            elif data and node_id and message_id:
-                # Persist actor data using WAL
-                success = self.wal.persist(client_id, node_id, data, message_id)
-                
-                if success:
-                    logging.debug(f"Persisted actor data for client {client_id} from count worker {node_id}, message {message_id}")
-                else:
-                    logging.error(f"Failed to persist actor data for client {client_id}")
-                    
+                    logging.warning(f"Received EOF for client {client_id} but no data found")
+            elif data:
+                # Update actors counts for this client
+                self._update_actors_data(client_id, data)
             else:
-                if not data:
-                    logging.warning(f"Received message with no data for client {client_id}")
-
+                logging.warning(f"Received message with no data for client {client_id}")
+            
             channel.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
@@ -207,18 +174,33 @@ class Worker:
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
     
-    def _get_top_actors_from_dict(self, actor_counts: Dict[str, int]) -> List[Dict[str, Any]]:
+    
+    def _update_actors_data(self, client_id, data):
         """
-        Calculate and return the top N actors from a dictionary of counts.
+        Update the actors count data for a specific client
+        Store counts for ALL actors, not just top_n
+        """
+        if client_id not in self.client_data:
+            self.client_data[client_id] = defaultdict(int)
+        for actor_data in data:
+            name = actor_data.get("name")
+            count = actor_data.get("count", 0)
+            if name:
+                self.client_data[client_id][name] += count
+            else:
+                logging.warning(f"Received actor data without name for client {client_id}, skipping")
+    
         
-        Args:
-            actor_counts: Dictionary of actor_name -> count
-            
-        Returns:
-            List[Dict]: Top N actors formatted as [{"name": "Actor", "count": 5}, ...]
+    def _get_top_actors(self, client_id):
         """
-        if not actor_counts:
+        Calculate and return the top N actors for a client
+        Only called when EOF is received
+        """
+        if client_id not in self.client_data:
             return []
+        
+        # Get all actor counts for this client
+        actor_counts = self.client_data[client_id]
         
         # Use heapq to get the top N actors
         top_actors = heapq.nlargest(self.top_n, actor_counts.items(), key=lambda x: x[1])
@@ -231,12 +213,13 @@ class Worker:
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
             
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,
             message=Serializer.serialize(message),
-            persistent=True
+            persistent=True,
+            exchange_type=self.exchange_type_producer
         )
         
         if not success:

@@ -11,6 +11,8 @@ class RabbitMQClient:
         self._connection: Optional[pika.BlockingConnection] = None
         self._channel: Optional[pika.channel.Channel] = None
         self._consumers = {}
+        self._declared_exchanges = set()
+        self._declared_queues = set()
 
         logging.info(f"RabbitMQ client initialized for {host}:{port}")
     
@@ -46,6 +48,10 @@ class RabbitMQClient:
             if self._connection and self._connection.is_open:
                 self._connection.close()
                 self._connection = None
+            
+            # Clear declaration caches on connection close
+            self._declared_exchanges.clear()
+            self._declared_queues.clear()
                 
             logging.info("RabbitMQ connection closed")
         except Exception as e:
@@ -57,12 +63,20 @@ class RabbitMQClient:
             if not self._channel:
                 if not self.connect():
                     return False
+            
+            # Check if we've already declared this exchange with same parameters
+            exchange_key = (name, exchange_type, durable)
+            if exchange_key in self._declared_exchanges:
+                return True
                     
             self._channel.exchange_declare(
                 exchange=name, 
                 exchange_type=exchange_type,
                 durable=durable
             )
+            
+            # Cache this exchange declaration
+            self._declared_exchanges.add(exchange_key)
             logging.info(f"Exchange '{name}' declared")
             return True
         except Exception as e:
@@ -75,11 +89,19 @@ class RabbitMQClient:
             if not self._channel:
                 if not self.connect():
                     return False
+            
+            # Check if we've already declared this queue with same parameters
+            queue_key = (name, durable)
+            if queue_key in self._declared_queues:
+                return True
                     
             self._channel.queue_declare(
                 queue=name,
                 durable=durable
             )
+            
+            # Cache this queue declaration
+            self._declared_queues.add(queue_key)
             logging.info(f"Queue '{name}' declared")
             return True
         except Exception as e:
@@ -100,6 +122,8 @@ class RabbitMQClient:
             if not self.declare_queue(queue_name):
                 return False
                 
+            # Create a binding - note that RabbitMQ will silently ignore duplicate bindings
+            # so this operation is idempotent by nature
             self._channel.queue_bind(
                 queue=queue_name,
                 exchange=exchange_name,
@@ -198,6 +222,12 @@ class RabbitMQClient:
         except Exception as e:
             logging.error(f"Error stopping consumer: {e}")
             return False
+    
+    def reset_declaration_cache(self):
+        """Reset the cache of declared exchanges and queues"""
+        self._declared_exchanges.clear()
+        self._declared_queues.clear()
+        logging.info("Declaration cache reset")
 
     def publish_to_queue(self, queue_name: str, message: str, persistent=True) -> bool:
         """Publish message directly to queue using the default exchange"""

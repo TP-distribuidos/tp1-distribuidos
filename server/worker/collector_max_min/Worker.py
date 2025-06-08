@@ -6,6 +6,9 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+from StateInterpreter import StateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,11 +44,12 @@ class Worker:
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
-        
-        self.client_data = {}
-        
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="max_min_worker",
+            base_dir="/app/persistence"
+        )
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -56,11 +60,6 @@ class Worker:
         
         logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -151,27 +150,35 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
+
 
             if disconnect_marker:
-                removed = self.client_data.pop(client_id, None)
-                if removed is not None:
-                    logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
-
+                self.data_persistence.clear(client_id)
+                logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
 
             elif eof_marker:
                 # If we have data for this client, send it to router producer queue
-                if client_id in self.client_data:
-                    max_min = self._get_max_min(client_id)
-                    new_operation_id = self._get_next_message_id()
-                    self._send_data(client_id, max_min, self.producer_queue_name[0], True, QUERY_3, new_operation_id)
-                    # Clean up client data after sending
-                    del self.client_data[client_id]
-                    logging.info(f"Sent top 10 actors for client {client_id} and cleaned up")
-                else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found")
+                data_persisted = None
+                try:
+                    data_persisted = self.data_persistence.retrieve(client_id)
+                except ValueError as e:
+                    logging.warning(f"Failed to retrieve WAL data for client {client_id}, error: {e}")
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+
+                new_operation_id = self.data_persistence.get_counter_value()
+                self._send_data(client_id, data_persisted, self.producer_queue_name[0], True, QUERY_3, new_operation_id)
+                # Clean up client data after sending
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
+                logging.info(f"Sent top 10 actors for client {client_id} and cleaned up")
             elif data:
-                # Update max_min counts for this client
-                self._update_max_min(client_id, data)
+                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                self.data_persistence.persist(client_id, node_id, data, operation_id)
             else:
                 logging.warning(f"Received message with no data for client {client_id}")
             
@@ -181,59 +188,6 @@ class Worker:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
-    
-    def _update_max_min(self, client_id, data):
-        """
-        Update the max and min movie values for a client
-        
-        Args:
-            client_id: The client identifier
-            data: A dictionary containing 'max' and 'min' movie information
-        """
-        # Get max and min movies from data
-        new_max = data.get('max')
-        new_min = data.get('min')
-        
-        if not new_max or not new_min:
-            logging.warning(f"Received incomplete max/min data for client {client_id}")
-            return
-        
-        # Initialize client data if it doesn't exist
-        if client_id not in self.client_data:
-            self.client_data[client_id] = {
-                'max': new_max,
-                'min': new_min
-            }
-            return
-        
-        # Get current max and min
-        current_max = self.client_data[client_id]['max']
-        current_min = self.client_data[client_id]['min']
-        
-        # Update max if the new max has a higher avg
-        if new_max.get('avg') > current_max.get('avg'):
-            self.client_data[client_id]['max'] = new_max
-            
-        # Update min if the new min has a lower avg
-        if new_min.get('avg') < current_min.get('avg'):
-            self.client_data[client_id]['min'] = new_min
-    
-    def _get_max_min(self, client_id):
-        """
-        Get the max and min movie avgs for a client
-        
-        Args:
-            client_id: The client identifier
-        
-        Returns:
-            A dictionary containing the max and min movie information
-        """
-        if client_id not in self.client_data:
-            return {'max': None, 'min': None}
-        
-        return self.client_data[client_id]
-    
-    
     
     def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
         """Send data to the specified router producer queue"""

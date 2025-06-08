@@ -25,6 +25,7 @@ ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "max_min_movies_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
+NODE_ID = os.getenv("NODE_ID")
 
 class Worker:
     def __init__(self, 
@@ -43,6 +44,8 @@ class Worker:
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         self.client_data = defaultdict(dict)
+        self.node_id = NODE_ID
+        self.message_counter = 0
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -67,6 +70,12 @@ class Worker:
             self._handle_shutdown()
             
         return True
+    
+        # Add this method after _get_max_min
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
     
     def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
@@ -141,6 +150,7 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
             operation_id = deserialized_message.get("operation_id", None)
+            new_operation_id = self._get_next_message_id()
             
             # If we receive a message for a client that no longer exists in our states,
             # it means the client was disconnected already - just acknowledge and ignore
@@ -149,16 +159,16 @@ class Worker:
             
             if disconnect_marker:
                 logging.info(f"Processing disconnect marker for client {client_id}")
-                self._send_data(client_id, data, queue_name=self.producer_queue_name[0], disconnect_marker=True, operation_id=operation_id)
+                self._send_data(client_id, data, queue_name=self.producer_queue_name[0], disconnect_marker=True, operation_id=new_operation_id, node_id=self.node_id)
                 self.client_data.pop(client_id, None)
             
             elif eof_marker:
-                new_operation_id = str(uuid.uuid4())
                 # If we have data for this client, send it to router producer queue
                 if client_id in self.client_data:
                     max_min = self._get_max_min(client_id)
-                    self._send_data(client_id, max_min, self.producer_queue_name[0], operation_id=new_operation_id)
-                    self._send_data(client_id, {}, self.producer_queue_name[0], True, operation_id=new_operation_id)
+                    self._send_data(client_id, max_min, self.producer_queue_name[0], operation_id=new_operation_id, node_id=self.node_id)
+                    new_operation_id = self._get_next_message_id() # DONT FORGET THIS
+                    self._send_data(client_id, {}, self.producer_queue_name[0], True, operation_id=new_operation_id, node_id=self.node_id)
                     # Clean up client data after sending
                     del self.client_data[client_id]
                     logging.info(f"\033[92mSent max/min ratings for client {client_id} and cleaned up\033[0m")
@@ -263,12 +273,12 @@ class Worker:
         return result
 
     
-    def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
+    def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, disconnect_marker=False, operation_id=None, node_id=None):
         """Send data to the specified router producer queue"""
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
-            
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,

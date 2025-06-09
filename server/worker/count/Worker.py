@@ -5,8 +5,11 @@ import time
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
-import ast
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,11 +46,15 @@ class Worker:
 
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.participations = {}
+        self.data_persistence = WriteAheadLog(
+          state_interpreter=StatelessStateInterpreter(),
+          storage=FileSystemStorage(),
+          service_name="count_worker",
+          base_dir="/app/persistence"
+        )
         
         # WAL metadata tracking
         self.node_id = NODE_ID
-        self.message_counter = 0  # Simple incremental counter for message_id
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -56,11 +63,6 @@ class Worker:
         logging.info(f"Count Worker initialized with NODE_ID: {self.node_id}")
         logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
 
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -152,29 +154,43 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-            new_operation_id = self._get_next_message_id()
+            new_operation_id = self.data_persistence.get_counter_value()
+            node_id = deserialized_message.get("node_id")
 
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
             if disconnect_marker:
                 # Get message ID for this operation
                 self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
-                self.participations.pop(client_id, None)
+                self.data_persistence.clear(client_id)
 
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
                 self.send_data(client_id, data, True, query, operation_id=new_operation_id)
+                self.data_persistence.clear(client_id)
+
             elif data:
                 # TODO: This is not necessarily anymore, it could be just an "anonymous" dict
-                self.participations[client_id] = {}
+                participation_counts = {}
+
                 for actor in data:
-                    actor_name = actor.get("name")
-                    if not actor_name in self.participations[client_id]:
-                        self.participations[client_id][actor_name] = 0
-                    self.participations[client_id][actor_name] += 1
-                parsed_data = self._parse_data(self.participations[client_id])
+                  actor_name = actor.get("name")
+                  if not actor_name in participation_counts:
+                      participation_counts[actor_name] = 0
+                  participation_counts[actor_name] += 1
+
+                parsed_data = self._parse_data(participation_counts)
+
                 self.send_data(client_id, parsed_data, False, query, operation_id=new_operation_id)
+                self.data_persistence.persist(client_id, node_id, {}, operation_id)
             else:
                 logging.warning(f"No data in message: {deserialized_message}")
 
+            self.data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:

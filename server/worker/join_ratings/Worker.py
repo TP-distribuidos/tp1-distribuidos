@@ -202,6 +202,8 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            new_operation_id = self._get_next_message_id()
+            # node_id = deserialized_message.get("node_id")
             
             # Initialize client state if this is a new client
             if client_id not in self.client_states:
@@ -209,7 +211,7 @@ class Worker:
                 logging.info(f"\033[33mDiscovered new client by ratings queue: {client_id}\033[0m")
                 
             if disconnect_marker:
-                self.send_data(client_id, data, False, disconnect_marker=True)
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
                 self.client_states.pop(client_id, None)
                 self.collected_data.pop(client_id, None)
                 channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -226,10 +228,9 @@ class Worker:
 
             if eof_marker:
                 logging.info(f"Received EOF marker for ratings from client '{client_id}'")
-                self._finalize_client(client_id)
+                self._finalize_client(client_id, new_operation_id)
             
             elif data:
-                new_operation_id = self._get_next_message_id()
                 if client_id in self.collected_data:
                     joined_data = self._join_data(
                         self.collected_data[client_id],
@@ -245,11 +246,10 @@ class Worker:
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
     
-    def _finalize_client(self, client_id):
+    def _finalize_client(self, client_id, operation_id):
         """Finalize processing for a client whose data is complete"""        
         # Send EOF marker to next stage with a new operation ID
-        new_operation_id = self._get_next_message_id()
-        self.send_data(client_id, [], True, operation_id=new_operation_id)        
+        self.send_data(client_id, [], True, operation_id=operation_id)        
         
         # Clean up client data to free memory
         if client_id in self.collected_data:

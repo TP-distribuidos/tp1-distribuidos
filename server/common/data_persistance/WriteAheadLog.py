@@ -306,12 +306,13 @@ class WriteAheadLog(DataPersistenceInterface):
             logging.error(f"Error loading processed message IDs and log counts: {e}")
     
     def _get_client_dir(self, client_id: str) -> Path:
+        # TODO add try catch in every call of this method and return false for each
         """Get the directory path for a specific client's logs"""
         # FIRST check if this client was cleared
         cleared_dir = Path(f"{self.base_dir}/{client_id}_cleared")
         if self.storage.file_exists(cleared_dir):
             # Client was cleared, don't recreate the directory!
-            raise ValueError(f"Client {client_id} was previously cleared, cannot recreate directory")
+            raise ValueError(f"WARNING: Client {client_id} was previously cleared, cannot recreate directory")
             
         # Client wasn't cleared, proceed normally
         client_dir = self.base_dir / client_id
@@ -542,9 +543,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.counter_value += 1
         success = self._write_counter(self.counter_value)
         
-        if success:
-            logging.info(f"Counter incremented to {self.counter_value}")
-        else:
+        if not success:
             logging.error(f"Failed to increment counter, still at {self.counter_value}")
             raise RuntimeError("Failed to increment counter")
 
@@ -602,7 +601,6 @@ class WriteAheadLog(DataPersistenceInterface):
         current_log_count = len(self._get_all_logs(node_dir))
         
         if current_log_count >= self.CHECKPOINT_THRESHOLD:
-            logging.info(f"Log count {current_log_count} >= threshold {self.CHECKPOINT_THRESHOLD} for client {client_id}, node {node_id}, creating checkpoint before new log")
             checkpoint_success = self._create_checkpoint(client_id, node_id)
             if not checkpoint_success:
                 logging.warning(f"Checkpoint creation failed for client {client_id}, node {node_id}, but continuing with log write")

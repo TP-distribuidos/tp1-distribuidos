@@ -174,7 +174,6 @@ class Worker:
                 self.data_persistence.clear(client_id)
 
             elif data:
-                # TODO: This is not necessarily anymore, it could be just an "anonymous" dict
                 participation_counts = {}
 
                 for actor in data:

@@ -43,7 +43,6 @@ class Worker:
 
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.averages = {}
         self.node_id = NODE_ID
         
         # Message counter for incremental IDs
@@ -151,22 +150,13 @@ class Worker:
 
             if disconnect_marker:
                 self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
-                self.averages.pop(client_id, None)
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
                 self.send_data(client_id, data, True, operation_id=new_operation_id)
             elif data:
-                self._update_averages(client_id, data)
-                # Transform dict of movies into a list of dicts with ID included
-                transformed_data = [
-                    {
-                        "id": movie_id,
-                        "name": movie_data["name"],
-                        "sum": movie_data["sum"],
-                        "count": movie_data["count"]
-                    }
-                    for movie_id, movie_data in self.averages[client_id].items()
-                ]
+                # Process data and get transformed output
+                transformed_data = self._update_averages(data)
+            
                 # Send the updated averages to the producer queue
                 self.send_data(client_id, transformed_data, operation_id=new_operation_id)
             else:
@@ -179,48 +169,57 @@ class Worker:
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
             return
     
-    def _update_averages(self, client_id, data):
+    def _update_averages(self, data):
         """
-        Update the average ratings for movies based on new data
+        Process movie ratings and return aggregated data
         
         Args:
-            client_id (str): The client ID for logging purposes
-            data (list): List of dicts with id, avg, sum and count fields
+            data (list): List of dicts with id, name, and rating fields
+            
+        Returns:
+            list: Transformed data with movie aggregates
         """
         if not data:
             logging.warning(f"Received empty data batch")
-            return
-                
-        # Initialize or reinitialize the client entry always 
-        self.averages[client_id] = {}
+            return []
         
-        client_movies = self.averages[client_id]
+        # Create a dictionary to hold movie data for this batch
+        movie_ratings = {}
         
-        # Process each movie in the new batch
+        # Process each movie in the batch
         for movie in data:
             movie_id = movie.get('id')
             movie_name = movie.get('name')
+            rating = movie.get('rating', 0)
+            
             if not movie_id:
                 logging.warning("Found movie entry without ID, skipping")
                 continue
                 
             # Initialize movie entry if it doesn't exist
-            if movie_id not in client_movies:
-                client_movies[movie_id] = {
+            if movie_id not in movie_ratings:
+                movie_ratings[movie_id] = {
                     'name': movie_name,
                     'sum': 0,
                     'count': 0
                 }
                 
-            # Extract data from the movie entry
-            new_sum = client_movies[movie_id]['sum'] + movie.get('rating', 0)
-            new_count = client_movies[movie_id]['count'] + 1
-
-            self.averages[client_id][movie_id] = {
-                'name': movie_name,
-                'sum': new_sum,
-                'count': new_count
+            # Update the sum and count
+            movie_ratings[movie_id]['sum'] += rating
+            movie_ratings[movie_id]['count'] += 1
+        
+        # Transform processed data into the required format
+        transformed_data = [
+            {
+                "id": movie_id,
+                "name": movie_data["name"],
+                "sum": movie_data["sum"],
+                "count": movie_data["count"]
             }
+            for movie_id, movie_data in movie_ratings.items()
+        ]
+        
+        return transformed_data
 
     def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the router queue with query in metadata"""

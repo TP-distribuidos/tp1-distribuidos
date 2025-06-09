@@ -20,35 +20,8 @@ class StateInterpreter(StateInterpreterInterface):
             str: JSON string with the required structure
         """
 
-        # Process and aggregate movies if we have a list of movies
-          # Aggregate movies by ID
-        processed_movies = {}
-        
-        for movie in data:
-          movie_id = movie.get('id')
-          if movie_id is None:
-            logging.warning(f"Skipping movie with missing id: {movie}")
-            continue
-          
-          if movie.get('count', 0) <= 0 or movie.get('sum', 0) <= 0:
-            logging.warning(f"Skipping movie with zero count or zero sum: {movie}")
-            continue
-          
-          # Initialize movie data if not present
-          if movie_id not in processed_movies:
-            processed_movies[movie_id] = {
-              'sum': 0,
-              'count': 0,
-              'id': movie_id,
-              'name': movie.get('name', '')
-            }
-          
-          # Update the sum and count
-          processed_movies[movie_id]['sum'] += movie.get('sum', 0)
-          processed_movies[movie_id]['count'] += movie.get('count', 0)
-
         formatted = {
-            "data": processed_movies,
+            "data": data,
             "_metadata": {}
         }
             
@@ -73,36 +46,59 @@ class StateInterpreter(StateInterpreterInterface):
             return None
     
     def merge_data(self, data_entries: List[Any]) -> Any:
-      """
-      Merge multiple data entries into a single state.
-      Continues aggregating movie counts and sums across entries.
-      
-      Args:
-          data_entries: List of data entries to merge
-          
-      Returns:
-          Any: Merged data with all movies aggregated
-      """
-      if not data_entries:
-        return {}
-      
-      # Create a dictionary to hold all movies, indexed by ID
-      all_movies = {}
-      
-      # Process all entries to combine movie data
-      for entry in data_entries:
-        for movie_id, movie_data in entry.items():
-          # Initialize movie if not seen before
-          if movie_id not in all_movies:
-            all_movies[movie_id] = {
-              'sum': 0,
-              'count': 0,
-              'id': movie_id,
-              'name': movie_data.get('name', '')
-            }
-          
-          # Add this entry's sum and count to the total
-          all_movies[movie_id]['sum'] += movie_data.get('sum', 0)
-          all_movies[movie_id]['count'] += movie_data.get('count', 0)
-      
-      return all_movies
+        """
+        Merge multiple data entries into a single state.
+        Handles list format data from average_movies_by_rating worker.
+        
+        Args:
+            data_entries: List of data entries to merge (each entry is a list of movies)
+            
+        Returns:
+            Any: Merged data with all movies aggregated
+        """
+        if not data_entries:
+            return {}
+        
+        # Create a dictionary to hold all movies, indexed by ID
+        all_movies = {}
+        
+        # Process all entries
+        for entry in data_entries:
+            # Each entry is a list of movie objects
+            if isinstance(entry, list):
+                for movie in entry:
+                    movie_id = movie.get('id')
+                    
+                    if not movie_id:
+                        logging.warning(f"Skipping movie without ID: {movie}")
+                        continue
+                    
+                    # Initialize movie if not seen before
+                    if movie_id not in all_movies:
+                        all_movies[movie_id] = {
+                            'sum': 0,
+                            'count': 0,
+                            'id': movie_id,
+                            'name': movie.get('name', '')
+                        }
+                    
+                    # Add this movie's sum and count to the total
+                    all_movies[movie_id]['sum'] += movie.get('sum', 0)
+                    all_movies[movie_id]['count'] += movie.get('count', 0)
+            # Handle dictionary format for backward compatibility
+            elif isinstance(entry, dict):
+                for movie_id, movie_data in entry.items():
+                    # Initialize movie if not seen before
+                    if movie_id not in all_movies:
+                        all_movies[movie_id] = {
+                            'sum': 0,
+                            'count': 0,
+                            'id': movie_id,
+                            'name': movie_data.get('name', '')
+                        }
+                    
+                    # Add this entry's sum and count to the total
+                    all_movies[movie_id]['sum'] += movie_data.get('sum', 0)
+                    all_movies[movie_id]['count'] += movie_data.get('count', 0)
+        
+        return all_movies

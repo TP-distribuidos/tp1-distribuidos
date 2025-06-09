@@ -7,6 +7,10 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import ast
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,9 +48,13 @@ class Worker:
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
         self.node_id = NODE_ID
-        
-        # Message counter for incremental IDs
-        self.message_counter = 0
+
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StatelessStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="average_movies_worker",
+            base_dir="/app/persistence"
+        )   
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -55,11 +63,6 @@ class Worker:
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
-        
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
@@ -146,22 +149,39 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-            new_operation_id = self._get_next_message_id()
+            new_operation_id = self.data_persistence.get_counter_value()
+            node_id = deserialized_message.get("node_id", self.node_id)
 
             if disconnect_marker:
                 self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
-            elif eof_marker:
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                logging.info(f"Disconnect marker received for client_id '{client_id}'")
+                return
+
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            if eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
                 self.send_data(client_id, data, True, operation_id=new_operation_id)
+                self.data_persistence.clear(client_id)
             elif data:
                 # Process data and get transformed output
                 transformed_data = self._update_averages(data)
             
                 # Send the updated averages to the producer queue
                 self.send_data(client_id, transformed_data, operation_id=new_operation_id)
+
+                self.data_persistence.persist(client_id, node_id, None, operation_id)
             else:
                 logging.warning(f"\033[93mReceived message without data for client_id '{client_id}'\033[0m")
 
+            self.data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:

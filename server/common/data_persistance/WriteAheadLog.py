@@ -749,7 +749,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 
                 consolidated_data = self.state_interpreter.merge_data(all_business_data_items)
                 
-                logging.info(f"Successfully consolidated data from {len(all_business_data_items)} items across all nodes for client {client_id}")
                 return consolidated_data
                 
             except Exception as e:
@@ -800,7 +799,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 if key in self.log_count:
                     del self.log_count[key]
                     
-            logging.info(f"Cleared all data for client {client_id}: created empty directory {cleared_dir.name} and removed {len(keys_to_remove)} tracking entries")
             return True
         except Exception as e:
             logging.error(f"Error clearing data for client {client_id}: {e}")

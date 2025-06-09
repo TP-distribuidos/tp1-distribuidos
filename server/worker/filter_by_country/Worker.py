@@ -171,12 +171,13 @@ class Worker:
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
             new_operation_id = self._get_next_message_id()
+            node_id = deserialized_message.get("node_id")
             
             # Handle DISCONNECT notifications first
             if disconnect_marker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 # Propagate DISCONNECT to all downstream components
-                self.send_disconnect(client_id, query)
+                self.send_disconnect(client_id, query, new_operation_id)
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
@@ -219,10 +220,9 @@ class Worker:
             # Reject the message and requeue it
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
-    def send_disconnect(self, client_id, query=None):
+    def send_disconnect(self, client_id, query=None, operation_id=None):
         """Send DISCONNECT notification to all downstream components"""
         # Generate an operation ID for this message
-        operation_id = self._get_next_message_id()
         
         # Send to primary output queue (for next stage processing)
         message = Serializer.add_metadata(client_id, None, False, query, True, operation_id, self.node_id)

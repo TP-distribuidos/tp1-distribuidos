@@ -633,7 +633,6 @@ class WriteAheadLog(DataPersistenceInterface):
             # Successfully persisted - update max processed ID for this node
             if self.processed_ids[node_key] is None:
                 self.processed_ids[node_key] = message_id
-                logging.info(f"Set initial max processed ID to {message_id} for client {client_id}, node {node_id}")
             else:
                 if message_id > self.processed_ids[node_key]:
                     self.processed_ids[node_key] = message_id

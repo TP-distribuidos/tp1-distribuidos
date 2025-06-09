@@ -406,7 +406,6 @@ class WriteAheadLog(DataPersistenceInterface):
                             if max_id is not None:
                                 max_id_int = int(max_id) if not isinstance(max_id, int) else max_id
                                 all_message_ids.add(max_id_int)
-                                logging.info(f"Loaded max message ID {max_id_int} from checkpoint metadata for client {client_id}, node {node_id}")
                         
                         # Extract business data - it's stored directly in the checkpoint, not under "content"
                         checkpoint_business_data = {k: v for k, v in checkpoint_data.items() if k != "_metadata"}
@@ -513,7 +512,6 @@ class WriteAheadLog(DataPersistenceInterface):
                 node_log_key = f"{client_id}:{node_id}"
                 self.log_count[node_log_key] = 0
                 
-                logging.info(f"Successfully created checkpoint for client {client_id}, node {node_id}")
                 return True
             else:
                 logging.error(f"Failed to write checkpoint file for client {client_id}, node {node_id}")

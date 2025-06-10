@@ -16,7 +16,7 @@ check_q1() {
     local expected_count=25
     local found_count=0
     
-    echo -e "${BLUE}→ Checking Q1 (Movies and Genres)...${NC}"
+    printf "${BLUE}→ Checking Q1 (Movies and Genres)...${NC}\n"
     
     # Array of expected entries
     declare -a expected=(
@@ -49,14 +49,14 @@ check_q1() {
     
     # Check file exists
     if [ ! -f "$file" ]; then
-        echo -e "  ${RED}✗ File $file not found${NC}"
+        printf "  ${RED}✗ File $file not found${NC}\n"
         return 1
     fi
     
     # Check line count - only care about content
     local actual_count=$(grep -c . "$file")
     if [ "$actual_count" -ne $expected_count ]; then
-        echo -e "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count"
+        printf "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count\n"
     fi
     
     # Check each expected line
@@ -65,16 +65,16 @@ check_q1() {
         if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
             ((found_count++))
         else
-            echo -e "  ${RED}✗ Missing:${NC} $item"
+            printf "  ${RED}✗ Missing:${NC} $item\n"
             status=1
         fi
     done
     
     # Summary for this file
     if [ $status -eq 0 ]; then
-        echo -e "  ${GREEN}✓ All $expected_count records found!${NC}"
+        printf "  ${GREEN}✓ All $expected_count records found!${NC}\n"
     else
-        echo -e "  ${RED}✗ Found $found_count of $expected_count expected records${NC}"
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
     fi
     
     return $status
@@ -85,21 +85,21 @@ check_q3() {
     local file=$1
     local expected='{"max": {"id": "80717", "avg": 5.0, "name": "Violeta se fue a los cielos"}, "min": {"id": "69278", "avg": 2.75, "name": "Fase 7"}}'
     
-    echo -e "${BLUE}→ Checking Q3 (Max/Min Ratings)...${NC}"
+    printf "${BLUE}→ Checking Q3 (Max/Min Ratings)...${NC}\n"
     
     # Check file exists
     if [ ! -f "$file" ]; then
-        echo -e "  ${RED}✗ File $file not found${NC}"
+        printf "  ${RED}✗ File $file not found${NC}\n"
         return 1
     fi
     
     # Check content
     if grep -q "$(echo "$expected" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
-        echo -e "  ${GREEN}✓ Found expected max/min ratings record${NC}"
+        printf "  ${GREEN}✓ Found expected max/min ratings record${NC}\n"
         return 0
     else
-        echo -e "  ${RED}✗ Expected record not found${NC}"
-        echo -e "  ${YELLOW}  Expected:${NC} $expected"
+        printf "  ${RED}✗ Expected record not found${NC}\n"
+        printf "  ${YELLOW}  Expected:${NC} $expected\n"
         return 1
     fi
 }
@@ -111,7 +111,7 @@ check_q4() {
     local expected_count=10
     local found_count=0
     
-    echo -e "${BLUE}→ Checking Q4 (Actors and Movie Count)...${NC}"
+    printf "${BLUE}→ Checking Q4 (Actors and Movie Count)...${NC}\n"
     
     # Array of expected entries
     declare -a expected=(
@@ -129,14 +129,14 @@ check_q4() {
     
     # Check file exists
     if [ ! -f "$file" ]; then
-        echo -e "  ${RED}✗ File $file not found${NC}"
+        printf "  ${RED}✗ File $file not found${NC}\n"
         return 1
     fi
     
     # Check line count - only care about content
     local actual_count=$(grep -c . "$file")
     if [ "$actual_count" -ne $expected_count ]; then
-        echo -e "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count"
+        printf "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count\n"
     fi
     
     # Check each expected line
@@ -144,16 +144,16 @@ check_q4() {
         if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
             ((found_count++))
         else
-            echo -e "  ${RED}✗ Missing:${NC} $item"
+            printf "  ${RED}✗ Missing:${NC} $item\n"
             status=1
         fi
     done
     
     # Summary for this file
     if [ $status -eq 0 ]; then
-        echo -e "  ${GREEN}✓ All $expected_count actor records found!${NC}"
+        printf "  ${GREEN}✓ All $expected_count actor records found!${NC}\n"
     else
-        echo -e "  ${RED}✗ Found $found_count of $expected_count expected records${NC}"
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
     fi
     
     return $status
@@ -161,14 +161,14 @@ check_q4() {
 
 # Main function
 main() {
-    echo -e "${BOLD}${YELLOW}===== Output Validation Script =====${NC}"
-    echo -e "Checking files in: ${BLUE}$OUTPUT_DIR${NC}\n"
+    printf "${BOLD}${YELLOW}===== Output Validation Script =====${NC}\n"
+    printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC}\n\n"
     
     # Find all unique client numbers
     clients=$(find "$OUTPUT_DIR" -name "output_records_client_*_Q*.json" | grep -o "client_[0-9]\+" | sort -u | cut -d'_' -f2)
     
     if [ -z "$clients" ]; then
-        echo -e "${RED}No client output files found!${NC}"
+        printf "${RED}No client output files found!${NC}\n"
         exit 1
     fi
     
@@ -180,7 +180,7 @@ main() {
         ((total_clients++))
         client_passed=true
         
-        echo -e "\n${BOLD}${YELLOW}===== Checking Client $client =====${NC}"
+        printf "\n${BOLD}${YELLOW}===== Checking Client $client =====${NC}\n"
         
         # Check Q1
         q1_file="$OUTPUT_DIR/output_records_client_${client}_Q1.json"
@@ -188,7 +188,7 @@ main() {
             client_passed=false
         fi
         
-        echo ""
+        printf "\n"
         
         # Check Q3
         q3_file="$OUTPUT_DIR/output_records_client_${client}_Q3.json"
@@ -196,7 +196,7 @@ main() {
             client_passed=false
         fi
         
-        echo ""
+        printf "\n"
         
         # Check Q4
         q4_file="$OUTPUT_DIR/output_records_client_${client}_Q4.json"
@@ -206,24 +206,24 @@ main() {
         
         # Display client summary
         if $client_passed; then
-            echo -e "\n  ${GREEN}✓ CLIENT $client PASSED ALL TESTS${NC}"
+            printf "\n  ${GREEN}✓ CLIENT $client PASSED ALL TESTS${NC}\n"
             ((passed_clients++))
         else
-            echo -e "\n  ${RED}✗ CLIENT $client FAILED${NC}"
+            printf "\n  ${RED}✗ CLIENT $client FAILED${NC}\n"
         fi
     done
     
     # Display final summary
-    echo -e "\n${BOLD}${YELLOW}===== Summary =====${NC}"
-    echo -e "Total clients checked: $total_clients"
-    echo -e "${GREEN}Clients passed:${NC} $passed_clients"
-    echo -e "${RED}Clients failed:${NC} $((total_clients - passed_clients))"
+    printf "\n${BOLD}${YELLOW}===== Summary =====${NC}\n"
+    printf "Total clients checked: $total_clients\n"
+    printf "${GREEN}Clients passed:${NC} $passed_clients\n"
+    printf "${RED}Clients failed:${NC} $((total_clients - passed_clients))\n"
     
     if [ $passed_clients -eq $total_clients ]; then
-        echo -e "\n${GREEN}${BOLD}✓ ALL CLIENTS PASSED ALL TESTS!${NC}"
+        printf "\n${GREEN}${BOLD}✓ ALL CLIENTS PASSED ALL TESTS!${NC}\n"
         exit 0
     else
-        echo -e "\n${RED}${BOLD}✗ SOME TESTS FAILED${NC}"
+        printf "\n${RED}${BOLD}✗ SOME TESTS FAILED${NC}\n"
         exit 1
     fi
 }

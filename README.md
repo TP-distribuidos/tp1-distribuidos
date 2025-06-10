@@ -1,5 +1,19 @@
 # Sistema de Tolerancia a Fallos para Aplicación Distribuida
 
+## Ejecucion
+
+### Levantar nuevos clientes
+
+Para levantar nuevos clientes usar el siguiente comando:
+`docker-compose -f docker-compose-test.yaml --profile manual up <client_container_name>`
+
+Esto permite:
+
+- Mantener los servicios opcionales en el archivo principal de Compose.
+- Iniciarlos solo cuando sea necesario.
+- Asegurarse de que estén correctamente conectados a la misma red Docker que otros servicios.
+- Mantener la consistencia de las variables de entorno y los montajes de volumen.
+
 ## Visión General
 
 El sistema consiste en servicios worker que realizan las queries y servicios sentinel que monitorean a los workers bajo una arquitectura maestro-esclavo. Cuando se detectan fallos, el sistema reinicia automáticamente los componentes fallidos para mantener la disponibilidad del servicio.

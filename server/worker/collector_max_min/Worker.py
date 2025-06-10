@@ -163,7 +163,6 @@ class Worker:
                     channel.basic_ack(delivery_tag=method.delivery_tag)
                     return
                 
-                # If we have data for this client, send it to router producer queue
                 data_persisted = None
                 try:
                     data_persisted = self.data_persistence.retrieve(client_id)

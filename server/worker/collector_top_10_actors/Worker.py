@@ -7,6 +7,9 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+from StateInterpreter import StateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 
 logging.basicConfig(
@@ -45,11 +48,14 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.client_data = {}
-        self.top_n = TOP_N
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="top_10_actors_worker",
+            base_dir="/app/persistence"
+        )
         
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        self.top_n = TOP_N
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -60,11 +66,6 @@ class Worker:
         
         logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -160,26 +161,36 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
 
             if disconnect_marker:
-                removed = self.client_data.pop(client_id, None)
-                if removed is not None:
-                    logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
+                self.data_persistence.clear(client_id)
+                logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
 
             elif eof_marker:
-                # If we have data for this client, send it to router producer queue
-                if client_id in self.client_data:
-                    top_actors = self._get_top_actors(client_id)
-                    new_operation_id = self._get_next_message_id()
-                    self._send_data(client_id, top_actors, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
-                    # Clean up client data after sending
-                    del self.client_data[client_id]
-                    logging.info(f"Sent top 10 actors for client {client_id} and cleaned up COLLECTOR")
-                else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found")
+                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                
+                data_persisted = None
+                try:
+                    data_persisted = self.data_persistence.retrieve(client_id)
+                except ValueError as e:
+                    logging.warning(f"Failed to retrieve WAL data for client {client_id}, error: {e}")
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+
+                new_operation_id = self.data_persistence.get_counter_value()
+                self._send_data(client_id, data_persisted, self.producer_queue_name[0], True, QUERY_4, new_operation_id)
+                # Clean up client data after sending
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
+                logging.info(f"Sent top 10 actors for client {client_id} and cleaned up")
             elif data:
-                # Update actors counts for this client
-                self._update_top_actors(client_id, data)
+                # Persist the data using WAL
+                self.data_persistence.persist(client_id, node_id, data, operation_id)
             else:
                 logging.warning(f"Received message with no data for client {client_id}")
             
@@ -197,52 +208,6 @@ class Worker:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-    
-    def _update_top_actors(self, client_id, actor_data_batch):
-        """
-        Update the actor counts for a client with a new batch of actor data
-        Using a dictionary to track all actors
-        """
-        # Initialize dictionary for this client if it doesn't exist
-        if client_id not in self.client_data:
-            self.client_data[client_id] = {}
-
-        # Get current dictionary
-        actors_dict = self.client_data[client_id]
-        
-        # Process each actor in the batch
-        for actor_info in actor_data_batch:
-            name = actor_info.get("name")
-            count = actor_info.get("count", 0)
-            
-            if not name:
-                continue
-            
-            # Update or add the actor count
-            if name in actors_dict:
-                # Take the higher count if we see the same actor twice
-                # (This handles the case where an actor might appear in multiple batches)
-                actors_dict[name] = max(actors_dict[name], count)
-            else:
-                actors_dict[name] = count
-                
-    def _get_top_actors(self, client_id):
-        """
-        Get the top N actors for a client in descending order of count
-        """
-        if client_id not in self.client_data:
-            return []
-        
-        # Get actor dictionary for this client
-        actors_dict = self.client_data[client_id]
-        
-        # Sort actors by count (descending) and take top N
-        top_actors = sorted(
-            [{"name": name, "count": count} for name, count in actors_dict.items()],
-            key=lambda x: (-x["count"], x["name"])  # Sort by count desc, then name asc
-        )[:self.top_n]
-        
-        return top_actors
     
     def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
         """Send data to the specified router producer queue"""
@@ -262,6 +227,9 @@ class Worker:
         
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""
+        if not self._running:
+            return
+            
         logging.info(f"Shutting down worker...")
         self._running = False
         

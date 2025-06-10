@@ -27,6 +27,7 @@ EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "top_actors_exchange")
 EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 TOP_N = int(os.getenv("TOP_N", 10))
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+NODE_ID = os.getenv("NODE_ID")
 
 class Worker:
     def __init__(self, 
@@ -47,12 +48,24 @@ class Worker:
         self.client_data = {}
         self.top_n = TOP_N
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+    
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -146,16 +159,17 @@ class Worker:
             operation_id = deserialized_message.get("operation_id", None)
             
             if disconnect_marker:
-                self._send_data(client_id, data, self.producer_queue_name[0], False, disconnect_marker=True)
+                new_operation_id = self._get_next_message_id()
+                self._send_data(client_id, data, self.producer_queue_name[0], False, disconnect_marker=True, operation_id=new_operation_id)
                 self.client_data.pop(client_id, None)
             
             elif eof_marker:
-                new_operation_id = str(uuid.uuid4())
+                new_operation_id = self._get_next_message_id()
                 # If we have data for this client, send it to router producer queue
                 if client_id in self.client_data:
                     top_actors = self._get_top_actors(client_id)
                     self._send_data(client_id, top_actors, self.producer_queue_name[0], operation_id=new_operation_id)
-                    self._send_data(client_id, [], self.producer_queue_name[0], True)
+                    self._send_data(client_id, [], self.producer_queue_name[0], True, operation_id=self._get_next_message_id())
                     # Clean up client data after sending
                     del self.client_data[client_id]
                     logging.info(f"Sent top actors for client {client_id} and cleaned up")
@@ -180,7 +194,7 @@ class Worker:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
-    
+
     
     def _update_actors_data(self, client_id, data):
         """
@@ -219,8 +233,11 @@ class Worker:
         """Send data to the specified router producer queue"""
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
+        
+        if operation_id is None:
+            operation_id = self._get_next_message_id()
             
-        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id)
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=queue_name,

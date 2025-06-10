@@ -181,7 +181,14 @@ class Worker:
             
             # Acknowledge message
             channel.basic_ack(delivery_tag=method.delivery_tag)
-            
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+                            
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it

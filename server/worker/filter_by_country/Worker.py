@@ -157,7 +157,7 @@ class Worker:
 
         return True
     
-    def _process_message(self, ch, method, properties, body):
+    def _process_message(self, channel, method, properties, body):
         """Process a message based on its query type"""
         try:
             # Deserialize the message
@@ -178,7 +178,7 @@ class Worker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 # Propagate DISCONNECT to all downstream components
                 self.send_disconnect(client_id, query, new_operation_id)
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Handle EOF markers
@@ -186,12 +186,12 @@ class Worker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             if not data:
                 logging.warning(f"Received message with no data, client ID: {client_id}")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Regular message processing...
@@ -213,12 +213,19 @@ class Worker:
                 logging.warning(f"Unknown query type: {query}, client ID: {client_id}")
             
             # Acknowledge message
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
+                    
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def send_disconnect(self, client_id, query=None, operation_id=None):
         """Send DISCONNECT notification to all downstream components"""

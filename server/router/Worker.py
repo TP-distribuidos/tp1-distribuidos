@@ -127,7 +127,7 @@ class RouterWorker:
             
             return self._setup(retry_count + 1)
             
-    def _process_message(self, ch, method, properties, body):
+    def _process_message(self, channel, method, properties, body):
         """Process an incoming message and route it to the next queue"""
         try:
             # Deserialize the message
@@ -145,14 +145,14 @@ class RouterWorker:
 
             if not client_id:
                 logging.warning("Received message with missing client_id")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             # Handle DISCONNECT marker - immediate propagation to all queues
             if disconnect_marker:
                 self._send_disconnect_to_all_queues(client_id, query)
                 self.end_of_file_received.pop(client_id, None)
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             # Handle EOF marker specially - we need to count them and possibly send to all queues
@@ -164,7 +164,7 @@ class RouterWorker:
                 if self.end_of_file_received[client_id] >= self.number_of_producer_workers:
                     self._send_eof_to_all_queues(client_id, data, query, operation_id, node_id)
                     self.end_of_file_received[client_id] = 0
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Prepare message to publish using the centralized Serializer.add_metadata method
@@ -191,10 +191,10 @@ class RouterWorker:
                 )
                 
                 if success:
-                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
                 else:
                     logging.error(f"Failed to forward message to fanout exchange")
-                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 # For direct exchanges, use the load balancer
                 queue_distribution = self.balancer.select_target_queues(data)
@@ -213,14 +213,21 @@ class RouterWorker:
                         success = False
                         logging.error(f"Failed to forward message to queue: {queue}")
                 if success:
-                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
                 else:
-                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-                
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject and requeue the message
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
     def run(self):
         """Run the router worker"""

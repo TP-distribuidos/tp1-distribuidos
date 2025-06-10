@@ -107,7 +107,7 @@ class SentimentWorker:
 
         return True
     
-    def _process_message(self, ch, method, properties, body):
+    def _process_message(self, channel, method, properties, body):
         """Process a message from the queue"""
         try:
             deserialized_message = Serializer.deserialize(body)
@@ -165,7 +165,7 @@ class SentimentWorker:
                     persistent=True
                 )
                 
-                ch.basic_ack(delivery_tag=method.delivery_tag)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             # Process the movie data for sentiment analysis
@@ -201,11 +201,18 @@ class SentimentWorker:
                 logging.warning(f"Received empty data from client {client_id}")
             
             # Acknowledge message
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+
         except Exception as e:
             logging.error(f"Error processing message: {e}")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def _analyze_sentiment_and_calculate_ratios(self, data):
         processed_movies = []

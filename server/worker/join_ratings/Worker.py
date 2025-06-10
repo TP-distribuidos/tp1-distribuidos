@@ -205,7 +205,14 @@ class Worker:
                 self.movies_data_persistence.persist(client_id, node_id, data, operation_id)
             
             channel.basic_ack(delivery_tag=method.delivery_tag)
-            
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+
         except Exception as e:
             logging.error(f"Error processing movies message: {e}")
             # Reject the message and requeue it
@@ -266,7 +273,14 @@ class Worker:
 
             self.ratings_data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
-            
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+                            
         except Exception as e:
             logging.error(f"Error processing ratings message: {e}")
             # Reject the message and requeue it

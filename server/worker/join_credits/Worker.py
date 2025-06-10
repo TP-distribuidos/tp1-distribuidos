@@ -190,7 +190,14 @@ class Worker:
                         self.collected_data[client_id][movie_id] = movie_name
             
             channel.basic_ack(delivery_tag=method.delivery_tag)
-            
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+                            
         except Exception as e:
             logging.error(f"Error processing movies message: {e}")
             # Reject the message and requeue it
@@ -241,7 +248,14 @@ class Worker:
                         self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
             channel.basic_ack(delivery_tag=method.delivery_tag)
-            
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+
         except Exception as e:
             logging.error(f"Error processing credits message: {e}")
             # Reject the message and requeue it

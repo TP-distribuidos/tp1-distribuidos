@@ -148,7 +148,7 @@ class Worker:
 
         return True
     
-    def _process_message(self, ch, method, properties, body):
+    def _process_message(self, channel, method, properties, body):
         """Process a message and update top actors for the client"""
         try:
             # Deserialize the message
@@ -184,12 +184,19 @@ class Worker:
                 logging.warning(f"Received message with no data for client {client_id}")
             
             # Acknowledge the message
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
+                    
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
     def _update_top_actors(self, client_id, actor_data_batch):
         """

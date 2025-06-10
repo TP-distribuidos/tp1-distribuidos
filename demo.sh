@@ -7,7 +7,7 @@
 # Default values
 INTERVAL=3 # Default interval in seconds
 NUM_CONTAINERS=10  # Default number of containers to kill per interval
-PREFIXES=("max_min_worker", "average_movies_by_rating_worker", "collector_max_min_worker")  # Default prefixes to target
+PREFIXES=("max_min_worker", "average_movies_by_rating_worker", "collector_max_min_worker", join_ratings_worker)  # Default prefixes to target
 
 # ANSI Color Codes
 RED='\033[0;31m'

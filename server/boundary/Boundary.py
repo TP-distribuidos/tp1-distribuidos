@@ -54,7 +54,7 @@ class Boundary:
     self._client_threads = {}
     self._lock = threading.Lock()  # Thread synchronization lock
     self.protocol = Protocol
-    self.id = str(uuid.uuid4())
+    self.node_id = str(uuid.uuid4())
     
     self.message_counter = 0
     
@@ -70,7 +70,7 @@ class Boundary:
     signal.signal(signal.SIGINT, self._handle_shutdown)
     signal.signal(signal.SIGTERM, self._handle_shutdown)
 
-    logging.info(self.green(f"Boundary ID: {self.id} successfully created"))
+    logging.info(self.green(f"Boundary ID: {self.node_id} successfully created"))
     logging.info(f"Using router queues: Movies={self.movies_router_queue}, Movies Q5={self.movies_router_q5_queue}, Credits={self.credits_router_queue}, Ratings={self.ratings_router_queue}")
 
   # TODO: Move to printer class
@@ -221,28 +221,28 @@ class Boundary:
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
                 
-                operation_id = self._get_next_message_id()
+                new_operation_id = self._get_next_message_id()
                 if csvs_received == MOVIES_CSV:
                     filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
                     # Send data for Q1 to the movies router
-                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=operation_id, node_id=self.id)
+                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
                     self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
                     # Send data for Q5 to the reviews router
-                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=operation_id, node_id=self.id)
+                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
                     self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
                 
                 elif csvs_received == CREDITS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q4)
                     filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
+                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
                     self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
                 
                 elif csvs_received == RATINGS_CSV:
                     filtered_data = self._project_to_columns(data, COLUMNS_Q3)
                     filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=operation_id, node_id=self.id)
+                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
                     self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                 
             except ConnectionError:

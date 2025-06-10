@@ -6,6 +6,12 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.ClientsStateStateInterpreter import ClientsStateStateInterpreter
+from common.data_persistance.MoviesStateInterpreter import MoviesStateInterpreter 
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,18 +54,33 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # Client state tracking
-        self.client_states = {}  # {client_id: {'movies_done': bool}}
+        # 1. Client states data_persistence
+        self.client_states_data_persistence = WriteAheadLog(
+            state_interpreter=ClientsStateStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="join_worker_client_states",
+            base_dir="/app/persistence"
+        )
         
-        # Data store for processing - only store movies, not ratings
-        self.collected_data = {}  # {client_id: {movie_id: movie_name}}
+        # 2. Movie data data_persistence
+        self.movies_data_persistence = WriteAheadLog(
+            state_interpreter=MoviesStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="join_worker_movies",
+            base_dir="/app/persistence"
+        )
+        
+        # 3. Ratings processing data_persistence (for deduplication only)
+        self.ratings_data_persistence = WriteAheadLog(
+            state_interpreter=StatelessStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="join_worker_ratings",
+            base_dir="/app/persistence"
+        )
         
         # For requeue delay to avoid overwhelming the broker
         self.requeue_delay = REQUEUE_DELAY
 
-        # Message counter for incremental IDs
-        self.message_counter = 0
-        
         # Store the node ID for message identification
         self.node_id = NODE_ID
 
@@ -85,11 +106,6 @@ class Worker:
             self._handle_shutdown()
             
         return True
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
     
     def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
@@ -159,33 +175,34 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
+            new_operation_id = self.ratings_data_persistence.get_counter_value()
 
-            # Initialize client state if this is a new client
-            if client_id not in self.client_states:
-                self.client_states[client_id] = {'movies_done': False}
-                
             if disconnect_marker:
-                self.send_data(client_id, data, False, disconnect_marker=True)
-                self.client_states.pop(client_id, None)
-                self.collected_data.pop(client_id, None)
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
+                self.client_states_data_persistence.clear(client_id)
+                self.movies_data_persistence.clear(client_id)
+                self.ratings_data_persistence.clear(client_id)
+                self.ratings_data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
+                return
+            
+            if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.ratings_data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
                 
             # Handle EOF marker for movies
             elif eof_marker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
-                self.client_states[client_id]['movies_done'] = True
+                self.client_states_data_persistence.persist(client_id, node_id, True, operation_id)
             
             # Process movie data
-            elif data:
-                # Initialize movie data storage for this client
-                if client_id not in self.collected_data:
-                    self.collected_data[client_id] = {}
-                
-                # Store movie data
-                for movie in data:
-                    movie_id = movie.get('id')
-                    movie_name = movie.get('name')
-                    if movie_id and movie_name:
-                        self.collected_data[client_id][movie_id] = movie_name
+            elif data: #data seems to be a list of dicts with id and name
+                self.movies_data_persistence.persist(client_id, node_id, data, operation_id)
             
             channel.basic_ack(delivery_tag=method.delivery_tag)
             
@@ -202,24 +219,30 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
-            new_operation_id = self._get_next_message_id()
-            # node_id = deserialized_message.get("node_id")
+            operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self.ratings_data_persistence.get_counter_value()
+            node_id = deserialized_message.get("node_id")
             
-            # Initialize client state if this is a new client
-            if client_id not in self.client_states:
-                self.client_states[client_id] = {'movies_done': False}
-                logging.info(f"\033[33mDiscovered new client by ratings queue: {client_id}\033[0m")
                 
             if disconnect_marker:
                 self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
-                self.client_states.pop(client_id, None)
-                self.collected_data.pop(client_id, None)
+                self.client_states_data_persistence.clear(client_id)
+                self.movies_data_persistence.clear(client_id)
+                self.ratings_data_persistence.clear(client_id)
+                self.ratings_data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            if self.ratings_data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Rating message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.ratings_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Check if we've received all movies for this client
-            movies_done = self.client_states[client_id]['movies_done']
-            if not movies_done:
+            movies_done = self.client_states_data_persistence.retrieve(client_id)
+
+            if movies_done is None:
                 # We haven't received all movies yet, reject and requeue the message
                 logging.debug(f"Not all movies received for client {client_id}, requeuing ratings message")
                 channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
@@ -231,14 +254,17 @@ class Worker:
                 self._finalize_client(client_id, new_operation_id)
             
             elif data:
-                if client_id in self.collected_data:
-                    joined_data = self._join_data(
-                        self.collected_data[client_id],
-                        data
-                    )
-                    if joined_data:
-                        self.send_data(client_id, joined_data, operation_id=new_operation_id)
+                all_movies = self.movies_data_persistence.retrieve(client_id)
 
+                joined_data = self._join_data(all_movies, data)
+                
+                if joined_data:
+                    self.send_data(client_id, joined_data, operation_id=new_operation_id)
+
+                self.ratings_data_persistence.persist(client_id, node_id, None, operation_id)    
+
+
+            self.ratings_data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
@@ -251,12 +277,10 @@ class Worker:
         # Send EOF marker to next stage with a new operation ID
         self.send_data(client_id, [], True, operation_id=operation_id)        
         
-        # Clean up client data to free memory
-        if client_id in self.collected_data:
-            del self.collected_data[client_id]
-        
-        # Completely remove all traces of the client
-        del self.client_states[client_id]
+        self.client_states_data_persistence.clear(client_id)
+        self.movies_data_persistence.clear(client_id)
+        self.ratings_data_persistence.clear(client_id)
+
         
         logging.info(f"Client {client_id} processing completed")
     
@@ -305,9 +329,6 @@ class Worker:
     def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
         try:    
-            if operation_id is None:
-                operation_id = self._get_next_message_id()
-                
             message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id, self.node_id)
 
             success = self.rabbitmq.publish(

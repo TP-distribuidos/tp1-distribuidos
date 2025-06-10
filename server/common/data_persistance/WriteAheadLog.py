@@ -56,7 +56,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.service_name = service_name
         self.log_count = {}  
         self.processed_ids = {}  
-        self.base_dir = Path(base_dir)
+        self.base_dir = Path(base_dir + "/" + service_name)
         self.storage.create_directory(self.base_dir)
         
         logging.info(f"WriteAheadLog initialized for service {service_name} at {base_dir}")

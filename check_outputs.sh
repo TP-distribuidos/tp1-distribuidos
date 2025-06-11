@@ -53,10 +53,11 @@ check_q1() {
         return 1
     fi
     
-    # Check line count - only care about content
+    # Check line count - fail if not exact match
     local actual_count=$(grep -c . "$file")
     if [ "$actual_count" -ne $expected_count ]; then
-        printf "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count\n"
+        printf "  ${RED}✗ File has $actual_count records, expected exactly $expected_count${NC}\n"
+        status=1
     fi
     
     # Check each expected line
@@ -93,6 +94,13 @@ check_q3() {
         return 1
     fi
     
+    # Check line count - expected to have exactly 1 record
+    local actual_count=$(grep -c . "$file")
+    if [ "$actual_count" -ne 1 ]; then
+        printf "  ${RED}✗ File has $actual_count records, expected exactly 1${NC}\n"
+        return 1
+    fi
+    
     # Check content
     if grep -q "$(echo "$expected" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
         printf "  ${GREEN}✓ Found expected max/min ratings record${NC}\n"
@@ -113,7 +121,7 @@ check_q4() {
     
     printf "${BLUE}→ Checking Q4 (Actors and Movie Count)...${NC}\n"
     
-    # Array of expected entries
+    # Array of expected entries (in correct order)
     declare -a expected=(
         '{"Ricardo Dar\u00edn": 18}'
         '{"Alejandro Awada": 7}'
@@ -133,27 +141,39 @@ check_q4() {
         return 1
     fi
     
-    # Check line count - only care about content
+    # Check line count - fail if not exact match
     local actual_count=$(grep -c . "$file")
     if [ "$actual_count" -ne $expected_count ]; then
-        printf "  ${YELLOW}⚠️ Warning:${NC} File has $actual_count records, expected $expected_count\n"
+        printf "  ${RED}✗ File has $actual_count records, expected exactly $expected_count${NC}\n"
+        status=1
     fi
     
-    # Check each expected line
-    for item in "${expected[@]}"; do
-        if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
-            ((found_count++))
-        else
-            printf "  ${RED}✗ Missing:${NC} $item\n"
+    # Check order - read file line by line and compare with expected array
+    local line_num=0
+    while IFS= read -r line && [ $line_num -lt $expected_count ]; do
+        # Compare with expected entry at the same position
+        expected_item="${expected[$line_num]}"
+        # Remove potential whitespace
+        line=$(echo "$line" | tr -d '[:space:]')
+        expected_item=$(echo "$expected_item" | tr -d '[:space:]')
+        
+        if [ "$line" != "$expected_item" ]; then
+            printf "  ${RED}✗ Order mismatch at line $((line_num+1)):${NC}\n"
+            printf "    Expected: ${YELLOW}$expected_item${NC}\n"
+            printf "    Found: ${RED}$line${NC}\n"
             status=1
+        else
+            ((found_count++))
         fi
-    done
+        
+        ((line_num++))
+    done < "$file"
     
     # Summary for this file
     if [ $status -eq 0 ]; then
-        printf "  ${GREEN}✓ All $expected_count actor records found!${NC}\n"
+        printf "  ${GREEN}✓ All $expected_count actor records found in correct order!${NC}\n"
     else
-        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records in correct order${NC}\n"
     fi
     
     return $status

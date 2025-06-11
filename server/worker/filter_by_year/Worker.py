@@ -179,7 +179,6 @@ class Worker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
-                self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
                 # Mark this message as processed
                 self.data_persistence.persist(client_id, node_id, {}, operation_id)
                 self.data_persistence.increment_counter()
@@ -191,9 +190,7 @@ class Worker:
                 data_eq_year, data_gt_year = self._filter_data(data)
                 if data_eq_year:
                     self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=new_operation_id)
-                    self.send_data(client_id, data_eq_year, QUERY_EQ_YEAR, operation_id=new_operation_id)
                 if data_gt_year:
-                    self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=new_operation_id)
                     self.send_data(client_id, data_gt_year, QUERY_GT_YEAR, operation_id=new_operation_id)
             
             # Mark this message as processed in WAL

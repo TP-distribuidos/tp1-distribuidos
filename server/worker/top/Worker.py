@@ -7,8 +7,10 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import heapq
 from collections import defaultdict
-import uuid
 from common.SentinelBeacon import SentinelBeacon
+from StateInterpreter import StateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 
 logging.basicConfig(
@@ -45,11 +47,14 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.client_data = {}
-        self.top_n = TOP_N
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="top_actors_worker",
+            base_dir="/app/persistence"
+        )
         
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        self.top_n = TOP_N
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -60,12 +65,6 @@ class Worker:
         
         logging.info(f"Top Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
-
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -156,28 +155,49 @@ class Worker:
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
-            operation_id = deserialized_message.get("operation_id", None)
+            operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
+            new_operation_id = self.data_persistence.get_counter_value()
             
             if disconnect_marker:
-                new_operation_id = self._get_next_message_id()
                 self._send_data(client_id, data, self.producer_queue_name[0], False, disconnect_marker=True, operation_id=new_operation_id)
-                self.client_data.pop(client_id, None)
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
             
             elif eof_marker:
-                new_operation_id = self._get_next_message_id()
-                # If we have data for this client, send it to router producer queue
-                if client_id in self.client_data:
-                    top_actors = self._get_top_actors(client_id)
-                    self._send_data(client_id, top_actors, self.producer_queue_name[0], operation_id=new_operation_id)
-                    self._send_data(client_id, [], self.producer_queue_name[0], True, operation_id=self._get_next_message_id())
-                    # Clean up client data after sending
-                    del self.client_data[client_id]
-                    logging.info(f"Sent top actors for client {client_id} and cleaned up")
-                else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found")
+                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                    
+                try:
+                    data_persisted = self.data_persistence.retrieve(client_id)
+                    
+                    if data_persisted:
+                        top_actors = self._get_top_actors(data_persisted)
+                        
+                        new_operation_id = self.data_persistence.get_counter_value()
+                        self._send_data(client_id, top_actors, self.producer_queue_name[0], operation_id=new_operation_id)
+                        self.data_persistence.increment_counter()
+                        
+                        new_operation_id = self.data_persistence.get_counter_value()
+                        self._send_data(client_id, [], self.producer_queue_name[0], True, operation_id=new_operation_id)
+                        
+                        # Clean up client data after sending
+                        self.data_persistence.clear(client_id)
+                        self.data_persistence.increment_counter()
+                        logging.info(f"Sent top actors for client {client_id} and cleaned up")
+                    else:
+                        logging.warning(f"No data found for client {client_id}")
+                        self.data_persistence.increment_counter()
+                except ValueError as e:
+                    logging.warning(f"Failed to retrieve WAL data for client {client_id}, error: {e}")
+                    self.data_persistence.increment_counter()
+                    channel.basic_ack(delivery_tag=method.delivery_tag)
+                    return
+                    
             elif data:
-                # Update actors counts for this client
-                self._update_actors_data(client_id, data)
+                self.data_persistence.persist(client_id, node_id, data, operation_id)
             else:
                 logging.warning(f"Received message with no data for client {client_id}")
             
@@ -195,33 +215,18 @@ class Worker:
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
 
-    
-    def _update_actors_data(self, client_id, data):
+    def _get_top_actors(self, actor_counts):
         """
-        Update the actors count data for a specific client
-        Store counts for ALL actors, not just top_n
-        """
-        if client_id not in self.client_data:
-            self.client_data[client_id] = defaultdict(int)
-        for actor_data in data:
-            name = actor_data.get("name")
-            count = actor_data.get("count", 0)
-            if name:
-                self.client_data[client_id][name] += count
-            else:
-                logging.warning(f"Received actor data without name for client {client_id}, skipping")
-    
+        Calculate and return the top N actors from persisted data
         
-    def _get_top_actors(self, client_id):
+        Args:
+            actor_counts: Dictionary of actor counts from WAL
+            
+        Returns:
+            list: List of top N actors with their counts
         """
-        Calculate and return the top N actors for a client
-        Only called when EOF is received
-        """
-        if client_id not in self.client_data:
+        if not actor_counts:
             return []
-        
-        # Get all actor counts for this client
-        actor_counts = self.client_data[client_id]
         
         # Use heapq to get the top N actors
         top_actors = heapq.nlargest(self.top_n, actor_counts.items(), key=lambda x: x[1])
@@ -233,10 +238,6 @@ class Worker:
         """Send data to the specified router producer queue"""
         if queue_name is None:
             queue_name = self.producer_queue_name[0]
-        
-        if operation_id is None:
-            operation_id = self._get_next_message_id()
-            
         message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,

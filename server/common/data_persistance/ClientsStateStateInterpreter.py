@@ -19,7 +19,6 @@ class ClientsStateStateInterpreter(StateInterpreterInterface):
         Returns:
             str: JSON string with the required structure
         """
-        logging.info(f"FORMAT DATA: {data}")
         formatted = {
             "data": data, 
             "_metadata": {}

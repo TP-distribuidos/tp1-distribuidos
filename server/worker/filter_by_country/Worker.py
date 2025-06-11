@@ -7,6 +7,9 @@ from common.Serializer import Serializer
 from dotenv import load_dotenv
 import ast
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,8 +60,12 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StatelessStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="filter_by_country_worker",
+            base_dir="/app/persistence"
+        )
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -69,11 +76,6 @@ class Worker:
         
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -170,27 +172,36 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-            new_operation_id = self._get_next_message_id()
             node_id = deserialized_message.get("node_id")
+            new_operation_id = self.data_persistence.get_counter_value()
             
-            # Handle DISCONNECT notifications first
+            
             if disconnect_marker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 # Propagate DISCONNECT to all downstream components
                 self.send_disconnect(client_id, query, new_operation_id)
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
-            # Handle EOF markers
             if eof_marker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
+                self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             if not data:
                 logging.warning(f"Received message with no data, client ID: {client_id}")
+                self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
@@ -211,6 +222,10 @@ class Worker:
                     
             else:
                 logging.warning(f"Unknown query type: {query}, client ID: {client_id}")
+            
+            # Persist the fact that we processed this message
+            self.data_persistence.persist(client_id, node_id, {}, operation_id)
+            self.data_persistence.increment_counter()
             
             # Acknowledge message
             channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -239,6 +254,8 @@ class Worker:
             message=Serializer.serialize(message),
             persistent=True
         )
+        if not success:
+            logging.error(f"Failed to send disconnect notification to queue {self.producer_queue_names[0]}")
 
     def _project_to_columns(self, data):
         """Project the data to only include the 'id' column"""
@@ -270,8 +287,6 @@ class Worker:
 
     def send_response_queue(self, client_id, data, queue_name=RESPONSE_QUEUE, query=QUERY_1, operation_id=None):
         """Send data to the response queue in our exchange"""
-        if operation_id is None:
-            operation_id = self._get_next_message_id()
             
         message = Serializer.add_metadata(client_id, data, False, query, False, operation_id, self.node_id)
         success = self.rabbitmq.publish(
@@ -331,12 +346,16 @@ class Worker:
         
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""
+        if not self._running:
+            return
+            
         logging.info(f"Shutting down worker...")
         self._running = False
         
         # Stop consuming and close connection
         if hasattr(self, 'rabbitmq'):
             self.rabbitmq.stop_consuming()
+            self.rabbitmq.close()
     
     def _cleanup(self):
         """Clean up resources"""

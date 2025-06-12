@@ -1,3 +1,5 @@
+#Usage ./check_ouputs.sh (use -q5 flag for checking q5)
+
 # Colors for nice output formatting
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -8,6 +10,26 @@ NC='\033[0m' # No Color
 
 # Path to output directory (relative)
 OUTPUT_DIR="client/output"
+
+# Default to not checking Q5
+CHECK_Q5=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -q5)
+            CHECK_Q5=true
+            shift
+            ;;
+        *)
+            # Unknown option
+            echo "Unknown option: $1"
+            echo "Usage: $0 [-q5]"
+            echo "  -q5  Also check Q5 output files"
+            exit 1
+            ;;
+    esac
+done
 
 # Function to check Q1 output (25 movies with genres)
 check_q1() {
@@ -230,7 +252,13 @@ check_q5() {
 # Main function
 main() {
     printf "${BOLD}${YELLOW}===== Output Validation Script =====${NC}\n"
-    printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC}\n\n"
+    
+    # Show Q5 check status
+    if $CHECK_Q5; then
+        printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC} (including Q5)\n\n"
+    else
+        printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC} (Q5 checks disabled)\n\n"
+    fi
     
     # Find all unique client numbers
     clients=$(find "$OUTPUT_DIR" -name "output_records_client_*_Q*.json" | grep -o "client_[0-9]\+" | sort -u | cut -d'_' -f2)
@@ -272,12 +300,15 @@ main() {
             client_passed=false
         fi
         
-        printf "\n"
-        
-        # Check Q5
-        q5_file="$OUTPUT_DIR/output_records_client_${client}_Q5.json"
-        if ! check_q5 "$q5_file"; then
-            client_passed=false
+        # Check Q5 only if flag is provided
+        if $CHECK_Q5; then
+            printf "\n"
+            
+            # Check Q5
+            q5_file="$OUTPUT_DIR/output_records_client_${client}_Q5.json"
+            if ! check_q5 "$q5_file"; then
+                client_passed=false
+            fi
         fi
         
         # Display client summary
@@ -291,6 +322,11 @@ main() {
     
     # Display final summary
     printf "\n${BOLD}${YELLOW}===== Summary =====${NC}\n"
+    if $CHECK_Q5; then
+        printf "Checked: Q1, Q3, Q4, Q5\n"
+    else
+        printf "Checked: Q1, Q3, Q4 (Q5 skipped)\n"
+    fi
     printf "Total clients checked: $total_clients\n"
     printf "${GREEN}Clients passed:${NC} $passed_clients\n"
     printf "${RED}Clients failed:${NC} $((total_clients - passed_clients))\n"

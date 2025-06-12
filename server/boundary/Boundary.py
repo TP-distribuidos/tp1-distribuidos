@@ -215,13 +215,13 @@ class Boundary:
         while True:
             try:
                 data = self._receive_csv_batch(sock, proto)
+                new_operation_id = self._get_next_message_id()
                 if data == EOF_MARKER:
-                    self._send_eof_marker(csvs_received, client_id)
+                    self._send_eof_marker(csvs_received, client_id, new_operation_id)
                     csvs_received += 1
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
                 
-                new_operation_id = self._get_next_message_id()
                 if csvs_received == MOVIES_CSV:
                     filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
@@ -257,10 +257,11 @@ class Boundary:
         logging.exception(exc)
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
-        self._send_disconnect_marker(client_id)
+        new_operation_id = self._get_next_message_id()
+        self._send_disconnect_marker(client_id, new_operation_id)
         self._cleanup_client_resources(client_id)
 
-  def _send_disconnect_marker(self, client_id):
+  def _send_disconnect_marker(self, client_id, new_operation_id):
     """
     Send DISCONNECT marker to all router queues for a specific client
     
@@ -268,7 +269,7 @@ class Boundary:
         client_id: The client ID for which to send DISCONNECT marker
     """
     # Create metadata with DISCONNECT flag set to True
-    prepared_data = Serializer.add_metadata(client_id, None, eof_marker=False, disconnect_marker=True)
+    prepared_data = Serializer.add_metadata(client_id, None, eof_marker=False, disconnect_marker=True, operation_id=new_operation_id, node_id=self.node_id)
     
     # Send to all router queues
     for router_queue in [self.movies_router_queue, self.movies_router_q5_queue, 
@@ -277,8 +278,8 @@ class Boundary:
     
     logging.info(f"\033[91mSent DISCONNECT markers to all routers for client {client_id}\033[0m")
 
-  def _send_eof_marker(self, csvs_received, client_id):
-        prepared_data = Serializer.add_metadata(client_id, None, eof_marker=True)
+  def _send_eof_marker(self, csvs_received, client_id, operation_id):
+        prepared_data = Serializer.add_metadata(client_id, None, eof_marker=True, operation_id=operation_id, node_id=self.node_id)
         if csvs_received == MOVIES_CSV:
            self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_queue)
            self._send_data_to_rabbitmq_queue(prepared_data, self.movies_router_q5_queue)

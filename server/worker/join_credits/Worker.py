@@ -188,8 +188,7 @@ class Worker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 return
             
-            # Check if this message was already processed (deduplication)
-            if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id):
+            if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id or self.client_states_data_persistence.is_message_processed(client_id, self.node_id, operation_id)):
                 logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.credits_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -199,7 +198,7 @@ class Worker:
             elif eof_marker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
                 # Mark that we've received all movies for this client
-                self.client_states_data_persistence.persist(client_id, node_id, True, operation_id)
+                self.client_states_data_persistence.persist(client_id, self.node_id, True, operation_id)
             
             # Process movie data
             elif data:
@@ -289,9 +288,9 @@ class Worker:
         """Finalize processing for a client whose data is complete"""        
         self.send_data(client_id, [], True, operation_id=operation_id)
         
-        self.client_states_data_persistence.clear(client_id)
-        self.movies_data_persistence.clear(client_id)
-        self.credits_data_persistence.clear(client_id)
+        # self.client_states_data_persistence.clear(client_id)
+        # self.movies_data_persistence.clear(client_id)
+        # self.credits_data_persistence.clear(client_id)
         
         logging.info(f"Client {client_id} processing completed")
     
@@ -333,11 +332,7 @@ class Worker:
 
     def send_data(self, client_id, data, eof_marker=False, disconnect_marker=False, operation_id=None):
         """Send processed data to the output queue"""
-        try:    
-            if operation_id is None:
-                operation_id = self.credits_data_persistence.get_counter_value()
-                self.credits_data_persistence.increment_counter()
-                
+        try:
             message = Serializer.add_metadata(client_id, data, eof_marker, None, disconnect_marker, operation_id, self.node_id)
             success = self.rabbitmq.publish(
                 exchange_name=self.exchange_name_producer,

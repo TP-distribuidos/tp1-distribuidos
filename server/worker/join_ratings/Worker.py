@@ -189,7 +189,7 @@ class Worker:
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
                 return
             
-            if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id):
+            if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id or self.client_states_data_persistence.is_message_processed(client_id, self.node_id, operation_id)):
                 logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.ratings_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -198,7 +198,7 @@ class Worker:
             # Handle EOF marker for movies
             elif eof_marker:
                 logging.info(f"Received EOF marker for movies from client '{client_id}'")
-                self.client_states_data_persistence.persist(client_id, node_id, True, operation_id)
+                self.client_states_data_persistence.persist(client_id, self.node_id, True, operation_id)
             
             # Process movie data
             elif data: #data seems to be a list of dicts with id and name

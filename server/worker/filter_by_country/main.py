@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from dotenv import load_dotenv
@@ -11,7 +10,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-async def main():
+def main():
     """Main entry point for the worker service"""
     # Load environment variables
     load_dotenv()
@@ -27,36 +26,33 @@ async def main():
         logging.error("Environment variables for queues are not set properly.")
         return
 
-    # Add retry logic for service initialization
-    retry_count = 0
-    
-    while True:
-        try:
-            # Create worker with the environment configuration
-            worker = Worker(
-                consumer_queue_name=consumer_queue,
-                producer_queue_names=[router_producer_queue, response_queue],
-                exchange_name_producer=producer_exchange,
-                exchange_type_producer=producer_exchange_type
-            )
+    try:
+        # Create worker with the environment configuration
+        worker = Worker(
+            consumer_queue_name=consumer_queue,
+            producer_queue_names=[router_producer_queue, response_queue],
+            exchange_name_producer=producer_exchange,
+            exchange_type_producer=producer_exchange_type
+        )
+        
+        # Run the worker (this will block until shutdown)
+        success = worker.run()
+        
+        if success:
+            logging.info("Worker completed successfully")
+        else:
+            logging.error("Worker failed to run properly")
             
-            success = await worker.run()
-            
-            if success:
-                break  # Worker completed successfully
-            else:
-                logging.error("Worker failed to run properly")
-                retry_count += 1
-                
-        except Exception as e:
-            retry_count += 1
-            logging.error(f"Error running worker: {e}. Retry {retry_count}")
-
-        wait_time = min(30, 2 ** retry_count)  # Exponential backoff with a cap
-        logging.info(f"Waiting {wait_time} seconds before retrying...")
-        await asyncio.sleep(wait_time)
+    except Exception as e:
+        logging.error(f"Error running worker: {e}")
+        raise
 
 
 if __name__ == "__main__":
     logging.info("Starting filter_by_country worker service...")
-    asyncio.run(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Worker stopped by user")
+    except Exception as e:
+        logging.error(f"Error in main: {e}")

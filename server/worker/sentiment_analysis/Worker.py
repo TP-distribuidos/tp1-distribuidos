@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import signal
 import time
@@ -22,6 +21,7 @@ logging.basicConfig(
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+NODE_ID = os.getenv("NODE_ID")
 
 class SentimentWorker:
     def __init__(self, consumer_queue_name=CONSUMER_QUEUE, response_queue_name=PRODUCER_QUEUE):
@@ -31,6 +31,12 @@ class SentimentWorker:
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+        
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
         
         logging.info("Initializing sentiment analysis model...")
         # Load the sentiment analysis pipeline from transformers
@@ -43,42 +49,53 @@ class SentimentWorker:
         
         logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queue '{response_queue_name}'")
     
-    async def run(self):
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+    
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Sentiment Analysis Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
+        # Start consuming messages (this will block until shutdown)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            logging.info("Received keyboard interrupt, shutting down...")
+            self._running = False
+        except Exception as e:
+            logging.error(f"Error during message consumption: {e}")
+            return False
             
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # Declare queues (idempotent operation)
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             return False
             
-        response_queue = await self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
+        response_queue = self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
         if not response_queue:
             return False
 
         # Set up consumer
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False,
@@ -90,25 +107,34 @@ class SentimentWorker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, channel, method, properties, body):
         """Process a message from the queue"""
         try:
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id and data from the deserialized message
             client_id = deserialized_message.get("client_id")
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
+            operation_id = deserialized_message.get("operation_id")
             
             if disconnect_marker:
-                response_message = self._add_metadata(
+                # Generate an operation ID for this message
+                new_operation_id = self._get_next_message_id()
+                
+                response_message = Serializer.add_metadata(
                     client_id=client_id,
+                    data=None,
+                    eof_marker=False,
+                    query=None,
                     disconnect_marker=True,
+                    operation_id=new_operation_id,
+                    node_id=self.node_id
                 )
                 
                 # Send processed data to response queue
-                success = await self.rabbitmq.publish_to_queue(
+                success = self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
@@ -119,36 +145,51 @@ class SentimentWorker:
             
             elif eof_marker:
                 logging.info(f"\033[93mReceived EOF marker for client_id '{client_id}'\033[0m")
-                # Pass through EOF marker to response queue
-                response_message = {
-                    "client_id": client_id,
-                    "data": [],
-                    "EOF_MARKER": True
-                }
+                # Generate an operation ID for the EOF message
+                new_operation_id = self._get_next_message_id()
                 
-                await self.rabbitmq.publish_to_queue(
+                # Pass through EOF marker to response queue using add_metadata
+                response_message = Serializer.add_metadata(
+                    client_id=client_id,
+                    data=[],
+                    eof_marker=True,
+                    query=None,
+                    disconnect_marker=False,
+                    operation_id=new_operation_id,
+                    node_id=self.node_id
+                )
+                
+                self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
                 
-                await message.ack()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             # Process the movie data for sentiment analysis
             elif data:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
-                processed_data = await self._analyze_sentiment_and_calculate_ratios(data)
+                processed_data = self._analyze_sentiment_and_calculate_ratios(data)
                 
-                # TODO: Move to _send_data
-                # Prepare response message using the standardized _add_metadata method
-                response_message = self._add_metadata(
+                # Use incremental ID if no operation_id is provided
+                if operation_id is None:
+                    operation_id = self._get_next_message_id()
+                    
+                # Prepare response message using the standardized add_metadata method
+                response_message = Serializer.add_metadata(
                     client_id=client_id,
-                    data=processed_data
+                    data=processed_data,
+                    eof_marker=False,
+                    query=None,
+                    disconnect_marker=False,
+                    operation_id=operation_id,
+                    node_id=self.node_id
                 )
                 
                 # Send processed data to response queue
-                success = await self.rabbitmq.publish_to_queue(
+                success = self.rabbitmq.publish_to_queue(
                     queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
@@ -160,13 +201,20 @@ class SentimentWorker:
                 logging.warning(f"Received empty data from client {client_id}")
             
             # Acknowledge message
-            await message.ack()
-            
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+
         except Exception as e:
             logging.error(f"Error processing message: {e}")
-            await message.reject(requeue=False)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-    async def _analyze_sentiment_and_calculate_ratios(self, data):
+    def _analyze_sentiment_and_calculate_ratios(self, data):
         processed_movies = []
         start_time = time.time()
         
@@ -220,8 +268,8 @@ class SentimentWorker:
                     logging.error(f"Error processing movie {movie.get('original_title', 'Unknown')}: {e}")
                     continue
             
-            # Sleep a tiny bit to allow other async operations to run
-            await asyncio.sleep(0.01)
+            # Sleep a tiny bit to allow other operations to run
+            time.sleep(0.01)
         
         total_time = time.time() - start_time
         
@@ -257,19 +305,10 @@ class SentimentWorker:
             logging.error(f"Error during sentiment analysis: {e}")
             return ("NEUTRAL", 0.5)
         
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
-        """Prepare the message to be sent to the output queue - standardized across workers"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": eof_marker,
-            "query": query,
-            "DISCONNECT": disconnect_marker
-        }
-        return message
+
     
     def _handle_shutdown(self, *_):
         logging.info(f"Shutting down sentiment analysis worker...")
         self._running = False
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.close()

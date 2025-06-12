@@ -1,7 +1,6 @@
-import asyncio
 import logging
-import aio_pika
-from typing import Optional, Any, Dict
+import pika
+from typing import Optional, Any, Dict, Callable
 
 class RabbitMQClient:
     def __init__(self, host="rabbitmq", port=5672, username="guest", password="guest"):
@@ -9,145 +8,156 @@ class RabbitMQClient:
         self.port = port
         self.username = username
         self.password = password
-        self.connection_string = f"amqp://{username}:{password}@{host}:{port}/"
-        self._connection: Optional[aio_pika.Connection] = None
-        self._channel: Optional[aio_pika.Channel] = None
-        self._exchanges: Dict[str, aio_pika.Exchange] = {}
-        self._queues: Dict[str, aio_pika.Queue] = {}
+        self._connection: Optional[pika.BlockingConnection] = None
+        self._channel: Optional[pika.channel.Channel] = None
         self._consumers = {}
+        self._declared_exchanges = set()
+        self._declared_queues = set()
 
         logging.info(f"RabbitMQ client initialized for {host}:{port}")
     
-    async def connect(self) -> bool:
+    def connect(self) -> bool:
         """Establish connection to RabbitMQ server"""
         try:
-            if self._connection and not self._connection.is_closed:
+            if self._connection and self._connection.is_open:
                 return True
                 
-            self._connection = await aio_pika.connect_robust(
-                self.connection_string,
-                retry_delay=1, 
+            credentials = pika.PlainCredentials(self.username, self.password)
+            parameters = pika.ConnectionParameters(
+                host=self.host,
+                port=self.port,
+                credentials=credentials,
                 heartbeat=60
             )
-            self._channel = await self._connection.channel()
+            
+            self._connection = pika.BlockingConnection(parameters)
+            self._channel = self._connection.channel()
             logging.info(f"Connected to RabbitMQ at {self.host}:{self.port}")
             return True
         except Exception as e:
             logging.error(f"Failed to connect to RabbitMQ: {e}")
             return False
     
-    async def close(self):
+    def close(self):
         """Close the RabbitMQ connection"""
         try:
-            # Clean up consumers first
-            for consumer in self._consumers.values():
-                try:
-                    # Cancel consumer if possible
-                    if hasattr(consumer, 'cancel'):
-                        await consumer.cancel()
-                except Exception as e:
-                    logging.warning(f"Error cancelling consumer: {e}")
-                    
-            self._consumers.clear()
-                
-            # Then close channel and connection
-            if self._channel:
-                await self._channel.close()
+            if self._channel and self._channel.is_open:
+                self._channel.close()
                 self._channel = None
                 
-            if self._connection and not self._connection.is_closed:
-                await self._connection.close()
+            if self._connection and self._connection.is_open:
+                self._connection.close()
                 self._connection = None
+            
+            # Clear declaration caches on connection close
+            self._declared_exchanges.clear()
+            self._declared_queues.clear()
                 
             logging.info("RabbitMQ connection closed")
         except Exception as e:
             logging.error(f"Error closing RabbitMQ connection: {e}")
     
-    async def declare_exchange(self, name: str, exchange_type=aio_pika.ExchangeType.DIRECT, 
-                             durable=True) -> Optional[aio_pika.Exchange]:
+    def declare_exchange(self, name: str, exchange_type='direct', durable=True) -> bool:
         """Declare an exchange"""
         try:
             if not self._channel:
-                if not await self.connect():
-                    return None
+                if not self.connect():
+                    return False
+            
+            # Check if we've already declared this exchange with same parameters
+            exchange_key = (name, exchange_type, durable)
+            if exchange_key in self._declared_exchanges:
+                return True
                     
-            exchange = await self._channel.declare_exchange(
-                name, 
-                type=exchange_type,
+            self._channel.exchange_declare(
+                exchange=name, 
+                exchange_type=exchange_type,
                 durable=durable
             )
-            self._exchanges[name] = exchange
+            
+            # Cache this exchange declaration
+            self._declared_exchanges.add(exchange_key)
             logging.info(f"Exchange '{name}' declared")
-            return exchange
+            return True
         except Exception as e:
             logging.error(f"Failed to declare exchange '{name}': {e}")
-            return None
+            return False
     
-    async def declare_queue(self, name: str, durable=True) -> Optional[aio_pika.Queue]:
+    def declare_queue(self, name: str, durable=True) -> bool:
         """Declare a queue"""
         try:
             if not self._channel:
-                if not await self.connect():
-                    return None
+                if not self.connect():
+                    return False
+            
+            # Check if we've already declared this queue with same parameters
+            queue_key = (name, durable)
+            if queue_key in self._declared_queues:
+                return True
                     
-            queue = await self._channel.declare_queue(
-                name,
+            self._channel.queue_declare(
+                queue=name,
                 durable=durable
             )
-            self._queues[name] = queue
+            
+            # Cache this queue declaration
+            self._declared_queues.add(queue_key)
             logging.info(f"Queue '{name}' declared")
-            return queue
+            return True
         except Exception as e:
             logging.error(f"Failed to declare queue '{name}': {e}")
-            return None
+            return False
     
-    async def bind_queue(self, queue_name: str, exchange_name: str, routing_key: str) -> bool:
+    def bind_queue(self, queue_name: str, exchange_name: str, routing_key: str, exchange_type='direct') -> bool:
         """Bind queue to exchange with routing key"""
         try:
-            if queue_name not in self._queues:
-                queue = await self.declare_queue(queue_name)
-                if not queue:
+            if not self._channel:
+                if not self.connect():
                     return False
-            else:
-                queue = self._queues[queue_name]
                 
-            if exchange_name not in self._exchanges:
-                exchange = await self.declare_exchange(exchange_name)
-                if not exchange:
-                    return False
-            else:
-                exchange = self._exchanges[exchange_name]
+            # Ensure exchange and queue exist with the correct type
+            if not self.declare_exchange(exchange_name, exchange_type=exchange_type):
+                return False
                 
-            await queue.bind(exchange, routing_key)
+            if not self.declare_queue(queue_name):
+                return False
+                
+            # Create a binding - note that RabbitMQ will silently ignore duplicate bindings
+            # so this operation is idempotent by nature
+            self._channel.queue_bind(
+                queue=queue_name,
+                exchange=exchange_name,
+                routing_key=routing_key
+            )
+            
             logging.info(f"Queue '{queue_name}' bound to exchange '{exchange_name}' with key '{routing_key}'")
             return True
         except Exception as e:
             logging.error(f"Failed to bind queue '{queue_name}' to exchange '{exchange_name}': {e}")
             return False
     
-    async def publish(self, exchange_name: str, routing_key: str, message: str, 
-                    persistent=True) -> bool:
+    def publish(self, exchange_name: str, routing_key: str, message: str, persistent=True, exchange_type='direct') -> bool:
         """Publish message to exchange with routing key"""
         try:
-            if not self._channel or self._connection.is_closed:
-                if not await self.connect():
+            if not self._channel or not self._connection.is_open:
+                if not self.connect():
                     return False
-                    
-            if exchange_name not in self._exchanges:
-                exchange = await self.declare_exchange(exchange_name)
-                if not exchange:
-                    return False
-            else:
-                exchange = self._exchanges[exchange_name]
+            
+            # Ensure exchange exists with correct type
+            if not self.declare_exchange(exchange_name, exchange_type=exchange_type):
+                return False
+                
+            properties = pika.BasicProperties(
+                delivery_mode=2 if persistent else 1  # 2 = persistent, 1 = non-persistent
+            )
             
             message_body = message.encode('utf-8') if isinstance(message, str) else message
             
-            await exchange.publish(
-                aio_pika.Message(
-                    body=message_body,
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT if persistent else aio_pika.DeliveryMode.NOT_PERSISTENT
-                ),
-                routing_key=routing_key
+            self._channel.basic_publish(
+                exchange=exchange_name,
+                routing_key=routing_key,
+                body=message_body,
+                properties=properties
             )
             
             return True
@@ -155,81 +165,93 @@ class RabbitMQClient:
             logging.error(f"Failed to publish to exchange '{exchange_name}': {e}")
             return False
     
-    async def consume(self, queue_name: str, callback, no_ack=False, prefetch_count=None):
+    def consume(self, queue_name: str, callback: Callable, no_ack=False, prefetch_count=1) -> bool:
         """Set up consumer for a queue"""
         try:
             if not self._channel:
-                if not await self.connect():
+                if not self.connect():
                     return False
             
-            if prefetch_count is not None:
-                await self._channel.set_qos(prefetch_count=prefetch_count)
+            # Set QoS - FIXED: prefetch_size must be 0 (RabbitMQ doesn't support non-zero values)
+            self._channel.basic_qos(prefetch_count=prefetch_count)
                     
-            if queue_name not in self._queues:
-                queue = await self.declare_queue(queue_name)
-                if not queue:
-                    return False
-            else:
-                queue = self._queues[queue_name]
-            
-            # Store the consumer tag, but use the queue's consume method
-            # which returns a consumer object in aio-pika
-            consumer = await queue.consume(
-                callback=callback,
-                no_ack=no_ack
+            # Ensure queue exists
+            if not self.declare_queue(queue_name):
+                return False
+                
+            # Set up consumer with callback
+            self._channel.basic_consume(
+                queue=queue_name,
+                on_message_callback=callback,
+                auto_ack=no_ack
             )
             
-            self._consumers[queue_name] = consumer
-            
-            logging.info(f"Consumer set up for queue '{queue_name}'")
+            self._consumers[queue_name] = True
+            logging.info(f"Consumer set up for queue '{queue_name}' with prefetch_count={prefetch_count}")
             return True
         except Exception as e:
             logging.error(f"Failed to set up consumer for queue '{queue_name}': {e}")
             return False
-
-    async def cancel_consumer(self, queue_name: str) -> bool:
-        """Cancel a consumer for a specific queue"""
-        try:
-            if queue_name not in self._consumers:
-                logging.warning(f"No active consumer found for queue '{queue_name}'")
-                return False
-                
-            consumer_tag = self._consumers[queue_name]
             
-            # In aio_pika, we need to get the queue and cancel the consumer by tag
-            if queue_name in self._queues:
-                queue = self._queues[queue_name]
-                await queue.cancel(consumer_tag)
-                
-            del self._consumers[queue_name]
-            logging.info(f"Consumer for queue '{queue_name}' cancelled")
+    def start_consuming(self):
+        """Start consuming messages (blocking call)"""
+        try:
+            if not self._channel:
+                if not self.connect():
+                    return False
+                    
+            logging.info("Starting to consume messages...")
+            self._channel.start_consuming()
+            return True
+        except KeyboardInterrupt:
+            logging.info("Keyboard interrupt received, stopping consumer")
+            self.stop_consuming()
+            return False
+        except Exception as e:
+            logging.error(f"Error in consuming messages: {e}")
+            return False
+            
+    def stop_consuming(self):
+        """Stop consuming messages"""
+        try:
+            if self._channel and self._channel.is_open:
+                self._channel.stop_consuming()
+                self._consumers.clear()
+                logging.info("Stopped consuming messages")
             return True
         except Exception as e:
-            logging.error(f"Failed to cancel consumer for queue '{queue_name}': {e}")
-            raise e
-        
-    async def publish_to_queue(self, queue_name: str, message: str, persistent=True) -> bool:
+            logging.error(f"Error stopping consumer: {e}")
+            return False
+    
+    def reset_declaration_cache(self):
+        """Reset the cache of declared exchanges and queues"""
+        self._declared_exchanges.clear()
+        self._declared_queues.clear()
+        logging.info("Declaration cache reset")
+
+    def publish_to_queue(self, queue_name: str, message: str, persistent=True) -> bool:
         """Publish message directly to queue using the default exchange"""
         try:
-            if not self._channel or self._connection.is_closed:
-                if not await self.connect():
+            if not self._channel or not self._connection.is_open:
+                if not self.connect():
                     return False
                     
             # Ensure queue exists
-            if queue_name not in self._queues:
-                queue = await self.declare_queue(queue_name)
-                if not queue:
-                    return False
-            # TODO check if this should be done instead by the encode module
+            if not self.declare_queue(queue_name):
+                return False
+                
+            properties = pika.BasicProperties(
+                delivery_mode=2 if persistent else 1  # 2 = persistent, 1 = non-persistent
+            )
+            
             message_body = message.encode('utf-8') if isinstance(message, str) else message
             
-            # Use default exchange (empty string) and queue_name as routing key
-            await self._channel.default_exchange.publish(
-                aio_pika.Message(
-                    body=message_body,
-                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT if persistent else aio_pika.DeliveryMode.NOT_PERSISTENT
-                ),
-                routing_key=queue_name  # In default exchange, routing_key = queue_name
+            # Default exchange is empty string
+            self._channel.basic_publish(
+                exchange='',
+                routing_key=queue_name,  # In default exchange, routing_key = queue_name
+                body=message_body,
+                properties=properties
             )
             
             return True

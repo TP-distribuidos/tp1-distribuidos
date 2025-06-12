@@ -190,7 +190,7 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
                                                       network)
     services.update(sentinel_filter_by_year)
     
-    # 2. Add sentinel for join_credits_router (existing)
+    # 2. Add sentinel for join_credits_router
     credits_router_host, credits_router_port = get_credits_router_host_and_port()
     sentinel_join_credits = generate_sentinel_service("join_credits_router", 
                                                    [credits_router_host], 

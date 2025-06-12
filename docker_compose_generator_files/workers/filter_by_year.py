@@ -30,8 +30,9 @@ def generate_filter_by_year_workers(num_workers=2, network=NETWORK):
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
         worker_port = base_port + (i - 1) * 10
+        worker_name = f"filter_by_year_worker_{i}"
         
-        services[f"filter_by_year_worker_{i}"] = {
+        services[worker_name] = {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/filter_by_year/Dockerfile"
@@ -42,14 +43,16 @@ def generate_filter_by_year_workers(num_workers=2, network=NETWORK):
             ],
             "env_file": ["./server/worker/filter_by_year/.env"],
             "environment": [
-                f"ROUTER_CONSUME_QUEUE=filter_by_year_worker_{i}",
+                f"ROUTER_CONSUME_QUEUE={worker_name}",
                 "ROUTER_PRODUCER_QUEUE=country_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "volumes": [
                 "./server/worker/filter_by_year:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/persistence/filter_by_year_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

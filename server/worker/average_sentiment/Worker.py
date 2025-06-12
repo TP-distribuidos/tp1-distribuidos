@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import signal
 import os
+import time
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
@@ -17,6 +17,7 @@ logging.basicConfig(
 )
 
 # Constants and configuration
+NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE", "average_sentiment_worker")
 COLLECTOR_QUEUE = os.getenv("COLLECTOR_QUEUE", "average_sentiment_collector_router")
 QUERY_5 = os.getenv("QUERY_5", "5")
@@ -34,48 +35,61 @@ class Worker:
         # Initialize client data dictionary to track sentiment data per client
         self.client_data = {}
         
+        # Message counter for incremental IDs
+        self.message_counter = 0
+        
+        # Store the node ID for message identification
+        self.node_id = NODE_ID
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Average Sentiment Worker initialized for queue '{consumer_queue_name}', producer queue '{self.producer_queue_name}'")
     
-    async def run(self):
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Average Sentiment Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
-            
+        # Start consuming messages (blocking call)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            self._handle_shutdown()
+        
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _get_next_message_id(self):
+        """Get the next incremental message ID for this node"""
+        self.message_counter += 1
+        return self.message_counter
+        
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # Declare queues (idempotent operation)
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             return False
             
-        producer_queue = await self.rabbitmq.declare_queue(self.producer_queue_name, durable=True)
+        producer_queue = self.rabbitmq.declare_queue(self.producer_queue_name, durable=True)
         if not producer_queue:
             return False
 
         # Set up consumer
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False,
@@ -87,26 +101,27 @@ class Worker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, channel, method, properties, body):
         """Process a message from the queue"""
         try:
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id and data from the deserialized message
             client_id = deserialized_message.get("clientId", deserialized_message.get("client_id"))
             data = deserialized_message.get("data", [])
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
 
             if disconnect_marker:
-                await self.send_data(client_id, data, False, disconnect_marker=True)
+                self.send_data(client_id, data, False, disconnect_marker=True)
                 self.client_data.pop(client_id, None)
-                # TODO: move ack to default behaviour
-                await message.ack()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             elif eof_marker:
                 logging.info(f"Received EOF marker for client_id '{client_id}'")
+                new_operation_id = self._get_next_message_id()
                 
                 if client_id in self.client_data:
                     # Calculate final averages
@@ -124,10 +139,10 @@ class Worker:
                     }]
                     
                     # First: Send the data 
-                    await self.send_data(client_id, result, False, QUERY_5)
+                    self.send_data(client_id, result, False, QUERY_5, operation_id=new_operation_id)
                     
                     # Second: Send message with EOF=True
-                    await self.send_data(client_id, [], True, QUERY_5)
+                    self.send_data(client_id, [], True, QUERY_5)
                     
                     # Clean up client data after sending
                     del self.client_data[client_id]
@@ -135,7 +150,7 @@ class Worker:
                 else:
                     logging.warning(f"Received EOF for client {client_id} but no data found")
                 
-                await message.ack()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             # Process the sentiment data 
@@ -169,20 +184,26 @@ class Worker:
                     logging.debug(f"Client {client_id} stats - POSITIVE: {positive_count}, NEGATIVE: {negative_count}")
                 
                 # Acknowledge message
-                await message.ack()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
                 
             else:
                 logging.warning(f"Received empty data from client {client_id}")
-                await message.ack()
-                
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
+        
         except Exception as e:
             logging.error(f"Error processing message: {e}")
-            await message.reject(requeue=False)
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
     
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
+    def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
         """Send data to the producer queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker)
-        success = await self.rabbitmq.publish_to_queue(
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
+        success = self.rabbitmq.publish_to_queue(
             queue_name=self.producer_queue_name,
             message=Serializer.serialize(message),
             persistent=True
@@ -190,19 +211,15 @@ class Worker:
         if not success:
             logging.error(f"Failed to send data with query '{query}' for client {client_id}")
     
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
-        """Prepare the message to be sent to the output queue - standardized across workers"""
-        message = {        
-            "client_id": client_id,
-            "data": data,
-            "EOF_MARKER": eof_marker,
-            "query": query,
-            "DISCONNECT": disconnect_marker,
-        }
-        return message
-    
     def _handle_shutdown(self, *_):
+        """Handle shutdown signals"""
+        if not self._running:
+            return
+            
         logging.info(f"Shutting down average sentiment worker...")
         self._running = False
+        
+        # Stop consuming and close connection
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.stop_consuming()
+            self.rabbitmq.close()

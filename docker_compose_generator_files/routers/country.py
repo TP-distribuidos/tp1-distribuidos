@@ -45,7 +45,8 @@ def generate_country_router(num_year_workers=2, num_country_workers=2, network=N
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/country_router:/app/persistence"
             ],
             "networks": [network]
         }

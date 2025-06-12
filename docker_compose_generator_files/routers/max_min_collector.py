@@ -36,7 +36,8 @@ def generate_max_min_collector_router(num_max_min_workers=2, network=NETWORK):
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/max_min_collector_router:/app/persistence"
             ],
             "networks": [network]
         }

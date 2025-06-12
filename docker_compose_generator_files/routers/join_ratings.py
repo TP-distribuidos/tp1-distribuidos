@@ -43,7 +43,8 @@ def generate_join_ratings_router(num_join_ratings_workers=2, network=NETWORK):
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/join_ratings_router:/app/persistence"
             ],
             "networks": [network]
         }

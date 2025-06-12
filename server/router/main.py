@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import sys
@@ -12,7 +11,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-async def main():
+def main():
     """Main function to run the gateway worker"""
     load_dotenv()
     
@@ -56,10 +55,12 @@ async def main():
         exchange_type=exchange_type,
         balancer_type=balancer_type
     )
-    await worker.run()
+    worker.run()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
-        logging.info("Gateway shutting down")
+        logging.info("Router shut down gracefully")
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")

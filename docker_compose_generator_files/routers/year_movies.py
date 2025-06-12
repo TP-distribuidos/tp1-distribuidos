@@ -42,7 +42,8 @@ def generate_year_movies_router(num_workers=2, network=NETWORK):
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/year_movies_router:/app/persistence"
             ],
             "networks": [network]
         }

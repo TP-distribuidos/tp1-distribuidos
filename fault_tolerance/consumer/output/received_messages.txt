@@ -1,0 +1,11 @@
+PROCESSING SUMMARY
+==================
+Total value accumulated: 21
+Number of batches processed: 21
+Messages processed (counter): 20
+Minimum expected messages: 21
+Status: ✓ COMPLETE
+Expected total for 21 batches: 21
+Math check: ✓ CORRECT
+
+

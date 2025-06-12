@@ -19,8 +19,9 @@ def generate_top_workers(num_workers=3, network=NETWORK):
     for i in range(1, num_workers + 1):
         # Calculate unique port for each worker
         worker_port = base_port + (i - 1) * 10
+        worker_name = f"top_worker_{i}"
         
-        services[f"top_worker_{i}"] = {
+        services[worker_name] = {
             "build": {
                 "context": "./server",
                 "dockerfile": "worker/top/Dockerfile"
@@ -30,15 +31,17 @@ def generate_top_workers(num_workers=3, network=NETWORK):
                 f"{worker_port}:{worker_port}"
             ],
             "environment": [
-                f"ROUTER_CONSUME_QUEUE=top_worker_{i}",
+                f"ROUTER_CONSUME_QUEUE={worker_name}",
                 "ROUTER_PRODUCER_QUEUE=top_10_actors_collector_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={worker_name}_node"
             ],
             "depends_on": ["rabbitmq"],
             "volumes": [
                 "./server/worker/top:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/persistence/top_worker_{i}:/app/persistence"
             ],
             "networks": [network]
         }

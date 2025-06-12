@@ -52,7 +52,8 @@ def generate_join_movies_router(num_country_workers=2, num_join_credits_workers=
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/join_movies_router:/app/persistence"
             ],
             "networks": [network]
         }

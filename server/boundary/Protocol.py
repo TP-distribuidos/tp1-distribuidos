@@ -1,17 +1,19 @@
 class Protocol:
-    def __init__(self, loop):
-        self.loop = loop
+    def __init__(self):
+        """Initialize the protocol handler (no loop required)"""
+        pass
 
-    async def recv_exact(self, sock, num_bytes):
+    def recv_exact(self, sock, num_bytes):
+        """Receive exactly num_bytes from the socket"""
         buffer = bytearray()
         while len(buffer) < num_bytes:
-            chunk = await self.loop.sock_recv(sock, num_bytes - len(buffer))
+            chunk = sock.recv(num_bytes - len(buffer))
             if not chunk:
                 raise ConnectionError("Connection closed while receiving data")
             buffer.extend(chunk)
         return bytes(buffer)
 
-    async def send_all(self, sock, data, query):
+    def send_all(self, sock, data, query):
         """
         Send data with query type indicator
         First sends 4 bytes with the length (including query type byte),
@@ -28,25 +30,26 @@ class Protocol:
         length_bytes = total_length.to_bytes(4, byteorder='big')
         
         # Send length bytes
-        await self._send_all(sock, length_bytes)
+        self._send_all_sync(sock, length_bytes)
         
         # Send query type byte
-        await self._send_all(sock, query_byte)
+        self._send_all_sync(sock, query_byte)
         
         # Send data bytes
-        await self._send_all(sock, data_bytes)
+        self._send_all_sync(sock, data_bytes)
 
-    async def _send_all(self, sock, data):
-        # sock_sendall already ensures all data is sent and returns None, not bytes sent
-        await self.loop.sock_sendall(sock, data)
+    def _send_all_sync(self, sock, data):
+        """Send all data to the socket"""
+        sock.sendall(data)
         return len(data)
-        
 
     def _encode_data(self, data):
+        """Encode data to bytes with length prefix"""
         data_bytes = data.encode('utf-8')
         length = len(data_bytes)
         length_bytes = length.to_bytes(4, byteorder='big')
         return length_bytes, data_bytes
 
     def decode(self, data_bytes):
+        """Decode bytes to string"""
         return data_bytes.decode('utf-8')

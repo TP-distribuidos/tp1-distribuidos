@@ -104,12 +104,14 @@ def generate_count_workers(num_shards=2, num_workers_per_shard=2, network=NETWOR
             "environment": [
                 f"ROUTER_CONSUME_QUEUE={queue}",
                 "ROUTER_PRODUCER_QUEUE=top_router",
-                f"SENTINEL_PORT={worker_port}"
+                f"SENTINEL_PORT={worker_port}",
+                f"NODE_ID={queue}_node"
             ],
             "volumes": [
                 "./server/worker/count:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                f"./server/persistence/count_worker_{i+1}:/app/persistence"
             ],
             "networks": [network]
         }

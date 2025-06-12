@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import os
 import sys
+import time
 from Boundary import Boundary
 from dotenv import load_dotenv
 
@@ -12,7 +12,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-async def main():
+def main():
     # Load environment variables
     load_dotenv()
     
@@ -31,14 +31,19 @@ async def main():
         try:
             server = Boundary(port, 100, movies_router_queue, credits_router_queue, ratings_router_queue)
             server.movies_router_q5_queue = movies_router_q5_queue
-            await server.run()
+            server.run()
             break
         except Exception as e:
             retry_count += 1
             logging.error(f"Error running server: {e}. Retry {retry_count}")
             wait_time = min(30, 2 ** retry_count)  # Cap the wait time at 30 seconds
             logging.info(f"Waiting {wait_time} seconds before retrying...")
-            await asyncio.sleep(wait_time)
+            time.sleep(wait_time)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Server stopped by user.")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")

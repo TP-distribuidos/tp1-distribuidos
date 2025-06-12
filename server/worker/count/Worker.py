@@ -1,12 +1,15 @@
-import asyncio
 import logging
 import signal
 import os
+import time
 from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
-import ast
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +21,7 @@ logging.basicConfig(
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
+NODE_ID = os.getenv("NODE_ID") 
 
 # Output queues and exchange
 ROUTER_PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
@@ -42,43 +46,54 @@ class Worker:
 
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        self.participations = {}
+        self.data_persistence = WriteAheadLog(
+          state_interpreter=StatelessStateInterpreter(),
+          storage=FileSystemStorage(),
+          service_name="count_worker",
+          base_dir="/app/persistence"
+        )
+        
+        # WAL metadata tracking
+        self.node_id = NODE_ID
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
+        logging.info(f"Count Worker initialized with NODE_ID: {self.node_id}")
+        logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_names}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    async def run(self):
+
+    def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
         # Connect to RabbitMQ
-        if not await self._setup_rabbitmq():
+        if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
         logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
-        # Keep the worker running until shutdown is triggered
-        while self._running:
-            await asyncio.sleep(1)
-            
+        # Start consuming messages (blocking call)
+        try:
+            self.rabbitmq.start_consuming()
+        except KeyboardInterrupt:
+            self._handle_shutdown()
+        
         return True
     
-    async def _setup_rabbitmq(self, retry_count=1):
+    def _setup_rabbitmq(self, retry_count=1):
         """Set up RabbitMQ connection and consumer"""
         # Connect to RabbitMQ
-        connected = await self.rabbitmq.connect()
+        connected = self.rabbitmq.connect()
         if not connected:
             logging.error(f"Failed to connect to RabbitMQ, retrying in {retry_count} seconds...")
             wait_time = min(30, 2 ** retry_count)
-            await asyncio.sleep(wait_time)
-            return await self._setup_rabbitmq(retry_count + 1)
+            time.sleep(wait_time)
+            return self._setup_rabbitmq(retry_count + 1)
         
         # -------------------- CONSUMER --------------------
         # Declare input queue (from router)
-        queue = await self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
+        queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
             logging.error(f"Failed to declare consumer queue '{self.consumer_queue_name}'")
             return False
@@ -86,7 +101,7 @@ class Worker:
 
         # -------------------- PRODUCER --------------------
         # Declare exchange
-        exchange = await self.rabbitmq.declare_exchange(
+        exchange = self.rabbitmq.declare_exchange(
             name=self.exchange_name_producer,
             exchange_type=self.exchange_type_producer,
             durable=True
@@ -97,13 +112,13 @@ class Worker:
         
         # Declare output queues
         for queue_name in self.producer_queue_names:
-            queue = await self.rabbitmq.declare_queue(queue_name, durable=True)
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
             if not queue:
                 logging.error(f"Failed to declare producer queue '{queue_name}'")
                 return False        
             
             # Bind queues to exchange
-            success = await self.rabbitmq.bind_queue(
+            success = self.rabbitmq.bind_queue(
                 queue_name=queue_name,
                 exchange_name=self.exchange_name_producer,
                 routing_key=queue_name
@@ -114,7 +129,7 @@ class Worker:
         # --------------------------------------------------
         
         # Set up consumer for the input queue
-        success = await self.rabbitmq.consume(
+        success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False
@@ -126,11 +141,11 @@ class Worker:
 
         return True
     
-    async def _process_message(self, message):
+    def _process_message(self, channel, method, properties, body):
         """Process a message"""
         try:
             # Deserialize the message
-            deserialized_message = Serializer.deserialize(message.body)
+            deserialized_message = Serializer.deserialize(body)
             
             # Extract client_id, data, and query from the deserialized message
             client_id = deserialized_message.get("client_id")
@@ -138,32 +153,55 @@ class Worker:
             query = deserialized_message.get("query")
             eof_marker = deserialized_message.get("EOF_MARKER")
             disconnect_marker = deserialized_message.get("DISCONNECT")
+            operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self.data_persistence.get_counter_value()
+            node_id = deserialized_message.get("node_id")
 
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
             if disconnect_marker:
-                await self.send_data(client_id, data, False, disconnect_marker=True)
-                self.participations.pop(client_id, None)
+                # Get message ID for this operation
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
+                self.data_persistence.clear(client_id)
 
             elif eof_marker:
                 logging.info(f"EOF marker received for client_id '{client_id}'")
-                await self.send_data(client_id, data, True, query)
+                self.send_data(client_id, data, True, query, operation_id=new_operation_id)
+                self.data_persistence.clear(client_id)
+
             elif data:
-                # TODO: This is not necessarily anymore, it could be just an "anonymous" dict
-                self.participations[client_id] = {}
+                participation_counts = {}
+
                 for actor in data:
-                    actor_name = actor.get("name")
-                    if not actor_name in self.participations[client_id]:
-                        self.participations[client_id][actor_name] = 0
-                    self.participations[client_id][actor_name] += 1
-                parsed_data = self._parse_data(self.participations[client_id])
-                await self.send_data(client_id, parsed_data, False, query)
+                  actor_name = actor.get("name")
+                  if not actor_name in participation_counts:
+                      participation_counts[actor_name] = 0
+                  participation_counts[actor_name] += 1
+
+                parsed_data = self._parse_data(participation_counts)
+
+                self.send_data(client_id, parsed_data, False, query, operation_id=new_operation_id)
+                self.data_persistence.persist(client_id, node_id, {}, operation_id)
             else:
                 logging.warning(f"No data in message: {deserialized_message}")
 
-            await message.ack()
-            
+            self.data_persistence.increment_counter()
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+
+        except ValueError as ve:
+            if "was previously cleared, cannot recreate directory" in str(ve):
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                logging.error(f"ValueError processing message: {ve}")
+                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
+                    
         except Exception as e:
             logging.error(f"Failed to deserialize message: {e}")
-            await message.reject(requeue=True)
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
             return
     
     def _parse_data(self, data):
@@ -175,10 +213,12 @@ class Worker:
             parsed_data.append({"name": actor, "count": count})
         return parsed_data
 
-    async def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
-        """Send data to the router queue with query in metadata"""
-        message = self._add_metadata(client_id, data, eof_marker, query, disconnect_marker)
-        success = await self.rabbitmq.publish(
+    def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
+        """Send data to the router queue with query in metadata and WAL metadata"""
+
+        message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)        
+        
+        success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
             routing_key=self.producer_queue_names[0],
             message=Serializer.serialize(message),
@@ -186,26 +226,18 @@ class Worker:
         )
         if not success:
             logging.error(f"Failed to send data with query '{query}' to router queue")
-
-    #TODO: move _add_metadata to Serializer
-    def _add_metadata(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False):
-        """Add metadata to the message"""
-        message = {        
-            "client_id": client_id,
-            "EOF_MARKER": eof_marker,
-            "data": data,
-            "query": query,
-            "DISCONNECT": disconnect_marker
-        }
-        return message
-
+        else:
+            logging.debug(f"Sent message to router queue for client {client_id} with node_id {self.node_id}, message_id {operation_id}")
 
     def _handle_shutdown(self, *_):
         """Handle shutdown signals"""
+        if not self._running:
+            return
+            
         logging.info(f"Shutting down worker...")
         self._running = False
         
-        # Close RabbitMQ connection - note we need to create a task
-        # since this is called from a signal handler
+        # Stop consuming and close connection
         if hasattr(self, 'rabbitmq'):
-            asyncio.create_task(self.rabbitmq.close())
+            self.rabbitmq.stop_consuming()
+            self.rabbitmq.close()

@@ -1,0 +1,81 @@
+--- BATCH 1 ---
+Value: 1
+
+--- BATCH 1 ---
+Value: 1
+
+--- BATCH 1 ---
+Value: 1
+
+--- BATCH 2 ---
+Value: 1
+
+--- BATCH 2 ---
+Value: 1
+
+--- BATCH 2 ---
+Value: 1
+
+--- BATCH 3 ---
+Value: 1
+
+--- BATCH 3 ---
+Value: 1
+
+--- BATCH 3 ---
+Value: 1
+
+--- BATCH 4 ---
+Value: 1
+
+--- BATCH 4 ---
+Value: 1
+
+--- BATCH 4 ---
+Value: 1
+
+--- BATCH 5 ---
+Value: 1
+
+--- BATCH 5 ---
+Value: 1
+
+--- BATCH 5 ---
+Value: 1
+
+--- BATCH 6 ---
+Value: 1
+
+--- BATCH 6 ---
+Value: 1
+
+--- BATCH 6 ---
+Value: 1
+
+--- BATCH 7 ---
+Value: 1
+
+--- BATCH 7 ---
+Value: 1
+
+--- BATCH 7 ---
+Value: 1
+
+
+
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7
+
+
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7
+
+
+--- SUMMARY ---
+Total batches sent: 7
+Value per batch: 1
+Total value sent: 7

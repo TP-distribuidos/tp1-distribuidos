@@ -54,3 +54,17 @@ class Serializer:
         except Exception as e:
             logging.error(f"Deserialization error: {e}")
             raise ValueError(f"Failed to deserialize data: {e}")
+            
+    @staticmethod
+    def add_metadata(client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None, node_id=None):
+        message = {        
+            "client_id": client_id,
+            "EOF_MARKER": eof_marker,
+            "data": data,
+            "query": query,
+            "DISCONNECT": disconnect_marker,
+            "operation_id": operation_id,
+            "node_id": node_id
+        }
+            
+        return message

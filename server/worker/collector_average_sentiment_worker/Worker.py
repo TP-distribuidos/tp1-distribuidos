@@ -6,6 +6,9 @@ from rabbitmq.Rabbitmq_client import RabbitMQClient
 from common.Serializer import Serializer
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+from StateInterpreter import StateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,11 +45,13 @@ class Worker:
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # Store sentiment data from each worker
-        self.client_data = {}
-        
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        # Replace in-memory client_data with WAL
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="average_sentiment_collector",
+            base_dir="/app/persistence"
+        )
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -57,11 +62,6 @@ class Worker:
         
         logging.info(f"Average Sentiment Collector initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_name}'")
         logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -152,37 +152,62 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
-
+            node_id = deserialized_message.get("node_id")
             
-            if client_id not in self.client_data:
-                self.client_data[client_id] = {
-                    "POSITIVE": {"sum": 0, "count": 0},
-                    "NEGATIVE": {"sum": 0, "count": 0}
-                }
+            # Check if this message was already processed (deduplication)
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            # Get a new operation ID for outgoing messages
+            new_operation_id = self.data_persistence.get_counter_value()
 
             if disconnect_marker:
-                removed = self.client_data.pop(client_id, None)
-                if removed is not None:
-                    logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
-
+                self.data_persistence.clear(client_id)
+                logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
             
             elif eof_marker:
-                # If we have data for this client, send it to response queue
-                if client_id in self.client_data:
-                    # Calculate final averages
-                    self._calculate_and_send_final_average(client_id)
-                    
-                    # Clean up client data
-                    del self.client_data[client_id]
-                    logging.info(f"Sent final average sentiment for client {client_id} and cleaned up data")
-                else:
-                    logging.warning(f"Received EOF for client {client_id} but no data found")
+                # If we have data for this client, calculate final average and send
+                try:
+                    sentiment_data = self.data_persistence.retrieve(client_id)
+                    if sentiment_data:
+                        # Calculate final averages and send
+                        self._calculate_and_send_final_average(client_id, sentiment_data, new_operation_id)
+                        
+                        # Clean up client data
+                        self.data_persistence.clear(client_id)
+                        logging.info(f"Sent final average sentiment for client {client_id} and cleaned up data")
+                    else:
+                        logging.warning(f"Received EOF for client {client_id} but no data found")
+                except ValueError as e:
+                    logging.warning(f"Failed to retrieve WAL data for client {client_id}, error: {e}")
             
             elif data:
-                # Process the data from the sentiment worker
-                self._update_sentiment_totals(client_id, data)
-                logging.info(f"Updated sentiment totals for client {client_id}")
+                try:
+                    # Get current sentiment data for client
+                    client_data = self.data_persistence.retrieve(client_id)
+                    
+                    # Initialize if not exists
+                    if not client_data:
+                        client_data = {
+                            "POSITIVE": {"sum": 0, "count": 0},
+                            "NEGATIVE": {"sum": 0, "count": 0}
+                        }
+                    
+                    # Process the data from the sentiment worker
+                    updated_data = self._update_sentiment_totals(client_data, data)
+                    
+                    # Persist the updated data
+                    self.data_persistence.persist(client_id, node_id, updated_data, operation_id)
+                    logging.info(f"Updated sentiment totals for client {client_id}")
+                except ValueError as e:
+                    logging.warning(f"Error updating sentiment data for client {client_id}, error: {e}")
             
+            self.data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
 
         except ValueError as ve:
@@ -196,8 +221,14 @@ class Worker:
             logging.error(f"Error processing message: {e}")
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
     
-    def _update_sentiment_totals(self, client_id, data):
+    def _update_sentiment_totals(self, client_data, data):
         """Update the sentiment totals for a client from new data"""
+        if not client_data:
+            client_data = {
+                "POSITIVE": {"sum": 0, "count": 0},
+                "NEGATIVE": {"sum": 0, "count": 0}
+            }
+            
         for sentiment_data in data:
             sentiment = sentiment_data.get("sentiment")
             sum_value = sentiment_data.get("sum", 0)
@@ -206,27 +237,31 @@ class Worker:
             # Only process if we have valid sentiment type
             if sentiment in ["POSITIVE", "NEGATIVE"]:
                 # Add to the running totals
-                self.client_data[client_id][sentiment]["sum"] += sum_value
-                self.client_data[client_id][sentiment]["count"] += count
+                client_data[sentiment]["sum"] += sum_value
+                client_data[sentiment]["count"] += count
                 
-                logging.debug(f"Client {client_id}, {sentiment} sum: {self.client_data[client_id][sentiment]['sum']}, count: {self.client_data[client_id][sentiment]['count']}")
+                logging.debug(f"Updated {sentiment} sum: {client_data[sentiment]['sum']}, count: {client_data[sentiment]['count']}")
+        
+        return client_data
     
-    def _calculate_and_send_final_average(self, client_id):
+    def _calculate_and_send_final_average(self, client_id, client_sentiment_totals, operation_id):
         """Calculate final average and send to response queue"""
-        if client_id not in self.client_data:
+        if not client_sentiment_totals:
             logging.warning(f"No data found for client {client_id} when trying to calculate final average")
             return
-        
-        client_sentiment_totals = self.client_data[client_id]
         
         # Calculate the averages
         positive_avg = 0
         if client_sentiment_totals["POSITIVE"]["count"] > 0:
             positive_avg = client_sentiment_totals["POSITIVE"]["sum"] / client_sentiment_totals["POSITIVE"]["count"]
+            # Round to 6 significant digits
+            positive_avg = float(f"{positive_avg:.6g}")
         
         negative_avg = 0
         if client_sentiment_totals["NEGATIVE"]["count"] > 0:
             negative_avg = client_sentiment_totals["NEGATIVE"]["sum"] / client_sentiment_totals["NEGATIVE"]["count"]
+            # Round to 6 significant digits
+            negative_avg = float(f"{negative_avg:.6g}")
         
         # Prepare detailed results
         positive_count = client_sentiment_totals["POSITIVE"]["count"]
@@ -244,13 +279,16 @@ class Worker:
         }]
         
         # Send the final results
-        new_operation_id = self._get_next_message_id()
-        self._send_data(client_id, result, True, new_operation_id)
+        self._send_data(client_id, result, True, operation_id)
     
     def _send_data(self, client_id, data, eof_marker=False, operation_id=None):
         """Send data to the response queue"""
         queue_name = self.producer_queue_name[0]
         
+        if operation_id is None:
+            operation_id = self.data_persistence.get_counter_value()
+            self.data_persistence.increment_counter()
+            
         message = Serializer.add_metadata(client_id, data, eof_marker, QUERY_5, False, operation_id, self.node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,
@@ -274,3 +312,7 @@ class Worker:
         if hasattr(self, 'rabbitmq'):
             self.rabbitmq.stop_consuming()
             self.rabbitmq.close()
+            
+        # Shut down the sentinel beacon
+        if hasattr(self, 'sentinel_beacon'):
+            self.sentinel_beacon.shutdown()

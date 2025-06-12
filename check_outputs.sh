@@ -179,6 +179,54 @@ check_q4() {
     return $status
 }
 
+check_q5() {
+    local file=$1
+    local status=0
+    local expected_count=2
+    local found_count=0
+    
+    printf "${BLUE}→ Checking Q5 (Sentiment Analysis)...${NC}\n"
+    
+    # Array of expected entries
+    declare -a expected=(
+        '{"sentiment": "POSITIVE", "average_ratio": 7443.9, "movie_count": 4431}'
+        '{"sentiment": "NEGATIVE", "average_ratio": 3829.52, "movie_count": 3247}'
+    )
+    
+    # Check file exists
+    if [ ! -f "$file" ]; then
+        printf "  ${RED}✗ File $file not found${NC}\n"
+        return 1
+    fi
+    
+    # Check line count - fail if not exact match
+    local actual_count=$(grep -c . "$file")
+    if [ "$actual_count" -ne $expected_count ]; then
+        printf "  ${RED}✗ File has $actual_count records, expected exactly $expected_count${NC}\n"
+        status=1
+    fi
+    
+    # Check each expected line
+    for item in "${expected[@]}"; do
+        # Escape special characters for grep
+        if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
+            ((found_count++))
+        else
+            printf "  ${RED}✗ Missing:${NC} $item\n"
+            status=1
+        fi
+    done
+    
+    # Summary for this file
+    if [ $status -eq 0 ]; then
+        printf "  ${GREEN}✓ All $expected_count sentiment analysis records found!${NC}\n"
+    else
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
+    fi
+    
+    return $status
+}
+
 # Main function
 main() {
     printf "${BOLD}${YELLOW}===== Output Validation Script =====${NC}\n"
@@ -221,6 +269,14 @@ main() {
         # Check Q4
         q4_file="$OUTPUT_DIR/output_records_client_${client}_Q4.json"
         if ! check_q4 "$q4_file"; then
+            client_passed=false
+        fi
+        
+        printf "\n"
+        
+        # Check Q5
+        q5_file="$OUTPUT_DIR/output_records_client_${client}_Q5.json"
+        if ! check_q5 "$q5_file"; then
             client_passed=false
         fi
         

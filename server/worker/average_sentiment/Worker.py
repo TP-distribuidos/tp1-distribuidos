@@ -112,16 +112,16 @@ class Worker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT")
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
 
             if disconnect_marker:
-                self.send_data(client_id, data, False, disconnect_marker=True)
+                self.send_data(client_id, data, False, disconnect_marker=True, operation_id=new_operation_id)
                 self.client_data.pop(client_id, None)
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
             elif eof_marker:
                 logging.info(f"Received EOF marker for client_id '{client_id}'")
-                new_operation_id = self._get_next_message_id()
                 
                 if client_id in self.client_data:
                     # Calculate final averages
@@ -141,8 +141,9 @@ class Worker:
                     # First: Send the data 
                     self.send_data(client_id, result, False, QUERY_5, operation_id=new_operation_id)
                     
+                    new_operation_id = self._get_next_message_id()
                     # Second: Send message with EOF=True
-                    self.send_data(client_id, [], True, QUERY_5)
+                    self.send_data(client_id, [], True, QUERY_5, operation_id=new_operation_id)
                     
                     # Clean up client data after sending
                     del self.client_data[client_id]

@@ -248,7 +248,8 @@ class Boundary:
             except ConnectionError:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                self._send_disconnect_marker(client_id)
+                new_operation_id = self._get_next_message_id()
+                self._send_disconnect_marker(client_id, new_operation_id)
                 self._cleanup_client_resources(client_id)
                 break
                

@@ -443,7 +443,7 @@ class WriteAheadLog(DataPersistenceInterface):
                     
             # If no valid business data items to merge, skip checkpoint
             if not business_data_items:
-                logging.warning(f"No business data found for checkpoint, client {client_id}, node {node_id}")
+                logging.warning(f"No business data found for checkpoint in service {self.service_name}, client {client_id}, node {node_id}")
                 return False
             
             timestamp = str(int(time.time() * 1000))  # millisecond precision
@@ -739,7 +739,7 @@ class WriteAheadLog(DataPersistenceInterface):
                                 logging.debug(f"Extracted business data from log {log_file.name} for node {node_id}")
             
             if not all_business_data_items:
-                logging.info(f"No business data found for client {client_id} across all nodes")
+                logging.info(f"No business data in service {self.service_name} found for client {client_id} across all nodes")
                 return None
                 
             # Use state interpreter to merge all business data items from all nodes

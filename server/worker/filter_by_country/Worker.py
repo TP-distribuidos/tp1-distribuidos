@@ -195,7 +195,6 @@ class Worker:
                 logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
-                self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
@@ -212,7 +211,6 @@ class Worker:
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
                     self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
-                    self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                 if data_response_queue:
                     self.send_response_queue(client_id, data_response_queue, self.producer_queue_names[1], operation_id=new_operation_id)
                     
@@ -220,7 +218,6 @@ class Worker:
                 data_eq_one_country, _ = self._filter_data(data)
                 if data_eq_one_country:
                     projected_data = self._project_to_columns(data_eq_one_country)
-                    self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                     self.send_eq_one_country(client_id, projected_data, self.producer_queue_names[0], operation_id=new_operation_id)
                     
             else:

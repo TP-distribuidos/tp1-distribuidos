@@ -118,10 +118,10 @@ class SentimentWorker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
             operation_id = deserialized_message.get("operation_id")
+            new_operation_id = self._get_next_message_id()
             
             if disconnect_marker:
                 # Generate an operation ID for this message
-                new_operation_id = self._get_next_message_id()
                 
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
@@ -173,10 +173,6 @@ class SentimentWorker:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
                 processed_data = self._analyze_sentiment_and_calculate_ratios(data)
                 
-                # Use incremental ID if no operation_id is provided
-                if operation_id is None:
-                    operation_id = self._get_next_message_id()
-                    
                 # Prepare response message using the standardized add_metadata method
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
@@ -184,7 +180,7 @@ class SentimentWorker:
                     eof_marker=False,
                     query=None,
                     disconnect_marker=False,
-                    operation_id=operation_id,
+                    operation_id=new_operation_id,
                     node_id=self.node_id
                 )
                 

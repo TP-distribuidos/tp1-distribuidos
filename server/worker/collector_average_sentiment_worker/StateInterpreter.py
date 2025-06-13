@@ -37,7 +37,7 @@ class StateInterpreter(StateInterpreterInterface):
         """
         try:
             parsed_data = json.loads(content)
-            if isinstance(parsed_data, dict) and "data" in parsed_data:
+            if "data" in parsed_data:
                 return parsed_data["data"]
             return parsed_data
         except json.JSONDecodeError:
@@ -66,17 +66,11 @@ class StateInterpreter(StateInterpreterInterface):
             "NEGATIVE": {"sum": 0, "count": 0}
         }
         
-        # Combine all entries
+        # Process all entries
         for entry in data_entries:
-            if isinstance(entry, dict):
-                # Process POSITIVE sentiment
-                if "POSITIVE" in entry and isinstance(entry["POSITIVE"], dict):
-                    merged_data["POSITIVE"]["sum"] += entry["POSITIVE"].get("sum", 0)
-                    merged_data["POSITIVE"]["count"] += entry["POSITIVE"].get("count", 0)
-                
-                # Process NEGATIVE sentiment
-                if "NEGATIVE" in entry and isinstance(entry["NEGATIVE"], dict):
-                    merged_data["NEGATIVE"]["sum"] += entry["NEGATIVE"].get("sum", 0)
-                    merged_data["NEGATIVE"]["count"] += entry["NEGATIVE"].get("count", 0)
+            for sentiment_item in entry:
+                sentiment = sentiment_item.get("sentiment")
+                merged_data[sentiment]["sum"] += sentiment_item.get("sum")
+                merged_data[sentiment]["count"] += sentiment_item.get("count")
         
         return merged_data

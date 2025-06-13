@@ -143,10 +143,8 @@ class Worker:
     def _process_message(self, channel, method, properties, body):
         """Process a message from the various average sentiment workers"""
         try:
-            # Deserialize the message
             deserialized_message = Serializer.deserialize(body)
             
-            # Extract client_id, data and EOF marker
             client_id = deserialized_message.get("client_id")
             data = deserialized_message.get("data")
             eof_marker = deserialized_message.get("EOF_MARKER", False)
@@ -154,16 +152,14 @@ class Worker:
             operation_id = deserialized_message.get("operation_id")
             node_id = deserialized_message.get("node_id")
             
-            # Check if this message was already processed (deduplication)
             if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
                 logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
-            # Get a new operation ID for outgoing messages
             new_operation_id = self.data_persistence.get_counter_value()
-
+    
             if disconnect_marker:
                 self.data_persistence.clear(client_id)
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
@@ -171,7 +167,6 @@ class Worker:
                 return
             
             elif eof_marker:
-                # If we have data for this client, calculate final average and send
                 try:
                     sentiment_data = self.data_persistence.retrieve(client_id)
                     if sentiment_data:
@@ -188,35 +183,21 @@ class Worker:
             
             elif data:
                 try:
-                    # Get current sentiment data for client
-                    client_data = self.data_persistence.retrieve(client_id)
-                    
-                    # Initialize if not exists
-                    if not client_data:
-                        client_data = {
-                            "POSITIVE": {"sum": 0, "count": 0},
-                            "NEGATIVE": {"sum": 0, "count": 0}
-                        }
-                    
-                    # Process the data from the sentiment worker
-                    updated_data = self._update_sentiment_totals(client_data, data)
-                    
-                    # Persist the updated data
-                    self.data_persistence.persist(client_id, node_id, updated_data, operation_id)
-                    logging.info(f"Updated sentiment totals for client {client_id}")
+                    self.data_persistence.persist(client_id, node_id, data, operation_id)
+                    logging.info(f"Persisted sentiment data for client {client_id} from node {node_id}")
                 except ValueError as e:
-                    logging.warning(f"Error updating sentiment data for client {client_id}, error: {e}")
+                    logging.warning(f"Error persisting sentiment data for client {client_id}, error: {e}")
             
             self.data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
-
+    
         except ValueError as ve:
             if "was previously cleared, cannot recreate directory" in str(ve):
                 channel.basic_ack(delivery_tag=method.delivery_tag)
             else:
                 logging.error(f"ValueError processing message: {ve}")
                 channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
-
+    
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)

@@ -7,8 +7,8 @@
 # Default values
 INTERVAL=3 # Default interval in seconds
 NUM_CONTAINERS=10  # Default number of containers to kill per interval
-# PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker") #Default prefixed, do not separate with commas.
-PREFIXES=("collector_average_sentiment_worker") 
+PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker") #Default prefixed, do not separate with commas.
+# PREFIXES=("collector_average_sentiment_worker") 
 
 # ANSI Color Codes
 RED='\033[0;31m'

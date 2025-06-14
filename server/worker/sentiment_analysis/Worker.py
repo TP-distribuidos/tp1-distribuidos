@@ -63,7 +63,6 @@ class SentimentWorker:
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info(f"Sentiment Analysis Worker running and consuming from queue '{self.consumer_queue_name}'")
         
         # Start consuming messages (this will block until shutdown)
         try:

@@ -17,7 +17,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-logging.getLogger("pika").setLevel(logging.WARNING)
+logging.getLogger("pika").setLevel(logging.ERROR)
 
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")

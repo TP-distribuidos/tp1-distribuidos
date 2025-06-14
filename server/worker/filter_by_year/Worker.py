@@ -16,7 +16,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-logging.getLogger("pika").setLevel(logging.WARNING)
+logging.getLogger("pika").setLevel(logging.ERROR)
 
 load_dotenv()
 

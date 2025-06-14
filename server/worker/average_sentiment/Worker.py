@@ -19,7 +19,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-logging.getLogger("pika").setLevel(logging.WARNING)
+logging.getLogger("pika").setLevel(logging.ERROR)
 
 # Constants and configuration
 NODE_ID = os.getenv("NODE_ID")

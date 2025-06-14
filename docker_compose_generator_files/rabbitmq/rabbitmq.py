@@ -19,8 +19,20 @@ def generate_rabbitmq_service():
                 "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,none},{channel,none},{authentication,none},{federation,none},{queue,none},{default,none},{access_control,none},{amqp,none},{amqp_client,none}]"
             ],
             "networks": [NETWORK],
+            
             "logging": {
                 "driver": "none"  # This completely discards all container logs
+            },
+            
+            "healthcheck": {
+                # use the flag --erlang-cookie if setting the erlang 
+                # cookie was necessary (comment by red-riding-hood)
+                # test: rabbitmq-diagnostics -q ping --erlang-cookie "mycookie"
+                "test": "rabbitmq-diagnostics -q ping",
+                "interval": "30s",
+                "timeout": "10s",
+                "retries": 5,
+                "start_period": "10s"
             }
         }
     }

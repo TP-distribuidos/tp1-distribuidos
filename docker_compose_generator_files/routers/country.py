@@ -41,7 +41,11 @@ def generate_country_router(num_year_workers=2, num_country_workers=2, network=N
                 "BALANCER_TYPE=round_robin",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

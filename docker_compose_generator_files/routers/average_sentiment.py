@@ -41,7 +41,11 @@ def generate_average_sentiment_router(num_sentiment_workers=2, num_avg_sentiment
                 "BALANCER_TYPE=shard_by_ascii",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

@@ -266,10 +266,6 @@ class Worker:
         """Send data to the response queue"""
         queue_name = self.producer_queue_name[0]
         
-        if operation_id is None:
-            operation_id = self.data_persistence.get_counter_value()
-            self.data_persistence.increment_counter()
-            
         message = Serializer.add_metadata(client_id, data, eof_marker, QUERY_5, False, operation_id, self.node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,

@@ -21,7 +21,11 @@ def generate_boundary_service():
                 "CREDITS_ROUTER_QUEUE=boundary_credits_router",
                 "RATINGS_ROUTER_QUEUE=boundary_ratings_router"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "ports": ["5000:5000"],
             "volumes": [
                 "./server/boundary:/app",

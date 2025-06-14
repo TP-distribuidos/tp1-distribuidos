@@ -38,7 +38,11 @@ def generate_count_router(num_join_credits_workers=2, count_shards=2, count_work
                 "BALANCER_TYPE=shard_by_ascii",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

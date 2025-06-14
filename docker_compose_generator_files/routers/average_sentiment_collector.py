@@ -32,7 +32,11 @@ def generate_average_sentiment_collector_router(num_avg_sentiment_workers=2, net
                 "BALANCER_TYPE=round_robin",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

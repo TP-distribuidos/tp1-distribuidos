@@ -20,7 +20,11 @@ def generate_collector_average_sentiment_worker(network=NETWORK):
                 "context": "./server",
                 "dockerfile": "worker/collector_average_sentiment_worker/Dockerfile"
             },
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "ports": [
                 f"{worker_port}:{worker_port}"
             ],

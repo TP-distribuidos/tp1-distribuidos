@@ -55,7 +55,11 @@ def generate_join_ratings_workers(num_workers=2, network=NETWORK):
                 f"SENTINEL_PORT={worker_port}",
                 f"NODE_ID={worker_name}_node"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/worker/join_ratings:/app",
                 "./server/rabbitmq:/app/rabbitmq",

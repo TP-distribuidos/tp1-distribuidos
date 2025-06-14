@@ -38,7 +38,11 @@ def generate_average_movies_by_rating_router(num_join_ratings_workers=2, avg_rat
                 "BALANCER_TYPE=shard_by_ascii",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

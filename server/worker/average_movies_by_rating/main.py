@@ -42,7 +42,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting average_movies_by_rating worker service...")
+    logging.debug("Starting average_movies_by_rating worker service...")
     try:
         main()
     except KeyboardInterrupt:

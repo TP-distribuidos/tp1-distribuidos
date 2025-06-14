@@ -94,9 +94,9 @@ class Sentinel:
                 s.sendall(serialized_message)
                 return True
         except socket.timeout:
-            logging.warning(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
+            logging.debug(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
         except ConnectionRefusedError:
-            logging.warning(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
+            logging.debug(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
         except Exception as e:
             logging.error(f"Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
         return False
@@ -104,7 +104,7 @@ class Sentinel:
     def _discover_peers(self):
         """Discovers peer addresses using DNS. Does not send messages."""
         if not self.service_name:
-            logging.warning("SERVICE_NAME not set, cannot discover peers.")
+            logging.debug("SERVICE_NAME not set, cannot discover peers.")
             return set()
         try:
             addr_info = socket.getaddrinfo(self.service_name, self.peer_port, socket.AF_INET, socket.SOCK_STREAM)
@@ -116,11 +116,11 @@ class Sentinel:
                 peers.add((peer_ip, self.peer_port))
             
             if not peers:
-                logging.warning(f"No peers discovered for service {self.service_name}. This instance might be the only one.")
+                logging.debug(f"No peers discovered for service {self.service_name}. This instance might be the only one.")
             self.discovered_peers_addresses = peers
             return peers
         except socket.gaierror:
-            logging.warning(f"Could not resolve service name {self.service_name}. Peer discovery failed.")
+            logging.debug(f"Could not resolve service name {self.service_name}. Peer discovery failed.")
         except Exception as e:
             logging.error(f"Error in peer discovery: {e}")
         self.discovered_peers_addresses = set()
@@ -130,7 +130,7 @@ class Sentinel:
         """Broadcasts a message to all discovered peers, excluding self if message is from self."""
         peers_to_send = self._discover_peers()
         if not peers_to_send:
-            logging.warning(f"No peers to broadcast {message_type} to.")
+            logging.debug(f"No peers to broadcast {message_type} to.")
             return
 
         sent_count = 0
@@ -218,10 +218,10 @@ class Sentinel:
                                         new_leader_id = message.get("leader_id")
                                         sender_of_announcement = sender_id
                                         leader_hostname = message.get("leader_hostname", "unknown")  # Get leader hostname
-                                        logging.info(f"\033[38;5;208mReceived LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id} (hostname: {leader_hostname}). My ID is {self.id}.\033[0m")
+                                        logging.debug(f"\033[38;5;208mReceived LEADER_ANNOUNCEMENT from {sender_of_announcement}: New leader is {new_leader_id} (hostname: {leader_hostname}). My ID is {self.id}.\033[0m")
 
                                         if new_leader_id < self.id and (self.current_leader_id is None or new_leader_id != self.current_leader_id):
-                                            logging.warning(f"Contesting LEADER_ANNOUNCEMENT for {new_leader_id} (lower than my ID {self.id}). Initiating new election.")
+                                            logging.debug(f"Contesting LEADER_ANNOUNCEMENT for {new_leader_id} (lower than my ID {self.id}). Initiating new election.")
                                             self.current_leader_id = None
                                             self.is_leader = False
                                             self.election_in_progress = False
@@ -232,7 +232,7 @@ class Sentinel:
                                             if self.current_leader_id is not None and self.current_leader_id != new_leader_id:
                                                 self.previous_leader_id = self.current_leader_id
                                                 self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
-                                                logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+                                                logging.debug(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
                                             
                                             self.current_leader_id = new_leader_id
                                             self.current_leader_hostname = leader_hostname  # Store the leader's hostname
@@ -242,13 +242,13 @@ class Sentinel:
                                             self.election_votes = {} 
                                             self.last_leader_heartbeat_time = time.time() 
                                             if self.is_leader:
-                                                logging.info(f"\033[38;5;208mI AM THE NEW LEADER (ID: {self.id}) based on announcement from {sender_of_announcement}.\033[0m")
+                                                logging.debug(f"\033[38;5;208mI AM THE NEW LEADER (ID: {self.id}) based on announcement from {sender_of_announcement}.\033[0m")
                                                 # Check if there's a previous leader to revive
                                                 self._check_and_revive_previous_leader()
                                             else:
                                                 # When becoming a slave, reset any leader-related state
                                                 self.active_slaves = {} 
-                                                logging.info(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id}.\033[0m")
+                                                logging.debug(f"\033[36mI am a SLAVE. Leader is {self.current_leader_id}.\033[0m")
 
                                     elif msg_type == "LEADER_HEARTBEAT":
                                         leader_id_from_heartbeat = message.get("leader_id")
@@ -262,12 +262,12 @@ class Sentinel:
                                         
                                         if self.current_leader_id is None or leader_id_from_heartbeat == self.current_leader_id:
                                             if self.current_leader_id is None:
-                                                logging.info(f"Accepting leader {leader_id_from_heartbeat} from first heartbeat.")
+                                                logging.debug(f"Accepting leader {leader_id_from_heartbeat} from first heartbeat.")
                                                 self.current_leader_id = leader_id_from_heartbeat
                                                 self.is_leader = (self.id == self.current_leader_id)
                                             self.last_leader_heartbeat_time = time.time()
                                         elif leader_id_from_heartbeat != self.current_leader_id:
-                                            logging.warning(f"Conflicting LEADER_HEARTBEAT. Current leader {self.current_leader_id}, heartbeat from {sender_id} for {leader_id_from_heartbeat}. Election might be needed.")
+                                            logging.debug(f"Conflicting LEADER_HEARTBEAT. Current leader {self.current_leader_id}, heartbeat from {sender_id} for {leader_id_from_heartbeat}. Election might be needed.")
                                             # Potentially trigger an election if conflict persists or if this sender has higher ID
                                             # For now, just log. A new election will eventually sort it out if the true leader stops heartbeating.
                                     
@@ -291,7 +291,7 @@ class Sentinel:
                                                 
                                             else:
                                                 # We don't know this slave yet - might be a new one that joined after election
-                                                logging.info(f"Received heartbeat ACK from unknown slave {slave_hostname} (ID: {sender_id}). Adding to active slaves.")
+                                                logging.debug(f"Received heartbeat ACK from unknown slave {slave_hostname} (ID: {sender_id}). Adding to active slaves.")
                                                 self.active_slaves[slave_hostname] = {
                                                     "id": sender_id,
                                                     "ip": addr[0],
@@ -311,13 +311,13 @@ class Sentinel:
                         time.sleep(0.1) 
         except Exception as e:
             logging.error(f"Peer listener loop failed critically: {e}")
-        logging.info("Peer listener shutdown.")
+        logging.debug("Peer listener shutdown.")
 
     def _initiate_election(self):
         # This method asserts this node's intention to become coordinator.
         # Any previous election state (e.g., being a slave) is overridden.
 
-        logging.info(f"\033[38;5;208mINITIATING ELECTION (My ID: {self.id}). Broadcasting ELECTION_START.\033[0m")
+        logging.debug(f"\033[38;5;208mINITIATING ELECTION (My ID: {self.id}). Broadcasting ELECTION_START.\033[0m")
         self.election_in_progress = True
         self.i_am_election_coordinator = True 
         self.current_leader_id = None 
@@ -332,17 +332,17 @@ class Sentinel:
         if not self.i_am_election_coordinator or not self.election_in_progress:
             return
 
-        logging.info(f"\033[38;5;208mProcessing election results. My ID: {self.id}. Votes received: {self.election_votes}\033[0m")
+        logging.debug(f"\033[38;5;208mProcessing election results. My ID: {self.id}. Votes received: {self.election_votes}\033[0m")
         
         if not self.election_votes:
-            logging.warning("No votes received in election. Re-evaluating or re-electing might be needed.")
+            logging.debug("No votes received in election. Re-evaluating or re-electing might be needed.")
             # This could happen if this is the only node or peers didn't respond.
             # For simplicity, declare self leader if no other votes.
             new_leader_id = self.id
         else:
             new_leader_id = max(self.election_votes.keys()) # Highest ID wins
 
-        logging.info(f"\033[38;5;208mElection concluded. New leader determined to be ID: {new_leader_id}. Announcing...\033[0m")
+        logging.debug(f"\033[38;5;208mElection concluded. New leader determined to be ID: {new_leader_id}. Announcing...\033[0m")
         
         # Include hostname in leader announcement
         self._broadcast_message("LEADER_ANNOUNCEMENT", {"leader_id": new_leader_id, "leader_hostname": self.hostname})
@@ -351,7 +351,7 @@ class Sentinel:
         if self.current_leader_id is not None and self.current_leader_id != new_leader_id and new_leader_id == self.id:
             self.previous_leader_id = self.current_leader_id
             self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
-            logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+            logging.debug(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
         
         self.current_leader_id = new_leader_id
         self.current_leader_hostname = self.hostname if new_leader_id == self.id else None
@@ -362,22 +362,22 @@ class Sentinel:
         self.last_leader_heartbeat_time = time.time() # New leader is now active
 
         if self.is_leader:
-            logging.info(f"\033[32mI AM THE NEW LEADER (ID: {self.id}) after coordinating election.\033[0m")
+            logging.debug(f"\033[32mI AM THE NEW LEADER (ID: {self.id}) after coordinating election.\033[0m")
             # Check if there's a previous leader to revive
             self._check_and_revive_previous_leader()
         else:
-            logging.info(f"\033[36mI am a SLAVE after coordinating. New leader is {self.current_leader_id}.\033[0m")
+            logging.debug(f"\033[36mI am a SLAVE after coordinating. New leader is {self.current_leader_id}.\033[0m")
 
     def _check_and_revive_previous_leader(self):
         """Check if there's a previous leader to revive and attempt to restart it"""
         if not self.is_leader:
-            logging.warning("Only the leader should attempt to revive previous leaders")
+            logging.debug("Only the leader should attempt to revive previous leaders")
             return False
             
         if not self.previous_leader_hostname:
             return False
             
-        logging.info(f"\033[33mNew leader detected previous leader: {self.previous_leader_hostname} (ID: {self.previous_leader_id}). Attempting to revive...\033[0m")
+        logging.debug(f"\033[33mNew leader detected previous leader: {self.previous_leader_hostname} (ID: {self.previous_leader_id}). Attempting to revive...\033[0m")
         
         restart_success = self.restart_sentinel(self.previous_leader_hostname)
         
@@ -399,7 +399,7 @@ class Sentinel:
             return False
         
         try:
-            logging.info(f"\033[34mAttempting to find and restart sentinel container with hostname: {sentinel_hostname}\033[0m")
+            logging.debug(f"\033[34mAttempting to find and restart sentinel container with hostname: {sentinel_hostname}\033[0m")
             
             containers = self.docker_client.containers.list(
                 all=True, 
@@ -416,19 +416,19 @@ class Sentinel:
                 container_info = container.attrs
                 if container_info.get('Config', {}).get('Hostname') == sentinel_hostname:
                     matching_container = container
-                    logging.info(f"Found sentinel container by hostname: {container.name}")
+                    logging.debug(f"Found sentinel container by hostname: {container.name}")
                     break
             
             # If no match by hostname, try the container ID (some hostnames might be container IDs)
             if not matching_container:
-                logging.info(f"No container found with hostname {sentinel_hostname}, trying container ID")
+                logging.debug(f"No container found with hostname {sentinel_hostname}, trying container ID")
                 try:
                     # Try to get container directly by ID
                     matching_container = self.docker_client.containers.get(sentinel_hostname)
-                    logging.info(f"Found container by ID: {matching_container.name}")
+                    logging.debug(f"Found container by ID: {matching_container.name}")
                 except docker.errors.NotFound:
                     # If that fails, try to find any sentinel container that's stopped
-                    logging.warning(f"No container found with ID {sentinel_hostname}, looking for stopped sentinel containers")
+                    logging.debug(f"No container found with ID {sentinel_hostname}, looking for stopped sentinel containers")
                     
                     # Get all sentinel containers that are not running (might be stopped or exited)
                     stopped_containers = self.docker_client.containers.list(
@@ -445,7 +445,7 @@ class Sentinel:
                     if stopped_containers:
                         # Use the first stopped container we find
                         matching_container = stopped_containers[0]
-                        logging.info(f"Found stopped sentinel container: {matching_container.name}")
+                        logging.debug(f"Found stopped sentinel container: {matching_container.name}")
                     else:
                         logging.error(f"No stopped sentinel containers found")
                 
@@ -455,17 +455,17 @@ class Sentinel:
             
             # Log detailed restart information
             container_status = matching_container.status
-            logging.info(f"\033[31mRestarting sentinel container {matching_container.name} (current status: {container_status})\033[0m")
+            logging.debug(f"\033[31mRestarting sentinel container {matching_container.name} (current status: {container_status})\033[0m")
             
             # For stopped containers, we need to start not restart
             if container_status.lower() in ('exited', 'dead'):
-                logging.info(f"Container is {container_status}, using start() instead of restart()")
+                logging.debug(f"Container is {container_status}, using start() instead of restart()")
                 matching_container.start()
             else:
                 # Restart with a timeout for graceful shutdown
                 matching_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
             
-            logging.info(f"\033[32mSuccessfully initiated {container_status.lower() in ('exited', 'dead') and 'start' or 'restart'} of sentinel container: {matching_container.name}\033[0m")
+            logging.debug(f"\033[32mSuccessfully initiated {container_status.lower() in ('exited', 'dead') and 'start' or 'restart'} of sentinel container: {matching_container.name}\033[0m")
             return True
                 
         except docker.errors.NotFound:
@@ -479,7 +479,7 @@ class Sentinel:
             return False
 
     def shutdown(self):
-        logging.info(f"Shutdown called for Sentinel ID: {self.id}")
+        logging.debug(f"Shutdown called for Sentinel ID: {self.id}")
         self.running = False
         
         # Close all worker sockets
@@ -487,14 +487,14 @@ class Sentinel:
             if socket_conn:
                 try:
                     socket_conn.close()
-                    logging.info(f"Closed worker health check socket for {worker_host}.")
+                    logging.debug(f"Closed worker health check socket for {worker_host}.")
                 except Exception as e:
-                    logging.warning(f"Error closing worker health check socket for {worker_host}: {e}")
+                    logging.debug(f"Error closing worker health check socket for {worker_host}: {e}")
         
         self.sockets = {}
         
         # Any running asyncio tasks will be cancelled when their event loop is closed
-        logging.info("Asyncio heartbeat tasks will terminate as their event loop is closed")
+        logging.debug("Asyncio heartbeat tasks will terminate as their event loop is closed")
 
     def restart_worker(self, worker_host):
         """Attempt to restart the specific worker container with enhanced reliability"""
@@ -504,7 +504,7 @@ class Sentinel:
         
         current_time = time.time()
         if current_time - self.last_restart_times.get(worker_host, 0) < RESTART_COOLDOWN:
-            logging.warning(f"Skipping restart attempt for {worker_host}: Cooldown period not elapsed ({RESTART_COOLDOWN} seconds)")
+            logging.debug(f"Skipping restart attempt for {worker_host}: Cooldown period not elapsed ({RESTART_COOLDOWN} seconds)")
             return False
         
         if not self.compose_project_name:
@@ -512,7 +512,7 @@ class Sentinel:
             return False
         
         try:
-            logging.info(f"\033[34mAttempting to find and restart worker container for service: {worker_host}\033[0m")
+            logging.debug(f"\033[34mAttempting to find and restart worker container for service: {worker_host}\033[0m")
             
             # Find container using label-based filtering (more precise)
             containers = self.docker_client.containers.list(
@@ -534,7 +534,7 @@ class Sentinel:
             
             # Log detailed restart information
             self.restart_attempts[worker_host] += 1
-            logging.info(f"\033[31mRestarting worker container {worker_container.name} (attempt #{self.restart_attempts[worker_host]})\033[0m")
+            logging.debug(f"\033[31mRestarting worker container {worker_container.name} (attempt #{self.restart_attempts[worker_host]})\033[0m")
             
             # Restart with a timeout for graceful shutdown
             worker_container.restart(timeout=30)  # 30-second timeout for graceful shutdown
@@ -557,7 +557,7 @@ class Sentinel:
 
     def run(self):
         worker_list = ", ".join([f"{host}:{port}" for host, port in zip(self.worker_hosts, self.worker_ports)])
-        logging.info(f"Sentinel starting (ID: {self.id}) for workers: {worker_list}")
+        logging.debug(f"Sentinel starting (ID: {self.id}) for workers: {worker_list}")
         self._start_peer_listener()
 
         # Initial peer discovery and ID announcement
@@ -579,7 +579,7 @@ class Sentinel:
                         worker_port = self.worker_ports[i]
                         
                         if self._check_worker_health(worker_host, worker_port):
-                            # logging.info(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
+                            # logging.debug(f"\033[32mWorker {worker_host}:{worker_port} is healthy\033[0m")
                             self.worker_unhealthy_counts[worker_host] = 0  # Reset counter if worker is healthy
                         else:
                             self.worker_unhealthy_counts[worker_host] += 1
@@ -587,10 +587,10 @@ class Sentinel:
                             
                             # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
                             if self.worker_unhealthy_counts[worker_host] >= RESTART_ATTEMPTS:
-                                logging.warning(f"\033[31mWorker {worker_host} has been unhealthy for {self.worker_unhealthy_counts[worker_host]} consecutive checks. Attempting restart...\033[0m")
+                                logging.debug(f"\033[31mWorker {worker_host} has been unhealthy for {self.worker_unhealthy_counts[worker_host]} consecutive checks. Attempting restart...\033[0m")
                                 restart_success = self.restart_worker(worker_host)
                                 if restart_success:
-                                    logging.info(f"Restart initiated successfully for \033[32m{worker_host}\033[0m. Resetting unhealthy counter and waiting for recovery.")
+                                    logging.debug(f"Restart initiated successfully for \033[32m{worker_host}\033[0m. Resetting unhealthy counter and waiting for recovery.")
                                     self.worker_unhealthy_counts[worker_host] = 0  # Reset counter after successful restart
                                     self.restart_attempts[worker_host] = 0
                                 else:
@@ -605,12 +605,12 @@ class Sentinel:
                 else:
                     if self.current_leader_id is not None: # We know a leader
                         if (current_time - self.last_leader_heartbeat_time) > LEADER_DEAD_DURATION:
-                            logging.warning(f"\033[31mLeader {self.current_leader_id} not responding. Storing as previous leader and initiating new election.\033[0m")
+                            logging.info(f"\033[31mLeader {self.current_leader_id} not responding. Storing as previous leader and initiating new election.\033[0m")
                             
                             # Store the failing leader before considering it lost
                             self.previous_leader_id = self.current_leader_id
                             self.previous_leader_hostname = self.current_leader_hostname if hasattr(self, 'current_leader_hostname') else None
-                            logging.info(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
+                            logging.debug(f"Stored previous leader: ID {self.previous_leader_id}, hostname {self.previous_leader_hostname}")
                             
                             self.current_leader_id = None # Consider leader lost
                             self.is_leader = False # Ensure not leader
@@ -628,7 +628,7 @@ class Sentinel:
                 # Election coordinator tasks (if this instance initiated an election)
                 if self.i_am_election_coordinator and self.election_in_progress:
                     if (current_time - self.election_start_time) > ELECTION_TIMEOUT_DURATION:
-                        logging.info(f"\033[38;5;208mElection timeout reached for coordinator {self.id}. Processing results.\033[0m")
+                        logging.debug(f"\033[38;5;208mElection timeout reached for coordinator {self.id}. Processing results.\033[0m")
                         self._process_election_results()
                         # Resetting i_am_election_coordinator and election_in_progress is done in _process_election_results
 
@@ -638,15 +638,15 @@ class Sentinel:
                 logging.error(f"Error in sentinel main loop: {e}", exc_info=True)
                 time.sleep(self.check_interval) # Wait before retrying
 
-        logging.info("Sentinel main loop ended. Initiating shutdown sequence...")
+        logging.debug("Sentinel main loop ended. Initiating shutdown sequence...")
         # Listener thread is daemon, should exit when self.running is false and main thread exits.
         # However, explicit join is good practice.
         if self.peer_listener_thread and self.peer_listener_thread.is_alive():
-            logging.info("Waiting for peer listener thread to shut down...")
+            logging.debug("Waiting for peer listener thread to shut down...")
             self.peer_listener_thread.join(timeout=3.0) # Increased timeout slightly
             if self.peer_listener_thread.is_alive():
-                logging.warning("Peer listener thread did not shut down cleanly.")
-        logging.info("Sentinel shutdown complete")
+                logging.debug("Peer listener thread did not shut down cleanly.")
+        logging.debug("Sentinel shutdown complete")
 
     # In the Sentinel class, modify the _check_worker_health method:
     def _check_worker_health(self, worker_host, worker_port):
@@ -671,7 +671,7 @@ class Sentinel:
                 else:
                     host_ip = worker_host  # Fallback to the original hostname
             except socket.gaierror:
-                logging.warning(f"Could not resolve hostname {worker_host}, trying direct connection")
+                logging.debug(f"Could not resolve hostname {worker_host}, trying direct connection")
                 host_ip = worker_host  # Use the original hostname as fallback
                 
             socket_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -691,7 +691,7 @@ class Sentinel:
             if data:
                 return True
             else:
-                logging.warning(f"Empty health check response from {worker_host}:{worker_port}")
+                logging.debug(f"Empty health check response from {worker_host}:{worker_port}")
                 return False
                 
         except socket.timeout:
@@ -716,9 +716,9 @@ class Sentinel:
             await writer.wait_closed()
             return True
         except ConnectionRefusedError:
-            logging.warning(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
+            logging.debug(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
         except asyncio.TimeoutError:
-            logging.warning(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
+            logging.debug(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
         except Exception as e:
             logging.error(f"Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
         return False
@@ -739,7 +739,7 @@ class Sentinel:
             
             # If we haven't heard from this slave in a while, consider it potentially dead
             if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 3:
-                logging.warning(f"\033[33mSlave {slave_hostname} (ID: {slave_id}) has been unresponsive for {time_since_last_heartbeat:.1f} seconds\033[0m")
+                logging.debug(f"\033[33mSlave {slave_hostname} (ID: {slave_id}) has been unresponsive for {time_since_last_heartbeat:.1f} seconds\033[0m")
                 
                 if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 5:
                     logging.error(f"\033[31mSlave {slave_hostname} (ID: {slave_id}) considered dead. Attempting restart...\033[0m")
@@ -768,7 +768,7 @@ class Sentinel:
                 self.active_slaves[slave_hostname]["last_sent_heartbeat"] = heartbeat_sent_time
                 logging.debug(f"Sent heartbeat to slave {slave_hostname}")
         else:
-            logging.warning(f"\033[33mCouldn't send heartbeat to slave {slave_hostname} (ID: {slave_id})\033[0m")
+            logging.debug(f"\033[33mCouldn't send heartbeat to slave {slave_hostname} (ID: {slave_id})\033[0m")
             
             if slave_hostname in self.active_slaves:
                 last_heartbeat = self.active_slaves[slave_hostname].get("last_heartbeat", 0)
@@ -780,7 +780,7 @@ class Sentinel:
                     restart_success = self.restart_sentinel(slave_hostname)
                     
                     if restart_success:
-                        logging.info(f"\033[32mSuccessfully initiated restart of slave {slave_hostname}\033[0m")
+                        logging.debug(f"\033[32mSuccessfully initiated restart of slave {slave_hostname}\033[0m")
                         if slave_hostname in self.active_slaves:
                             self.active_slaves.pop(slave_hostname, None)
                     else:
@@ -791,7 +791,7 @@ class Sentinel:
     async def _async_manage_slave_heartbeats(self):
         """Manages heartbeat tasks for all known slaves using asyncio"""
         if not self.is_leader:
-            logging.warning("Only the leader should manage slave heartbeats")
+            logging.debug("Only the leader should manage slave heartbeats")
             return
         
         # Create tasks for all slaves and wait for them to complete with timeout
@@ -833,7 +833,7 @@ class Sentinel:
                 for task in pending:
                     hostname = getattr(task, 'slave_hostname', 'unknown')
                     task.cancel()
-                    logging.warning(f"Heartbeat task for slave {hostname} timed out and was cancelled")
+                    logging.debug(f"Heartbeat task for slave {hostname} timed out and was cancelled")
                     
                 # Clean up pending tasks
                 if pending:
@@ -846,12 +846,12 @@ class Sentinel:
                 logging.error(f"Error managing heartbeat tasks: {e}")
         
         # if slaves_to_check:
-            # logging.info(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
+            # logging.debug(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
             
     def _manage_slave_heartbeats(self):
         """Synchronous wrapper for async heartbeat management"""
         if not self.is_leader:
-            logging.warning("Only the leader should manage slave heartbeats")
+            logging.debug("Only the leader should manage slave heartbeats")
             return
             
         # Create and run an event loop to execute the async functions

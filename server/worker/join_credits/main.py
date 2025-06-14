@@ -40,7 +40,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.info("Starting join_credits worker service...")
+    logging.debug("Starting join_credits worker service...")
     try:
         main()
     except KeyboardInterrupt:

@@ -18,6 +18,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 
@@ -61,7 +63,7 @@ class Worker:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
-        logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+        logging.debug(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""

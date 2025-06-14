@@ -19,6 +19,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Constants and configuration
 NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE", "average_sentiment_worker")
@@ -157,7 +159,6 @@ class Worker:
                     self.data_persistence.clear(client_id)
                     self.data_persistence.increment_counter()
                     
-                    logging.info(f"Sent sentiment data for client {client_id} and cleaned up client data")
                 else:
                     logging.warning(f"Received EOF for client {client_id} but no data found")
                 

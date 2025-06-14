@@ -44,7 +44,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting join_ratings worker service...")
+    logging.debug("Starting join_ratings worker service...")
     try:
         main()
     except KeyboardInterrupt:

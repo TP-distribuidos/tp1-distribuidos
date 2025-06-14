@@ -16,6 +16,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 load_dotenv()
 
 # Node identification
@@ -180,7 +182,6 @@ class Worker:
                 return
 
             if eof_marker:
-                logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
                 # Mark this message as processed

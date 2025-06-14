@@ -34,7 +34,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting average sentiment worker service...")
+    logging.debug("Starting average sentiment worker service...")
     try:
         main()
     except KeyboardInterrupt:

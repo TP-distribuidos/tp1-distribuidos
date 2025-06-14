@@ -39,7 +39,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.info("Starting sentiment analysis worker service...")
+    logging.debug("Starting sentiment analysis worker service...")
     try:
         main()
     except KeyboardInterrupt:

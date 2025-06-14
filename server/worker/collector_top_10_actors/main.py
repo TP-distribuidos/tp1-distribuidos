@@ -44,7 +44,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.info("Starting top actors worker service...")
+    logging.debug("Starting top actors worker service...")
     try:
         main()
     except KeyboardInterrupt:

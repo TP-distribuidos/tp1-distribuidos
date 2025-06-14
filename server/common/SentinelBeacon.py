@@ -19,7 +19,7 @@ class SentinelBeacon:
         self._sentinel_thread = threading.Thread(target=self._run_sentinel_server)
         self._sentinel_thread.daemon = True  # Thread will exit when main thread exits
         self._sentinel_thread.start()
-        logging.info(f"Sentinel beacon started for {self._name} on port {self._port}")
+        logging.debug(f"Sentinel beacon started for {self._name} on port {self._port}")
     
     def _run_sentinel_server(self):
         """Run a simple echo server for the sentinel to connect to"""
@@ -30,7 +30,7 @@ class SentinelBeacon:
             self._server_socket.settimeout(1.0)  # Set timeout for accept
             self._server_socket.listen(5)
             
-            logging.info(f"Worker server running on port {self._port}")
+            logging.debug(f"Worker server running on port {self._port}")
             
             while self._running:
                 try:

@@ -43,7 +43,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting count worker service...")
+    logging.debug("Starting count worker service...")
     try:
         main()
     except KeyboardInterrupt:

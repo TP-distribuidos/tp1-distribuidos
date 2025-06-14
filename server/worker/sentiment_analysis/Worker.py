@@ -17,6 +17,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
@@ -144,7 +146,6 @@ class SentimentWorker:
                     logging.error("Failed to send processed data to response queue")
             
             elif eof_marker:
-                logging.info(f"\033[93mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate an operation ID for the EOF message
                 new_operation_id = self._get_next_message_id()
                 

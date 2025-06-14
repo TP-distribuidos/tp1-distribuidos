@@ -16,6 +16,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 
@@ -184,7 +186,6 @@ class Worker:
             elif data:
                 try:
                     self.data_persistence.persist(client_id, node_id, data, operation_id)
-                    logging.info(f"Persisted sentiment data for client {client_id} from node {node_id}")
                 except ValueError as e:
                     logging.warning(f"Error persisting sentiment data for client {client_id}, error: {e}")
             

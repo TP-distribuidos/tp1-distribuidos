@@ -18,6 +18,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 

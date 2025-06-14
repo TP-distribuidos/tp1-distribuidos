@@ -43,8 +43,8 @@ from docker_compose_generator_files.constants import NETWORK, OUTPUT_FILE, NUMBE
 def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=4, num_year_workers=2, 
                            num_country_workers=2, num_join_credits_workers=2, num_join_ratings_workers=2,
                            avg_rating_shards=2, avg_rating_replicas=2, count_shards=2, 
-                           count_workers_per_shard=2, num_top_workers=3, num_max_min_workers=2,
-                           num_sentiment_workers=2, num_avg_sentiment_workers=2,
+                           count_workers_per_shard=2, num_top_workers=2, num_max_min_workers=2,
+                           num_sentiment_workers=4, num_avg_sentiment_workers=2,
                            network=NETWORK, include_q5=False, sentinel_replicas=2):
     # Start with an empty services dictionary
     services = {}
@@ -468,9 +468,9 @@ if __name__ == "__main__":
     avg_rating_replicas = 2
     count_shards = 2
     count_workers_per_shard = 2
-    num_top_workers = 3
+    num_top_workers = 2
     num_max_min_workers = 2
-    num_sentiment_workers = 2
+    num_sentiment_workers = 4
     num_avg_sentiment_workers = 2
     network = NETWORK
     include_q5 = False

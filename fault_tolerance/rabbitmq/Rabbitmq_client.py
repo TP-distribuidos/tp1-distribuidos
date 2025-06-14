@@ -176,7 +176,7 @@ class RabbitMQClient:
                 if not self.connect():
                     return False
                     
-            logging.info("Starting to consume messages...")
+            logging.debug("Starting to consume messages...")
             self._channel.start_consuming()
             return True
         except KeyboardInterrupt:

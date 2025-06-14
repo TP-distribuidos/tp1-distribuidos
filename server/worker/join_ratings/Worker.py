@@ -19,6 +19,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 
@@ -163,7 +165,7 @@ class Worker:
             if not success:
                 logging.error(f"Failed to set up consumer for queue '{queue_name}'")
                 return False
-            logging.info(f"Started consuming from {queue_name}")
+            logging.debug(f"Started consuming from {queue_name}")
 
         return True
     

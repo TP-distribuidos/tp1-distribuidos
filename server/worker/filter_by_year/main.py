@@ -42,7 +42,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting filter_by_year worker service...")
+    logging.debug("Starting filter_by_year worker service...")
     try:
         main()
     except KeyboardInterrupt:

@@ -47,10 +47,16 @@ def generate_sentiment_analysis_workers(num_workers=2, network=NETWORK):
             "deploy": {
                 "resources": {
                     "limits": {
-                        "memory": "2G"
+                        "memory": "4G",
+                        "cpus": "1.5"
+                    },
+                    "reservations": {
+                        "memory": "2G",
+                        "cpus": "0.5"
                     }
                 }
-            }
+            },
+            "shm_size": "1g"  # Shared memory for NLP operations
         }
     
     return services

@@ -18,6 +18,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.WARNING)
+
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
@@ -162,7 +164,7 @@ class Worker:
             if not success:
                 logging.error(f"Failed to set up consumer for queue '{queue_name}'")
                 return False
-            logging.info(f"Started consuming from {queue_name}")
+            logging.debug(f"Started consuming from {queue_name}")
 
         return True
     

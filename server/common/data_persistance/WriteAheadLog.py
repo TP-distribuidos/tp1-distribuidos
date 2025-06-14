@@ -59,7 +59,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.base_dir = Path(base_dir + "/" + service_name)
         self.storage.create_directory(self.base_dir)
         
-        logging.info(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
+        logging.debug(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
         
         self._initialize_counter()
         
@@ -106,7 +106,7 @@ class WriteAheadLog(DataPersistenceInterface):
                         if len(content_lines) > 1:
                             try:
                                 self.counter_value = int(content_lines[1])
-                                logging.info(f"Recovered counter value: {self.counter_value}")
+                                logging.debug(f"Recovered counter value: {self.counter_value}")
                                 break
                             except (ValueError, TypeError):
                                 logging.warning(f"Invalid counter value in {counter_file}, trying next file")

@@ -78,7 +78,7 @@ class Sentinel:
         try:
             self.docker_client = docker.from_env()
         except Exception as e:
-            logging.error(f"Failed to initialize Docker client: {e}")
+            logging.debug(f" [ERROR]: Failed to initialize Docker client: {e}")
 
     def _calculate_hostname_sum(self):
         return sum(ord(char) for char in self.hostname)
@@ -98,7 +98,7 @@ class Sentinel:
         except ConnectionRefusedError:
             logging.debug(f"Connection refused sending {message_type} to peer {peer_host}:{peer_port} (possibly not ready)")
         except Exception as e:
-            logging.error(f"Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
+            logging.debug(f" [ERROR]: Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
         return False
 
     def _discover_peers(self):
@@ -122,7 +122,7 @@ class Sentinel:
         except socket.gaierror:
             logging.debug(f"Could not resolve service name {self.service_name}. Peer discovery failed.")
         except Exception as e:
-            logging.error(f"Error in peer discovery: {e}")
+            logging.debug(f" [ERROR]: Error in peer discovery: {e}")
         self.discovered_peers_addresses = set()
         return set()
 
@@ -302,15 +302,15 @@ class Sentinel:
                                                 }
 
                                 except Exception as e:
-                                    logging.error(f"Failed to deserialize or process message from {addr}: {e}. Raw data: {data}")
+                                    logging.debug(f" [ERROR]: Failed to deserialize or process message from {addr}: {e}. Raw data: {data}")
                     except socket.timeout:
                         continue 
                     except Exception as e:
                         if self.running:
-                            logging.error(f"Error in peer listener accept/receive: {e}")
+                            logging.debug(f" [ERROR]: Error in peer listener accept/receive: {e}")
                         time.sleep(0.1) 
         except Exception as e:
-            logging.error(f"Peer listener loop failed critically: {e}")
+            logging.debug(f" [ERROR]: Peer listener loop failed critically: {e}")
         logging.debug("Peer listener shutdown.")
 
     def _initiate_election(self):
@@ -395,7 +395,7 @@ class Sentinel:
             return False
         
         if not self.compose_project_name:
-            logging.error(f"COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
+            logging.debug(f" [ERROR]: COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
             return False
         
         try:
@@ -447,10 +447,10 @@ class Sentinel:
                         matching_container = stopped_containers[0]
                         logging.debug(f"Found stopped sentinel container: {matching_container.name}")
                     else:
-                        logging.error(f"No stopped sentinel containers found")
+                        logging.debug(f" [ERROR]: No stopped sentinel containers found")
                 
             if not matching_container:
-                logging.error(f"Could not find sentinel container with hostname '{sentinel_hostname}' in project '{self.compose_project_name}'")
+                logging.debug(f" [ERROR]: Could not find sentinel container with hostname '{sentinel_hostname}' in project '{self.compose_project_name}'")
                 return False
             
             # Log detailed restart information
@@ -469,13 +469,13 @@ class Sentinel:
             return True
                 
         except docker.errors.NotFound:
-            logging.error(f"Sentinel container with hostname '{sentinel_hostname}' not found")
+            logging.debug(f" [ERROR]: Sentinel container with hostname '{sentinel_hostname}' not found")
             return False
         except docker.errors.APIError as e:
-            logging.error(f"Docker API error when restarting container: {e}")
+            logging.debug(f" [ERROR]: Docker API error when restarting container: {e}")
             return False
         except Exception as e:
-            logging.error(f"Unexpected error restarting sentinel container: {e}", exc_info=True)
+            logging.debug(f" [ERROR]: Unexpected error restarting sentinel container: {e}", exc_info=True)
             return False
 
     def shutdown(self):
@@ -508,7 +508,7 @@ class Sentinel:
             return False
         
         if not self.compose_project_name:
-            logging.error(f"COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
+            logging.debug(f" [ERROR]: COMPOSE_PROJECT_NAME not set. Cannot determine container to restart.")
             return False
         
         try:
@@ -526,7 +526,7 @@ class Sentinel:
             )
             
             if not containers:
-                logging.error(f"Could not find container for service '{worker_host}' in project '{self.compose_project_name}'")
+                logging.debug(f" [ERROR]: Could not find container for service '{worker_host}' in project '{self.compose_project_name}'")
                 return False
             
             # Use the first matching container (should be only one based on precise labels)
@@ -546,13 +546,13 @@ class Sentinel:
             return True
                 
         except docker.errors.NotFound:
-            logging.error(f"Worker container for service '{worker_host}' not found")
+            logging.debug(f" [ERROR]: Worker container for service '{worker_host}' not found")
             return False
         except docker.errors.APIError as e:
-            logging.error(f"Docker API error when restarting container: {e}")
+            logging.debug(f" [ERROR]: Docker API error when restarting container: {e}")
             return False
         except Exception as e:
-            logging.error(f"Unexpected error restarting worker container: {e}", exc_info=True)
+            logging.debug(f" [ERROR]: Unexpected error restarting worker container: {e}", exc_info=True)
             return False
 
     def run(self):
@@ -583,7 +583,7 @@ class Sentinel:
                             self.worker_unhealthy_counts[worker_host] = 0  # Reset counter if worker is healthy
                         else:
                             self.worker_unhealthy_counts[worker_host] += 1
-                            logging.error(f"\033[31mWorker {worker_host}:{worker_port} is unhealthy \033[33m(count: {self.worker_unhealthy_counts[worker_host]}/{RESTART_ATTEMPTS})\033[0m")
+                            logging.debug(f" [ERROR]: \033[31mWorker {worker_host}:{worker_port} is unhealthy \033[33m(count: {self.worker_unhealthy_counts[worker_host]}/{RESTART_ATTEMPTS})\033[0m")
                             
                             # If worker has been unhealthy for multiple consecutive checks, attempt to restart it
                             if self.worker_unhealthy_counts[worker_host] >= RESTART_ATTEMPTS:
@@ -594,7 +594,7 @@ class Sentinel:
                                     self.worker_unhealthy_counts[worker_host] = 0  # Reset counter after successful restart
                                     self.restart_attempts[worker_host] = 0
                                 else:
-                                    logging.error(f"\033[31mFailed to restart worker {worker_host}. Will retry after cooldown period.\033[0m")
+                                    logging.debug(f" [ERROR]: \033[31mFailed to restart worker {worker_host}. Will retry after cooldown period.\033[0m")
                     
                     if current_time - getattr(self, '_last_heartbeat_management_time', 0) > LEADER_HEARTBEAT_INTERVAL:
                         self._manage_slave_heartbeats()
@@ -635,7 +635,7 @@ class Sentinel:
                 time.sleep(self.check_interval)
 
             except Exception as e:
-                logging.error(f"Error in sentinel main loop: {e}", exc_info=True)
+                logging.debug(f"Error in sentinel main loop: {e}", exc_info=True)
                 time.sleep(self.check_interval) # Wait before retrying
 
         logging.debug("Sentinel main loop ended. Initiating shutdown sequence...")
@@ -695,13 +695,13 @@ class Sentinel:
                 return False
                 
         except socket.timeout:
-            logging.error(f"Health check for {worker_host}:{worker_port} timed out")
+            logging.debug(f" [ERROR]: Health check for {worker_host}:{worker_port} timed out")
             return False
         except ConnectionRefusedError:
-            logging.error(f"Connection refused for {worker_host}:{worker_port} - worker may be down")
+            logging.debug(f" [ERROR]: Connection refused for {worker_host}:{worker_port} - worker may be down")
             return False
         except Exception as e:
-            logging.error(f"Error checking worker health for {worker_host}:{worker_port}: {e}")
+            logging.debug(f" [ERROR]: Error checking worker health for {worker_host}:{worker_port}: {e}")
             return False
 
     async def _async_send_message_to_peer(self, peer_host, peer_port, message_type, payload):
@@ -720,7 +720,7 @@ class Sentinel:
         except asyncio.TimeoutError:
             logging.debug(f"Timeout sending {message_type} to peer {peer_host}:{peer_port}")
         except Exception as e:
-            logging.error(f"Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
+            logging.debug(f" [ERROR]: Error sending {message_type} to peer {peer_host}:{peer_port}: {e}")
         return False
 
     async def _send_heartbeat_to_slave(self, slave_hostname, slave_info):
@@ -742,7 +742,7 @@ class Sentinel:
                 logging.debug(f"\033[33mSlave {slave_hostname} (ID: {slave_id}) has been unresponsive for {time_since_last_heartbeat:.1f} seconds\033[0m")
                 
                 if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 5:
-                    logging.error(f"\033[31mSlave {slave_hostname} (ID: {slave_id}) considered dead. Attempting restart...\033[0m")
+                    logging.debug(f" [ERROR]: \033[31mSlave {slave_hostname} (ID: {slave_id}) considered dead. Attempting restart...\033[0m")
                     
                     restart_success = self.restart_sentinel(slave_hostname)
                     
@@ -750,7 +750,7 @@ class Sentinel:
                         if slave_hostname in self.active_slaves:
                             self.active_slaves.pop(slave_hostname, None)
                     else:
-                        logging.error(f"\033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
+                        logging.debug(f" [ERROR]: \033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
                     
                     return slave_hostname
         
@@ -775,7 +775,7 @@ class Sentinel:
                 time_since_last_heartbeat = current_time - last_heartbeat
                 
                 if time_since_last_heartbeat > SLAVE_HEARTBEAT_TIMEOUT * 3:
-                    logging.error(f"\033[31mSlave {slave_hostname} (ID: {slave_id}) connection failed and has been unresponsive for {time_since_last_heartbeat:.1f} seconds. Attempting restart...\033[0m")
+                    logging.debug(f" [ERROR]: \033[31mSlave {slave_hostname} (ID: {slave_id}) connection failed and has been unresponsive for {time_since_last_heartbeat:.1f} seconds. Attempting restart...\033[0m")
                     
                     restart_success = self.restart_sentinel(slave_hostname)
                     
@@ -784,7 +784,7 @@ class Sentinel:
                         if slave_hostname in self.active_slaves:
                             self.active_slaves.pop(slave_hostname, None)
                     else:
-                        logging.error(f"\033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
+                        logging.debug(f" [ERROR]: \033[31mFailed to restart slave {slave_hostname}. Will try again later.\033[0m")
         
         return slave_hostname
 
@@ -827,7 +827,7 @@ class Sentinel:
                         logging.debug(f"Task for slave {hostname} completed successfully")
                     except Exception as e:
                         hostname = getattr(task, 'slave_hostname', 'unknown')
-                        logging.error(f"Error in heartbeat task for slave {hostname}: {e}")
+                        logging.debug(f" [ERROR]: Error in heartbeat task for slave {hostname}: {e}")
                 
                 # Cancel any pending tasks that didn't complete within the timeout
                 for task in pending:
@@ -843,7 +843,7 @@ class Sentinel:
                         pass
                     
             except Exception as e:
-                logging.error(f"Error managing heartbeat tasks: {e}")
+                logging.debug(f" [ERROR]: Error managing heartbeat tasks: {e}")
         
         # if slaves_to_check:
             # logging.debug(f"Heartbeat cycle complete: {len(completed_tasks)}/{len(slaves_to_check)} slaves processed")
@@ -861,4 +861,4 @@ class Sentinel:
             loop.run_until_complete(self._async_manage_slave_heartbeats())
             loop.close()
         except Exception as e:
-            logging.error(f"Error in asyncio event loop for heartbeat management: {e}")
+            logging.debug(f" [ERROR]: Error in asyncio event loop for heartbeat management: {e}")

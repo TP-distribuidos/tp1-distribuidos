@@ -13,6 +13,14 @@ def generate_rabbitmq_service():
         "rabbitmq": {
             "image": "rabbitmq:3-management",
             "ports": ["5672:5672", "15672:15672"],
-            "networks": [NETWORK]
+            "environment": [
+                "RABBITMQ_LOG_LEVEL=none",
+                "RABBITMQ_LOGS=/dev/null",  # Send logs to /dev/null instead of stdout
+                "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,none},{channel,none},{authentication,none},{federation,none},{queue,none},{default,none},{access_control,none},{amqp,none},{amqp_client,none}]"
+            ],
+            "networks": [NETWORK],
+            "logging": {
+                "driver": "none"  # This completely discards all container logs
+            }
         }
     }

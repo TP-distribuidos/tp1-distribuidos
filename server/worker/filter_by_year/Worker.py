@@ -80,7 +80,6 @@ class Worker:
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_names}'")
         
         # Start consuming messages (blocking call)
         try:

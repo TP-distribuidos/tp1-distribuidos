@@ -99,7 +99,6 @@ class Worker:
             logging.error("Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info("Worker running and consuming from both queues simultaneously")
         
         # Keep the worker running until shutdown is triggered
         try:

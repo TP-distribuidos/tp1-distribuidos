@@ -739,7 +739,7 @@ class WriteAheadLog(DataPersistenceInterface):
                                 logging.debug(f"Extracted business data from log {log_file.name} for node {node_id}")
             
             if not all_business_data_items:
-                logging.info(f"No business data in service {self.service_name} found for client {client_id} across all nodes")
+                logging.debug(f"No business data in service {self.service_name} found for client {client_id} across all nodes")
                 return None
                 
             # Use state interpreter to merge all business data items from all nodes

@@ -63,8 +63,6 @@ class Worker:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Count Worker initialized with NODE_ID: {self.node_id}")
-        logging.info(f"Consumer queue: '{consumer_queue_name}', producer queues: '{producer_queue_names}'")
-        logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
 
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -73,7 +71,6 @@ class Worker:
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
         # Start consuming messages (blocking call)
         try:

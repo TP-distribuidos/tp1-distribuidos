@@ -10,8 +10,6 @@ from StateInterpreter import StateInterpreter
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
 
-# Load environment variables
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,20 +17,31 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+# Load environment variables
+load_dotenv()
+
 logging.getLogger("pika").setLevel(logging.ERROR)
 
 # Constants and configuration
 NODE_ID = os.getenv("NODE_ID")
 ROUTER_CONSUME_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE", "average_sentiment_worker")
 COLLECTOR_QUEUE = os.getenv("COLLECTOR_QUEUE", "average_sentiment_collector_router")
+EXCHANGE_NAME_PRODUCER = os.getenv("PRODUCER_EXCHANGE", "average_sentiment_exchange")
+EXCHANGE_TYPE_PRODUCER = os.getenv("PRODUCER_EXCHANGE_TYPE", "direct")
 QUERY_5 = os.getenv("QUERY_5", "5")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class Worker:
-    def __init__(self, consumer_queue_name=ROUTER_CONSUME_QUEUE, producer_queue_name=COLLECTOR_QUEUE):
+    def __init__(self, 
+                 consumer_queue_name=ROUTER_CONSUME_QUEUE, 
+                 exchange_name_producer=EXCHANGE_NAME_PRODUCER,
+                 exchange_type_producer=EXCHANGE_TYPE_PRODUCER,
+                 producer_queue_names=[COLLECTOR_QUEUE]):
         self._running = True
         self.consumer_queue_name = consumer_queue_name
-        self.producer_queue_name = producer_queue_name
+        self.producer_queue_names = producer_queue_names
+        self.exchange_name_producer = exchange_name_producer
+        self.exchange_type_producer = exchange_type_producer
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
@@ -52,7 +61,8 @@ class Worker:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Average Sentiment Worker initialized for queue '{consumer_queue_name}', producer queue '{self.producer_queue_name}'")
+        logging.info(f"Average Sentiment Worker initialized for queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
+        logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -80,22 +90,52 @@ class Worker:
             time.sleep(wait_time)
             return self._setup_rabbitmq(retry_count + 1)
         
-        # Declare queues (idempotent operation)
+        # -------------------- CONSUMER --------------------
+        # Declare input queue (from router)
         queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
+            logging.error(f"Failed to declare consumer queue '{self.consumer_queue_name}'")
             return False
-            
-        producer_queue = self.rabbitmq.declare_queue(self.producer_queue_name, durable=True)
-        if not producer_queue:
-            return False
+        # --------------------------------------------------
 
-        # Set up consumer
+        # -------------------- PRODUCER --------------------
+        # Declare exchange
+        exchange = self.rabbitmq.declare_exchange(
+            name=self.exchange_name_producer,
+            exchange_type=self.exchange_type_producer,
+            durable=True
+        )
+        if not exchange:
+            logging.error(f"Failed to declare exchange '{self.exchange_name_producer}'")
+            return False
+        
+        # Declare output queues
+        for queue_name in self.producer_queue_names:
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
+            if not queue:
+                logging.error(f"Failed to declare producer queue '{queue_name}'")
+                return False        
+            
+            # Bind queues to exchange
+            success = self.rabbitmq.bind_queue(
+                queue_name=queue_name,
+                exchange_name=self.exchange_name_producer,
+                routing_key=queue_name,
+                exchange_type=self.exchange_type_producer
+            )
+            if not success:
+                logging.error(f"Failed to bind queue '{queue_name}' to exchange '{self.exchange_name_producer}'")
+                return False
+        # --------------------------------------------------
+        
+        # Set up consumer for the input queue
         success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False,
             prefetch_count=1
         )
+        
         if not success:
             logging.error(f"Failed to set up consumer for queue '{self.consumer_queue_name}'")
             return False
@@ -167,7 +207,7 @@ class Worker:
             # Process the sentiment data 
             elif data:
                 # Persist data to WAL (processing logic moved to StateInterpreter)
-                self.data_persistence.persist(client_id, self.node_id, data, operation_id)
+                self.data_persistence.persist(client_id, node_id, data, operation_id)
                 channel.basic_ack(delivery_tag=method.delivery_tag)
             else:
                 logging.warning(f"Received empty data from client {client_id}")
@@ -185,12 +225,15 @@ class Worker:
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
     
     def send_data(self, client_id, data, eof_marker=False, query=None, disconnect_marker=False, operation_id=None):
-        """Send data to the producer queue with query in metadata"""
+        """Send data to the producer exchange with query in metadata"""
         message = Serializer.add_metadata(client_id, data, eof_marker, query, disconnect_marker, operation_id, self.node_id)
-        success = self.rabbitmq.publish_to_queue(
-            queue_name=self.producer_queue_name,
+        queue_name = self.producer_queue_names[0]
+        success = self.rabbitmq.publish(
+            exchange_name=self.exchange_name_producer,
+            routing_key=queue_name,
             message=Serializer.serialize(message),
-            persistent=True
+            persistent=True,
+            exchange_type=self.exchange_type_producer
         )
         if not success:
             logging.error(f"Failed to send data with query '{query}' for client {client_id}")

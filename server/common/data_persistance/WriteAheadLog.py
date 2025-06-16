@@ -530,7 +530,7 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         return self.counter_value
 
-    def increment_counter(self) -> None:
+    def increment_counter(self, amount = 1) -> None:
         """
         Increment the counter.
         
@@ -538,7 +538,7 @@ class WriteAheadLog(DataPersistenceInterface):
         1. Write the new counter value with PROCESSING status
         2. Update the status to COMPLETED
         """
-        self.counter_value += 1
+        self.counter_value += amount
         success = self._write_counter(self.counter_value)
         
         if not success:

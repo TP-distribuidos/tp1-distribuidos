@@ -195,6 +195,7 @@ class Worker:
             if eof_marker:
                 # Generate a new operation ID for this EOF message
                 self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
+                self.data_persistence.persist(client_id, node_id, {}, operation_id)
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

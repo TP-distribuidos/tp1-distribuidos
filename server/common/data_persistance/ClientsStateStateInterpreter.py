@@ -58,4 +58,8 @@ class ClientsStateStateInterpreter(StateInterpreterInterface):
         Raises:
             RuntimeError: If no entry has 'movies_done' as True
         """
-        raise RuntimeError("WARNING: data entries has more than one element u fukced up with the format_data function")
+        logging.error("WARNING: data_entries has more than one element u fucked up, this should not happen in the join worker")
+        for entry in data_entries:
+            if entry:
+                return True
+        return False

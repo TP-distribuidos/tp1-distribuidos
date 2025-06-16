@@ -13,6 +13,9 @@ import json
 from dotenv import load_dotenv
 from ThreadLocalRabbitMQ import ThreadLocalRabbitMQ
 from Protocol import Protocol
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
 
 # Load environment variables
 load_dotenv()
@@ -56,7 +59,12 @@ class Boundary:
     self.protocol = Protocol
     self.node_id = str(uuid.uuid4())
     
-    self.message_counter = 0
+    self.data_persistance_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="counter"
+    )
+        
     
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
@@ -119,12 +127,6 @@ class Boundary:
       except Exception as exc:
         if self._running:  # Only log if we're supposed to be running
           logging.error(f"Accept failed: {exc}")
-
-  def _get_next_message_id(self):
-    """Get the next incremental message ID for this node"""
-    with self._lock:
-      self.message_counter += 1
-      return self.message_counter
 
 # ------------------------------------------------------------------ #
 # response queue consumer logic                                      #
@@ -215,10 +217,12 @@ class Boundary:
         while True:
             try:
                 data = self._receive_csv_batch(sock, proto)
-                new_operation_id = self._get_next_message_id()
+                with self._lock:
+                  new_operation_id = self.data_persistance_counter.get_counter_value()
                 if data == EOF_MARKER:
                     self._send_eof_marker(csvs_received, client_id, new_operation_id)
                     csvs_received += 1
+                    self.data_persistance_counter.increment_counter()
                     logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                     continue
                 
@@ -244,13 +248,18 @@ class Boundary:
                     filtered_data = self._remove_ratings_with_0_rating(filtered_data)
                     prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
                     self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
-                
+                    
+                with self._lock:
+                  self.data_persistance_counter.increment_counter()                
+
             except ConnectionError:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                new_operation_id = self._get_next_message_id()
-                self._send_disconnect_marker(client_id, new_operation_id)
-                self._cleanup_client_resources(client_id)
+                with self._lock:
+                  new_operation_id = self.data_persistance_counter.get_counter_value()
+                  self._send_disconnect_marker(client_id, new_operation_id)
+                  self._cleanup_client_resources(client_id)
+                  self.data_persistance_counter.increment_counter()                
                 break
                
     except Exception as exc:
@@ -258,9 +267,11 @@ class Boundary:
         logging.exception(exc)
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
-        new_operation_id = self._get_next_message_id()
-        self._send_disconnect_marker(client_id, new_operation_id)
-        self._cleanup_client_resources(client_id)
+        with self._lock:
+          new_operation_id = self.data_persistance_counter.get_counter_value()
+          self._send_disconnect_marker(client_id, new_operation_id)
+          self._cleanup_client_resources(client_id)
+          self.data_persistance_counter.increment_counter()
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """

@@ -7,6 +7,12 @@ from common.Serializer import Serializer
 from common.SentinelBeacon import SentinelBeacon
 from load_balancer.factory import create_balancer
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 
 class RouterWorker:

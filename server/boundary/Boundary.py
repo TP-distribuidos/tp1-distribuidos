@@ -22,7 +22,7 @@ MOVIES_ROUTER_QUEUE = os.getenv("MOVIES_ROUTER_QUEUE")
 MOVIES_ROUTER_Q5_QUEUE = os.getenv("MOVIES_ROUTER_Q5_QUEUE")
 CREDITS_ROUTER_QUEUE = os.getenv("CREDITS_ROUTER_QUEUE")
 RATINGS_ROUTER_QUEUE = os.getenv("RATINGS_ROUTER_QUEUE")
-NODE_ID = os.getenv("NODE_ID", )
+NODE_ID = os.getenv("NODE_ID", "boundary_node")
 
 COLUMNS_Q1 = {'genres': 3, 'id':5, 'original_title': 8, 'production_countries': 13, 'release_date': 14}
 COLUMNS_Q3 = {'id': 1, 'rating': 2}

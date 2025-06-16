@@ -23,7 +23,7 @@ def main():
         # Create worker with the environment configuration
         worker = SentimentWorker(
             consumer_queue_name=consumer_queue,
-            response_queue_name=producer_queue
+            router_queue_name=producer_queue
         )
         
         success = worker.run()

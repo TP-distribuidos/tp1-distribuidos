@@ -87,6 +87,13 @@ fi
 # Clear the screen
 clear
 
+# Clean up persistence directory
+if [ -d "server/persistence" ]; then
+    echo -e "${YELLOW}Removing server/persistence directory...${NC}"
+    rm -rf server/persistence
+    echo -e "${GREEN}Persistence directory cleared.${NC}"
+fi
+
 # Prepare for startup
 echo -e "${GREEN}Starting services with docker compose...${NC}"
 

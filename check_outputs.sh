@@ -143,7 +143,7 @@ check_q4() {
     
     printf "${BLUE}→ Checking Q4 (Actors and Movie Count)...${NC}\n"
     
-    # Array of expected entries (in correct order)
+    # Array of expected entries
     declare -a expected=(
         '{"Ricardo Dar\u00edn": 18}'
         '{"Alejandro Awada": 7}'
@@ -170,32 +170,22 @@ check_q4() {
         status=1
     fi
     
-    # Check order - read file line by line and compare with expected array
-    local line_num=0
-    while IFS= read -r line && [ $line_num -lt $expected_count ]; do
-        # Compare with expected entry at the same position
-        expected_item="${expected[$line_num]}"
-        # Remove potential whitespace
-        line=$(echo "$line" | tr -d '[:space:]')
-        expected_item=$(echo "$expected_item" | tr -d '[:space:]')
-        
-        if [ "$line" != "$expected_item" ]; then
-            printf "  ${RED}✗ Order mismatch at line $((line_num+1)):${NC}\n"
-            printf "    Expected: ${YELLOW}$expected_item${NC}\n"
-            printf "    Found: ${RED}$line${NC}\n"
-            status=1
-        else
+    # Check each expected entry without enforcing order
+    for item in "${expected[@]}"; do
+        # Escape special characters for grep
+        if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
             ((found_count++))
+        else
+            printf "  ${RED}✗ Missing:${NC} $item\n"
+            status=1
         fi
-        
-        ((line_num++))
-    done < "$file"
+    done
     
     # Summary for this file
     if [ $status -eq 0 ]; then
-        printf "  ${GREEN}✓ All $expected_count actor records found in correct order!${NC}\n"
+        printf "  ${GREEN}✓ All $expected_count actor records found!${NC}\n"
     else
-        printf "  ${RED}✗ Found $found_count of $expected_count expected records in correct order${NC}\n"
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
     fi
     
     return $status

@@ -26,10 +26,10 @@ SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 NODE_ID = os.getenv("NODE_ID")
 
 class SentimentWorker:
-    def __init__(self, consumer_queue_name=CONSUMER_QUEUE, router_queue_name=PRODUCER_QUEUE):
+    def __init__(self, consumer_queue_name=CONSUMER_QUEUE, response_queue_name=PRODUCER_QUEUE):
         self._running = True
         self.consumer_queue_name = consumer_queue_name
-        self.router_queue_name = router_queue_name
+        self.response_queue_name = response_queue_name
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
@@ -49,7 +49,7 @@ class SentimentWorker:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queue '{router_queue_name}'")
+        logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queue '{response_queue_name}'")
     
     def _get_next_message_id(self):
         """Get the next incremental message ID for this node"""
@@ -91,7 +91,7 @@ class SentimentWorker:
         if not queue:
             return False
             
-        response_queue = self.rabbitmq.declare_queue(self.router_queue_name, durable=True)
+        response_queue = self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
         if not response_queue:
             return False
 
@@ -136,7 +136,7 @@ class SentimentWorker:
                 
                 # Send processed data to response queue
                 success = self.rabbitmq.publish_to_queue(
-                    queue_name=self.router_queue_name,
+                    queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
@@ -158,10 +158,9 @@ class SentimentWorker:
                     operation_id=new_operation_id,
                     node_id=self.node_id
                 )
-
                 
                 self.rabbitmq.publish_to_queue(
-                    queue_name=self.router_queue_name,
+                    queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
@@ -185,10 +184,9 @@ class SentimentWorker:
                     node_id=self.node_id
                 )
                 
-                logging.info(f"Sending message with operation ID {new_operation_id} to Queue")
                 # Send processed data to response queue
                 success = self.rabbitmq.publish_to_queue(
-                    queue_name=self.router_queue_name,
+                    queue_name=self.response_queue_name,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )

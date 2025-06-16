@@ -198,7 +198,7 @@ class Worker:
                 
             # Handle EOF marker for movies
             elif eof_marker:
-                logging.info(f"\033[38;5;208mReceived EOF marker for movies from client '{client_id}'\033[0m")
+                logging.info(f"Received EOF marker for movies from client '{client_id}'")
                 self.client_states_data_persistence.persist(client_id, self.node_id, True, operation_id)
             
             # Process movie data

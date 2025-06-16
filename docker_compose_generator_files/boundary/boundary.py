@@ -30,7 +30,8 @@ def generate_boundary_service():
             "volumes": [
                 "./server/boundary:/app",
                 "./server/rabbitmq:/app/rabbitmq",
-                "./server/common:/app/common"
+                "./server/common:/app/common",
+                "./server/persistence/boundary:/app/persistence"
             ],
             "networks": [NETWORK]
         }

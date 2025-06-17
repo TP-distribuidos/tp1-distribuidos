@@ -20,7 +20,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-logging.getLogger("pika").setLevel(logging.ERROR)
+logging.getLogger("pika").setLevel(logging.CRITICAL)
 
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
@@ -181,7 +181,7 @@ class SentimentWorker:
         Returns True only when the message is successfully published
         """
         try:
-            success = self.rabbitmq.publish_to_exchange(
+            success = self.rabbitmq.publish(
                 exchange_name=exchange_name,
                 routing_key=routing_key,
                 message=message,

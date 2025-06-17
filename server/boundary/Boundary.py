@@ -13,6 +13,10 @@ import json
 from dotenv import load_dotenv
 from ThreadLocalRabbitMQ import ThreadLocalRabbitMQ
 from Protocol import Protocol
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from StateInterpreter import StateInterpreter
 
 # Load environment variables
 load_dotenv()
@@ -57,7 +61,23 @@ class Boundary:
     self.protocol = Protocol
     self.node_id = NODE_ID
     
-    self.message_counter = 0
+    self.data_persistance_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="counter"
+    )
+    
+    self.data_persistence_clients = WriteAheadLog(
+        StateInterpreter(),
+        FileSystemStorage(),
+        service_name="clients"
+    )
+
+    self.data_persistence_response_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="response_counter"
+    )
     
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
@@ -106,7 +126,15 @@ class Boundary:
           logging.info(f"New client {addr[0]}:{addr[1]}")
           
           with self._lock:
+
+            client = self.data_persistence_clients.retrieve(addr[0])
+            if client is not None and addr[0] in client:
+              client_id = client[addr[0]]
+              logging.info(f"Reusing existing client ID {client_id} for {addr[0]}")
+
             self._client_sockets.append({client_id: client_sock})
+            operation_id = self.data_persistance_counter.get_counter_value()
+            self.data_persistance_counter.persist(addr[0], self.node_id, {addr[0]: client_id}, operation_id)
           
           # Start client handling in a new thread
           client_thread = threading.Thread(
@@ -120,12 +148,6 @@ class Boundary:
       except Exception as exc:
         if self._running:  # Only log if we're supposed to be running
           logging.error(f"Accept failed: {exc}")
-
-  def _get_next_message_id(self):
-    """Get the next incremental message ID for this node"""
-    with self._lock:
-      self.message_counter += 1
-      return self.message_counter
 
 # ------------------------------------------------------------------ #
 # response queue consumer logic                                      #
@@ -162,6 +184,14 @@ class Boundary:
         client_id = deserialized_message.get("client_id")
         data = deserialized_message.get("data")
         query = deserialized_message.get("query")
+        node_id = deserialized_message.get("node_id")
+        operation_id = deserialized_message.get("operation_id")
+
+        if self.data_persistence_response_counter.is_message_processed(client_id, node_id, operation_id):
+            logging.info(f"Message for client {client_id} with operation ID {operation_id} already processed, skipping")
+            self.data_persistence_response_counter.increment_counter()
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            return
 
         if not data:
             logging.warning(f"Response message contains no data")
@@ -194,6 +224,8 @@ class Boundary:
         else:
             logging.warning(f"Client socket not found for client ID: {client_id}")
         
+        self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
+        self.data_persistence_response_counter.increment_counter()
         # Acknowledge message
         channel.basic_ack(delivery_tag=method.delivery_tag)
         
@@ -216,42 +248,48 @@ class Boundary:
         while True:
             try:
                 data = self._receive_csv_batch(sock, proto)
-                new_operation_id = self._get_next_message_id()
-                if data == EOF_MARKER:
-                    self._send_eof_marker(csvs_received, client_id, new_operation_id)
-                    csvs_received += 1
-                    logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
-                    continue
-                
-                if csvs_received == MOVIES_CSV:
-                    filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
+                with self._lock:
+                  new_operation_id = self.data_persistance_counter.get_counter_value()
+                  if data == EOF_MARKER:
+                      self._send_eof_marker(csvs_received, client_id, new_operation_id)
+                      csvs_received += 1
+                      self.data_persistance_counter.increment_counter()
+                      logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
+                      continue
+                  
+                  if csvs_received == MOVIES_CSV:
+                      filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
-                    # Send data for Q1 to the movies router
-                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+                      # Send data for Q1 to the movies router
+                      prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
-                    # Send data for Q5 to the reviews router
-                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
-                
-                elif csvs_received == CREDITS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q4)
-                    filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
-                
-                elif csvs_received == RATINGS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q3)
-                    filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
-                
+                      # Send data for Q5 to the reviews router
+                      prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                  
+                  elif csvs_received == CREDITS_CSV:
+                      filtered_data = self._project_to_columns(data, COLUMNS_Q4)
+                      filtered_data = self._remove_cast_extra_data(filtered_data)
+                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+                  
+                  elif csvs_received == RATINGS_CSV:
+                      filtered_data = self._project_to_columns(data, COLUMNS_Q3)
+                      filtered_data = self._remove_ratings_with_0_rating(filtered_data)
+                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+                    
+                  self.data_persistance_counter.increment_counter()                
+
             except ConnectionError:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                new_operation_id = self._get_next_message_id()
-                self._send_disconnect_marker(client_id, new_operation_id)
-                self._cleanup_client_resources(client_id)
+                with self._lock:
+                  new_operation_id = self.data_persistance_counter.get_counter_value()
+                  self._send_disconnect_marker(client_id, new_operation_id)
+                  self._cleanup_client_resources(client_id)
+                  self.data_persistance_counter.increment_counter()                
                 break
                
     except Exception as exc:
@@ -259,9 +297,11 @@ class Boundary:
         logging.exception(exc)
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
-        new_operation_id = self._get_next_message_id()
-        self._send_disconnect_marker(client_id, new_operation_id)
-        self._cleanup_client_resources(client_id)
+        with self._lock:
+          new_operation_id = self.data_persistance_counter.get_counter_value()
+          self._send_disconnect_marker(client_id, new_operation_id)
+          self._cleanup_client_resources(client_id)
+          self.data_persistance_counter.increment_counter()
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """

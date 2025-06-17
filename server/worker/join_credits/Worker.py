@@ -249,7 +249,6 @@ class Worker:
                 return
             
             movies_done = self.client_states_data_persistence.retrieve(client_id)
-
             if movies_done is None:
                 # We haven't received all movies yet, reject and requeue the message
                 logging.debug(f"Not all movies received for client {client_id}, requeuing credits message")
@@ -269,8 +268,8 @@ class Worker:
                 if joined_data:
                     self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
-                self.credits_data_persistence.persist(client_id, node_id, None, operation_id)
 
+            self.credits_data_persistence.persist(client_id, node_id, None, operation_id)
             self.credits_data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
 

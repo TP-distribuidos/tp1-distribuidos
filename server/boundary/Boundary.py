@@ -71,6 +71,12 @@ class Boundary:
         FileSystemStorage(),
         service_name="clients"
     )
+
+    self.data_persistence_response_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="response_counter"
+    )
     
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
@@ -177,6 +183,14 @@ class Boundary:
         client_id = deserialized_message.get("client_id")
         data = deserialized_message.get("data")
         query = deserialized_message.get("query")
+        node_id = deserialized_message.get("node_id")
+        operation_id = deserialized_message.get("operation_id")
+
+        if self.data_persistence_response_counter.is_message_processed(client_id, node_id, operation_id):
+            logging.info(f"Message for client {client_id} with operation ID {operation_id} already processed, skipping")
+            self.data_persistence_response_counter.increment_counter()
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            return
 
         if not data:
             logging.warning(f"Response message contains no data")
@@ -209,6 +223,8 @@ class Boundary:
         else:
             logging.warning(f"Client socket not found for client ID: {client_id}")
         
+        self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
+        self.data_persistence_response_counter.increment_counter()
         # Acknowledge message
         channel.basic_ack(delivery_tag=method.delivery_tag)
         

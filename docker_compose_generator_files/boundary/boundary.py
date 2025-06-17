@@ -19,7 +19,7 @@ def generate_boundary_service():
                 "MOVIES_ROUTER_QUEUE=boundary_movies_router",
                 "MOVIES_ROUTER_Q5_QUEUE=boundary_movies_Q5_router",
                 "CREDITS_ROUTER_QUEUE=boundary_credits_router",
-                "RATINGS_ROUTER_QUEUE=boundary_ratings_router"
+                "RATINGS_ROUTER_QUEUE=boundary_ratings_router",
                 "NODE_ID=boundary_node"
             ],
             "depends_on": {

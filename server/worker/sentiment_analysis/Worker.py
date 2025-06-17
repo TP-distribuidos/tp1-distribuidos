@@ -20,7 +20,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-logging.getLogger("pika").setLevel(logging.CRITICAL)
+logging.getLogger("pika").setLevel(logging.ERROR)
 
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
@@ -31,7 +31,6 @@ EXCHANGE_NAME = os.getenv("EXCHANGE_NAME", "sentiment_exchange")
 EXCHANGE_TYPE = os.getenv("EXCHANGE_TYPE", "direct")
 RECONNECT_DELAY = 5  # Base delay for reconnection attempts in seconds
 MAX_RECONNECT_DELAY = 60  # Maximum reconnect delay
-MAX_PUBLISH_RETRIES = 3  # Maximum retries for publishing a message
 
 class SentimentWorker:
     def __init__(self, consumer_queue_name=CONSUMER_QUEUE, router_queue_name=PRODUCER_QUEUE):
@@ -177,15 +176,12 @@ class SentimentWorker:
     
     def _safe_publish_to_exchange(self, exchange_name, routing_key, message, persistent=True, retries=0):
         """
-        Safely publish a message to an exchange with retry logic
-        Returns True if published successfully, False otherwise
+        Safely publish a message to an exchange with unlimited retry logic
+        Will NEVER give up until the message is successfully published
+        Returns True only when the message is successfully published
         """
-        if retries >= MAX_PUBLISH_RETRIES:
-            logging.error(f"Failed to publish message after {retries} retries")
-            return False
-        
         try:
-            success = self.rabbitmq.publish(
+            success = self.rabbitmq.publish_to_exchange(
                 exchange_name=exchange_name,
                 routing_key=routing_key,
                 message=message,
@@ -193,25 +189,54 @@ class SentimentWorker:
             )
             
             if success:
+                # Message successfully published
+                if retries > 0:
+                    logging.info(f"Successfully published message after {retries} retries")
                 return True
             else:
-                logging.warning(f"Failed to publish to exchange {exchange_name}, attempt {retries+1}/{MAX_PUBLISH_RETRIES}")
-                time.sleep(1)  # Short delay before retry
+                # Publishing returned False but didn't raise an exception
+                backoff_time = min(30, 1 + (retries % 10))  # Cap backoff but keep retrying
+                logging.warning(f"Failed to publish to exchange {exchange_name}, retry {retries+1}. Retrying in {backoff_time}s...")
+                time.sleep(backoff_time)
                 return self._safe_publish_to_exchange(exchange_name, routing_key, message, persistent, retries + 1)
                 
         except Exception as e:
-            logging.error(f"Error publishing to exchange: {e}")
+            # An exception occurred during publishing
+            backoff_time = min(30, 1 + (retries % 10))  # Cap backoff but keep retrying
+            logging.error(f"Error publishing to exchange (retry {retries+1}): {e}")
+            
             # If connection issues, try to reconnect
             if "connection" in str(e).lower() or "channel" in str(e).lower():
-                logging.info("Attempting to reconnect before retrying publish...")
+                logging.warning(f"Connection issue detected. Reconnecting before retry {retries+1}...")
                 try:
                     self.rabbitmq.close()
                 except:
                     pass
-                time.sleep(2)  # Wait before reconnecting
-                self._setup_rabbitmq()
+                
+                # Try to reconnect
+                reconnect_success = False
+                reconnect_attempts = 0
+                max_reconnect_attempts = 5  # Try a few times before backing off
+                
+                while not reconnect_success and reconnect_attempts < max_reconnect_attempts:
+                    try:
+                        reconnect_success = self._setup_rabbitmq()
+                        if reconnect_success:
+                            logging.info("Successfully reconnected to RabbitMQ")
+                            break
+                    except Exception as reconnect_error:
+                        logging.warning(f"Failed reconnection attempt {reconnect_attempts+1}: {reconnect_error}")
+                    
+                    reconnect_attempts += 1
+                    time.sleep(2)  # Short delay between reconnection attempts
+                
+                if not reconnect_success:
+                    logging.error(f"Failed to reconnect after {max_reconnect_attempts} attempts. Will retry again in {backoff_time}s")
             
-            time.sleep(1)  # Short delay before retry
+            # Sleep with backoff before retrying
+            time.sleep(backoff_time)
+            
+            # Always retry, no matter what - unlimited persistence
             return self._safe_publish_to_exchange(exchange_name, routing_key, message, persistent, retries + 1)
     
     def _process_message(self, channel, method, properties, body):
@@ -233,6 +258,7 @@ class SentimentWorker:
             
             # Check if this message was already processed
             if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
@@ -257,6 +283,7 @@ class SentimentWorker:
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
                 if not success:
                     logging.error("Failed to send disconnect marker to exchange")
                     channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
@@ -286,6 +313,7 @@ class SentimentWorker:
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
                 if not success:
                     logging.error("Failed to send EOF marker to exchange")
                     channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
@@ -313,7 +341,9 @@ class SentimentWorker:
                     node_id=self.node_id
                 )
                 
-                # Send processed data to exchange with retry logic
+                logging.info(f"Sending message with operation ID {new_operation_id} to Exchange, node ID {self.node_id}")
+                
+                # Send processed data to exchange with retry logic - will never give up
                 success = self._safe_publish_to_exchange(
                     exchange_name=self.exchange_name_producer,
                     routing_key=routing_key,
@@ -321,6 +351,7 @@ class SentimentWorker:
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
                 if not success:
                     logging.error("Failed to send processed data to exchange")
                     channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)

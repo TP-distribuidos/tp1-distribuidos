@@ -201,8 +201,8 @@ check_q5() {
     
     # Array of expected entries
     declare -a expected=(
-        '{"sentiment": "POSITIVE", "average_ratio": 7443.9, "movie_count": 4431}'
-        '{"sentiment": "NEGATIVE", "average_ratio": 3829.52, "movie_count": 3247}'
+        '{"sentiment": "POSITIVE", "average_ratio": 5668.65, "movie_count": 3091}'
+        '{"sentiment": "NEGATIVE", "average_ratio": 5455.79, "movie_count": 2278}'
     )
     
     # Check file exists

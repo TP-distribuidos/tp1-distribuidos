@@ -16,6 +16,7 @@ from Protocol import Protocol
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
 from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from StateInterpreter import StateInterpreter
 
 # Load environment variables
 load_dotenv()
@@ -64,7 +65,12 @@ class Boundary:
         FileSystemStorage(),
         service_name="counter"
     )
-        
+    
+    self.data_persistence_clients = WriteAheadLog(
+        StateInterpreter(),
+        FileSystemStorage(),
+        service_name="clients"
+    )
     
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
@@ -113,7 +119,15 @@ class Boundary:
           logging.info(f"New client {addr[0]}:{addr[1]}")
           
           with self._lock:
+
+            client = self.data_persistence_clients.retrieve(addr[0])
+            if client is not None and addr[0] in client:
+              client_id = client[addr[0]]
+              logging.info(f"Reusing existing client ID {client_id} for {addr[0]}")
+
             self._client_sockets.append({client_id: client_sock})
+            operation_id = self.data_persistance_counter.get_counter_value()
+            self.data_persistance_counter.persist(addr[0], self.node_id, {addr[0]: client_id}, operation_id)
           
           # Start client handling in a new thread
           client_thread = threading.Thread(
@@ -219,37 +233,36 @@ class Boundary:
                 data = self._receive_csv_batch(sock, proto)
                 with self._lock:
                   new_operation_id = self.data_persistance_counter.get_counter_value()
-                if data == EOF_MARKER:
-                    self._send_eof_marker(csvs_received, client_id, new_operation_id)
-                    csvs_received += 1
-                    self.data_persistance_counter.increment_counter()
-                    logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
-                    continue
-                
-                if csvs_received == MOVIES_CSV:
-                    filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
+                  if data == EOF_MARKER:
+                      self._send_eof_marker(csvs_received, client_id, new_operation_id)
+                      csvs_received += 1
+                      self.data_persistance_counter.increment_counter()
+                      logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
+                      continue
+                  
+                  if csvs_received == MOVIES_CSV:
+                      filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
-                    # Send data for Q1 to the movies router
-                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+                      # Send data for Q1 to the movies router
+                      prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
-                    # Send data for Q5 to the reviews router
-                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
-                
-                elif csvs_received == CREDITS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q4)
-                    filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
-                
-                elif csvs_received == RATINGS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q3)
-                    filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+                      # Send data for Q5 to the reviews router
+                      prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                  
+                  elif csvs_received == CREDITS_CSV:
+                      filtered_data = self._project_to_columns(data, COLUMNS_Q4)
+                      filtered_data = self._remove_cast_extra_data(filtered_data)
+                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+                  
+                  elif csvs_received == RATINGS_CSV:
+                      filtered_data = self._project_to_columns(data, COLUMNS_Q3)
+                      filtered_data = self._remove_ratings_with_0_rating(filtered_data)
+                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                      self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                     
-                with self._lock:
                   self.data_persistance_counter.increment_counter()                
 
             except ConnectionError:

@@ -23,7 +23,7 @@ def main():
     # Create worker with the environment configuration
     worker = Worker(
         consumer_queue_name=consumer_queue,
-        producer_queue_name=producer_queue
+        producer_queue_names=[producer_queue]
     )
     
     # Setup clean shutdown with signal handlers

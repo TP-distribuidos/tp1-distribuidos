@@ -25,14 +25,12 @@ def generate_rabbitmq_service():
             },
             
             "healthcheck": {
-                # use the flag --erlang-cookie if setting the erlang 
-                # cookie was necessary (comment by red-riding-hood)
-                # test: rabbitmq-diagnostics -q ping --erlang-cookie "mycookie"
-                "test": "rabbitmq-diagnostics -q ping",
-                "interval": "30s",
+                # A more comprehensive health check that verifies RabbitMQ is ready for connections
+                "test": ["CMD", "bash", "-c", "rabbitmq-diagnostics -q check_port_connectivity && rabbitmq-diagnostics -q check_running"],
+                "interval": "10s",
                 "timeout": "10s",
                 "retries": 5,
-                "start_period": "10s"
+                "start_period": "20s"  
             }
         }
     }

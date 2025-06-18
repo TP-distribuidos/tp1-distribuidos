@@ -161,13 +161,13 @@ class Worker:
                 self._send_data(client_id, data, queue_name=self.producer_queue_name[0], disconnect_marker=True, operation_id=new_operation_id)
                 self.data_persistence.clear(client_id)
                 self.data_persistence.increment_counter()
+
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
             
             elif eof_marker:
-                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                    self.data_persistence.increment_counter()
-                    channel.basic_ack(delivery_tag=method.delivery_tag)
-                    return
-                
                 data_persisted = self.data_persistence.retrieve(client_id)
                 max_min = self._get_max_min(data_persisted)
 

@@ -190,7 +190,6 @@ class Worker:
                 return
             
             if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id or self.client_states_data_persistence.is_message_processed(client_id, self.node_id, operation_id)):
-                logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.credits_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
@@ -243,7 +242,6 @@ class Worker:
             
             # Check if this message was already processed (deduplication)
             if self.credits_data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Credits message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.credits_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

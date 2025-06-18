@@ -187,7 +187,6 @@ class Worker:
                 return
 
             if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

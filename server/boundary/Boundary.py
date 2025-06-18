@@ -13,6 +13,7 @@ import json
 from dotenv import load_dotenv
 from ThreadLocalRabbitMQ import ThreadLocalRabbitMQ
 from Protocol import Protocol
+from common.SentinelBeacon import SentinelBeacon
 from common.data_persistance.WriteAheadLog import WriteAheadLog
 from common.data_persistance.FileSystemStorage import FileSystemStorage
 from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
@@ -27,6 +28,8 @@ MOVIES_ROUTER_Q5_QUEUE = os.getenv("MOVIES_ROUTER_Q5_QUEUE")
 CREDITS_ROUTER_QUEUE = os.getenv("CREDITS_ROUTER_QUEUE")
 RATINGS_ROUTER_QUEUE = os.getenv("RATINGS_ROUTER_QUEUE")
 NODE_ID = os.getenv("NODE_ID", "boundary_node")
+
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9850))
 
 COLUMNS_Q1 = {'genres': 3, 'id':5, 'original_title': 8, 'production_countries': 13, 'release_date': 14}
 COLUMNS_Q3 = {'id': 1, 'rating': 2}
@@ -61,7 +64,7 @@ class Boundary:
     self.protocol = Protocol
     self.node_id = NODE_ID
     
-    self.data_persistance_counter = WriteAheadLog(
+    self.data_persistence_counter = WriteAheadLog(
         StatelessStateInterpreter(),
         FileSystemStorage(),
         service_name="counter"
@@ -79,6 +82,8 @@ class Boundary:
         service_name="response_counter"
     )
     
+    self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
     
@@ -131,10 +136,13 @@ class Boundary:
             if client is not None and addr[0] in client:
               client_id = client[addr[0]]
               logging.info(f"Reusing existing client ID {client_id} for {addr[0]}")
+            else:
+              # Store the new mapping in the clients WAL
+              operation_id = self.data_persistence_counter.get_counter_value()
+              self.data_persistence_clients.persist(addr[0], self.node_id, {addr[0]: client_id}, operation_id)
+              self.data_persistence_counter.increment_counter()
 
             self._client_sockets.append({client_id: client_sock})
-            operation_id = self.data_persistance_counter.get_counter_value()
-            self.data_persistance_counter.persist(addr[0], self.node_id, {addr[0]: client_id}, operation_id)
           
           # Start client handling in a new thread
           client_thread = threading.Thread(
@@ -249,11 +257,11 @@ class Boundary:
             try:
                 data = self._receive_csv_batch(sock, proto)
                 with self._lock:
-                  new_operation_id = self.data_persistance_counter.get_counter_value()
+                  new_operation_id = self.data_persistence_counter.get_counter_value()
                   if data == EOF_MARKER:
                       self._send_eof_marker(csvs_received, client_id, new_operation_id)
                       csvs_received += 1
-                      self.data_persistance_counter.increment_counter()
+                      self.data_persistence_counter.increment_counter()
                       logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                       continue
                   
@@ -280,16 +288,16 @@ class Boundary:
                       prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
                       self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
                     
-                  self.data_persistance_counter.increment_counter()                
+                  self.data_persistence_counter.increment_counter()                
 
             except ConnectionError:
                 logging.info(f"Client {client_addr} disconnected")
                 logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
                 with self._lock:
-                  new_operation_id = self.data_persistance_counter.get_counter_value()
+                  new_operation_id = self.data_persistence_counter.get_counter_value()
                   self._send_disconnect_marker(client_id, new_operation_id)
                   self._cleanup_client_resources(client_id)
-                  self.data_persistance_counter.increment_counter()                
+                  self.data_persistence_counter.increment_counter()                
                 break
                
     except Exception as exc:
@@ -298,10 +306,10 @@ class Boundary:
         # Also send DISCONNECT markers on uncaught exceptions
         logging.info(f"Treating error as DISCONNECT for client {client_id}")
         with self._lock:
-          new_operation_id = self.data_persistance_counter.get_counter_value()
+          new_operation_id = self.data_persistence_counter.get_counter_value()
           self._send_disconnect_marker(client_id, new_operation_id)
           self._cleanup_client_resources(client_id)
-          self.data_persistance_counter.increment_counter()
+          self.data_persistence_counter.increment_counter()
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """

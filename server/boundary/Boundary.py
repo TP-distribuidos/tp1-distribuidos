@@ -112,12 +112,12 @@ class Boundary:
     # Set up RabbitMQ
     self._setup_rabbitmq()
 
-
-    # Accept clients in the main thread
-    self._accept_clients()
     # Start response queue consumer thread
     response_thread = threading.Thread(target=self._handle_response_queue, daemon=True)
     response_thread.start()
+
+    # Accept clients in the main thread
+    self._accept_clients()
 
   def _accept_clients(self):
     """Accept new client connections in a loop"""

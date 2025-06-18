@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from docker_compose_generator_files.constants import NETWORK
+sentinel_port = 9850
 
 def get_boundary_host_and_port():
     """
@@ -8,7 +9,7 @@ def get_boundary_host_and_port():
     Returns:
         tuple: (host, port) for the boundary service
     """
-    return "boundary", 5000
+    return "boundary", sentinel_port
 
 def generate_boundary_service():
     """
@@ -18,7 +19,6 @@ def generate_boundary_service():
         dict: Dictionary with boundary service configuration
     """
 
-    sentinel_port = 9850
 
     return {
         "boundary": {
@@ -40,7 +40,7 @@ def generate_boundary_service():
                     "condition": "service_healthy"
                 }
             },
-            "ports": ["5000:5000"],
+            "ports": ["5000:5000", f"{sentinel_port}:{sentinel_port}"],
             "volumes": [
                 "./server/boundary:/app",
                 "./server/rabbitmq:/app/rabbitmq",

@@ -445,6 +445,11 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
     networks = {
         network: {
             "driver": "bridge",
+            "ipam": {
+                "config": [{
+                    "subnet": "172.25.0.0/16"
+                }]
+            }
         }
     }
 

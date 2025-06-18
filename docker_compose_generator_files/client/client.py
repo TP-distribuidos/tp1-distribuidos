@@ -15,6 +15,9 @@ def generate_client_services(num_clients=4, auto_clients=NUMBER_OF_CLIENTS_AUTOM
     """
     services = {}
     
+    # Base IP for clients (using 172.25.0.x range)
+    client_ip_base = "172.25.0."
+
     for i in range(1, num_clients + 1):
         client_config = {
             "env_file": ["./client/.env"],
@@ -22,7 +25,11 @@ def generate_client_services(num_clients=4, auto_clients=NUMBER_OF_CLIENTS_AUTOM
             "environment": [f"CLIENT_ID={i}"],
             "depends_on": ["boundary"],
             "volumes": ["./client:/app"],
-            "networks": [NETWORK],
+            "networks": {
+                NETWORK: {
+                    "ipv4_address": f"{client_ip_base}{100 + i}"  # Starting from 172.25.0.101, 102, etc.
+                }
+            },
         }
         
         # Add profiles for clients beyond the auto clients

@@ -7,6 +7,9 @@
 Para levantar nuevos clientes usar el siguiente comando:
 `docker compose -f docker-compose-test.yaml --profile manual up <client_container_name>`
 
+Example
+`docker compose -f docker-compose-test.yaml --profile manual up client4`
+
 Esto permite:
 
 - Mantener los servicios opcionales en el archivo principal de Compose.

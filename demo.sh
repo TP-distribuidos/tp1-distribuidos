@@ -5,9 +5,9 @@
 # EXAMPLE: ./demo.sh -t 10 -n 3 -p max_min_worker,join_ratings_worker
 
 # Default values
-INTERVAL=5 # Default interval in seconds
-NUM_CONTAINERS=10  # Default number of containers to kill per interval
-PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker" "collector_average_sentiment_worker" "average_sentiment_worker" "sentiment_analysis_worker") #Default prefixed, do not separate with commas.
+INTERVAL=10 # Default interval in seconds
+NUM_CONTAINERS=5  # Default number of containers to kill per interval
+PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker" "collector_average_sentiment_worker" "average_sentiment_worker" "boundary" "sentinel") #Default prefixed, do not separate with commas.
 # PREFIXES=("collector_average_sentiment_worker" "average_sentiment_worker") 
 
 # ANSI Color Codes

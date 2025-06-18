@@ -58,6 +58,7 @@ class Boundary:
     self._server_socket.bind(("", port))
     self._server_socket.listen(listen_backlog)
     self._running = True
+    self.is_shutting_down = False
     self._client_sockets = []
     self._client_threads = {}
     self._lock = threading.Lock()  # Thread synchronization lock
@@ -111,12 +112,12 @@ class Boundary:
     # Set up RabbitMQ
     self._setup_rabbitmq()
 
-    # Start response queue consumer thread
-    response_thread = threading.Thread(target=self._handle_response_queue, daemon=True)
-    response_thread.start()
 
     # Accept clients in the main thread
     self._accept_clients()
+    # Start response queue consumer thread
+    response_thread = threading.Thread(target=self._handle_response_queue, daemon=True)
+    response_thread.start()
 
   def _accept_clients(self):
     """Accept new client connections in a loop"""
@@ -231,6 +232,7 @@ class Boundary:
                 logging.error(f"Failed to send data to client {client_id}: {e}")
         else:
             logging.warning(f"Client socket not found for client ID: {client_id}")
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
         
         self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
         self.data_persistence_response_counter.increment_counter()
@@ -239,8 +241,8 @@ class Boundary:
         
     except Exception as e:
         logging.error(f"Error processing response message: {e}")
-        # Reject message but don't requeue
-        channel.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+        # Reject message
+        channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
 
 # ------------------------------------------------------------------ #
 # per‑client logic                                                   #
@@ -291,25 +293,34 @@ class Boundary:
                   self.data_persistence_counter.increment_counter()                
 
             except ConnectionError:
-                logging.info(f"Client {client_addr} disconnected")
-                logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                with self._lock:
-                  new_operation_id = self.data_persistence_counter.get_counter_value()
-                  self._send_disconnect_marker(client_id, new_operation_id)
-                  self._cleanup_client_resources(client_id)
-                  self.data_persistence_counter.increment_counter()                
-                break
+              logging.info(f"Client {client_addr} disconnected")
+              # Check if this is due to server shutdown
+              with self._lock:
+                  if not self.is_shutting_down:
+                      logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
+                      new_operation_id = self.data_persistence_counter.get_counter_value()
+                      self._send_disconnect_marker(client_id, new_operation_id)
+                      self._cleanup_client_resources(client_id)
+                      self.data_persistence_counter.increment_counter()
+                  else:
+                      logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                      self._cleanup_client_resources(client_id)
+              break
                
     except Exception as exc:
         logging.error(f"Client {client_addr} error: {exc}")
         logging.exception(exc)
-        # Also send DISCONNECT markers on uncaught exceptions
-        logging.info(f"Treating error as DISCONNECT for client {client_id}")
+        # Check if this is due to server shutdown
         with self._lock:
-          new_operation_id = self.data_persistence_counter.get_counter_value()
-          self._send_disconnect_marker(client_id, new_operation_id)
-          self._cleanup_client_resources(client_id)
-          self.data_persistence_counter.increment_counter()
+            if not self.is_shutting_down:
+                logging.info(f"Treating error as DISCONNECT for client {client_id}")
+                new_operation_id = self.data_persistence_counter.get_counter_value()
+                self._send_disconnect_marker(client_id, new_operation_id)
+                self._cleanup_client_resources(client_id)
+                self.data_persistence_counter.increment_counter()
+            else:
+                logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                self._cleanup_client_resources(client_id)
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """
@@ -554,6 +565,8 @@ class Boundary:
 # ------------------------------------------------------------------ #
 
   def _handle_shutdown(self, *_):
+    with self._lock:
+        self.is_shutting_down = True
     logging.info(f"Shutting down server")
     self._running = False
     

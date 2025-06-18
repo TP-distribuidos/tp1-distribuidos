@@ -6,6 +6,7 @@ import signal
 from Protocol import Protocol
 import logging
 from Config import Config
+from ReconnectionManager import ReconnectionManager
 
 
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +28,9 @@ class Client:
         self.output_file_q3 = f"output/output_records_client_{self.name}_Q3.json"
         self.output_file_q4 = f"output/output_records_client_{self.name}_Q4.json"
         self.output_file_q5 = f"output/output_records_client_{self.name}_Q5.json"
-        
+        self.reconnection_manager = ReconnectionManager(self)
+        self.file_position = {}  # Track position in each file for resuming
+
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
         
@@ -44,6 +47,9 @@ class Client:
         logging.info(f"Connected to {host}:{port}")
     
     def shutdown(self):
+        if hasattr(self, 'reconnection_manager'):
+            self.reconnection_manager.stop()
+        
         self.receiver_running = False
         
         if self.skt is None:
@@ -67,23 +73,60 @@ class Client:
             raise Exception("Socket not connected")
         logging.info(f"\033[94mSending CSV file: {file_path}\033[0m")
         batch_sent = 0
+
+        # Initialize file position tracking if not already set
+        if file_path not in self.file_position:
+            self.file_position[file_path] = 0
+        try:
+            for batch in self._read_file_in_batches(file_path, self.config.get_batch_size(), 
+                                               start_position=self.file_position[file_path]):
+                try:
+                    self.protocol.send_all(self.skt, batch)
+                    batch_sent += 1
+                    # Update position after successful send
+                    self.file_position[file_path] += len(batch)
+                    if batch_sent % 50 == 0 and "ratings" in file_path:
+                        logging.info(f"Sent {batch_sent} batches so far...")
+                except ConnectionError as e:
+                    logging.warning(f"Connection lost while sending file {file_path}: {e}")
+                    # Attempt to reconnect
+                    if self.reconnection_manager.reconnect():
+                        logging.info(f"Reconnected. Resuming file transfer from position {self.file_position[file_path]}")
+                        # The loop will retry the current batch since we didn't update position
+                    else:
+                        logging.error("Failed to reconnect. Aborting file transfer.")
+                        raise
+            
+            # Send EOF marker
+            try:
+                self.protocol.send_all(self.skt, self.config.get_EOF())
+                logging.info(f"\033[94mCSV file sent successfully with EOF: {self.config.get_EOF()}\033[0m")
+            except ConnectionError as e:
+                logging.warning(f"Connection lost while sending EOF marker: {e}")
+                if self.reconnection_manager.reconnect():
+                    # Retry sending EOF marker
+                    self.protocol.send_all(self.skt, self.config.get_EOF())
+                    logging.info(f"\033[94mCSV file sent successfully with EOF after reconnection\033[0m")
+                else:
+                    logging.error("Failed to reconnect. Aborting file transfer.")
+                    raise
+        except Exception as e:
+            logging.error(f"Error sending file {file_path}: {e}")
+            raise
         
-        for batch in self._read_file_in_batches(file_path, self.config.get_batch_size()):
-            self.protocol.send_all(self.skt, batch)
-            batch_sent += 1
-            if batch_sent % 50 == 0 and "ratings" in file_path:
-                logging.info(f"Sent {batch_sent} batches so far...")
-        self.protocol.send_all(self.skt, self.config.get_EOF())
-        logging.info(f"\033[94mCSV file sent successfully with EOF: {self.config.get_EOF()}\033[0m")
-        
-    def _read_file_in_batches(self, file_path: str, batch_size: int):
+    # Modify _read_file_in_batches to support starting from a position:
+    def _read_file_in_batches(self, file_path: str, batch_size: int, start_position=0):
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         try:
             with open(file_path, 'rb') as f:
                 # Skip the header/first line
-                f.readline()
+                header = f.readline()
                 
+                # Skip to the start position if needed
+                if start_position > 0:
+                    f.seek(start_position, 1)  # Seek relative to current position (after header)
+                    
                 batch = b''
                 for line in f:
                     # Check if adding this line would exceed batch_size
@@ -99,6 +142,7 @@ class Client:
                     yield batch
         except IOError as e:
             raise IOError(f"Error reading file {file_path}: {e}")
+
     
     def start_sender_thread(self, file_paths=None):
         """
@@ -167,12 +211,32 @@ class Client:
                         logging.info(f"Raw response: {response_data[:100]}...")
                 except socket.timeout:
                     continue
-                except (ConnectionError, OSError) as e:
-                    if self.receiver_running:
-                        logging.error(f"Connection error in receiver thread: {e}")
-                    else:
+                except ConnectionError as e:
+                    if not self.receiver_running:
                         logging.info("Receiver thread stopping due to client shutdown")
-                    break
+                        break
+                    
+                    logging.warning(f"Connection lost in receiver: {e}")
+                    # Attempt to reconnect
+                    if self.reconnection_manager.reconnect():
+                        logging.info("Reconnected. Continuing to receive data.")
+                        continue
+                    else:
+                        logging.error("Failed to reconnect. Stopping receiver.")
+                        break
+                except (OSError) as e:
+                    # Similar handling as ConnectionError
+                    if not self.receiver_running:
+                        logging.info("Receiver thread stopping due to client shutdown")
+                        break
+                    
+                    logging.warning(f"Socket error in receiver: {e}")
+                    if self.reconnection_manager.reconnect():
+                        logging.info("Reconnected. Continuing to receive data.")
+                        continue
+                    else:
+                        logging.error("Failed to reconnect. Stopping receiver.")
+                        break
         except Exception as e:
             if self.receiver_running:
                 logging.error(f"Error in receiver thread: {e}")

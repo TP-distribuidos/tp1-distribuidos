@@ -166,14 +166,15 @@ class Worker:
 
             if disconnect_marker:
                 self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
                 logging.info(f"\033[91mDisconnect marker received for client_id '{client_id}'\033[0m")
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                self.data_persistence.increment_counter()
 
             elif eof_marker:
-                if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                    self.data_persistence.increment_counter()
-                    channel.basic_ack(delivery_tag=method.delivery_tag)
-                    return
-                
                 data_persisted = None
                 try:
                     data_persisted = self.data_persistence.retrieve(client_id)
@@ -208,7 +209,7 @@ class Worker:
         except Exception as e:
             logging.error(f"Error processing message: {e}")
             # Reject the message and requeue it
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)        
     
     def _send_data(self, client_id, data, queue_name=None, eof_marker=False, query=None, operation_id=None):
         """Send data to the specified router producer queue"""

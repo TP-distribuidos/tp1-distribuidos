@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 from docker_compose_generator_files.constants import NETWORK
 
+def get_boundary_host_and_port():
+    """
+    Get the host and port for the boundary service.
+    
+    Returns:
+        tuple: (host, port) for the boundary service
+    """
+    return "boundary", 5000
+
 def generate_boundary_service():
     """
     Generate the boundary service configuration for Docker Compose.
@@ -8,6 +17,9 @@ def generate_boundary_service():
     Returns:
         dict: Dictionary with boundary service configuration
     """
+
+    sentinel_port = 9850
+
     return {
         "boundary": {
             "build": {
@@ -20,7 +32,8 @@ def generate_boundary_service():
                 "MOVIES_ROUTER_Q5_QUEUE=boundary_movies_Q5_router",
                 "CREDITS_ROUTER_QUEUE=boundary_credits_router",
                 "RATINGS_ROUTER_QUEUE=boundary_ratings_router",
-                "NODE_ID=boundary_node"
+                "NODE_ID=boundary_node",
+                f"SENTINEL_PORT={sentinel_port}"
             ],
             "depends_on": {
                 "rabbitmq": {

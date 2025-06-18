@@ -31,6 +31,7 @@ from docker_compose_generator_files.routers.top_10_actors_collector import gener
 from docker_compose_generator_files.routers.generate_movies_q5 import generate_movies_q5_router, get_router_host_and_port as get_movies_q5_router_host_and_port
 from docker_compose_generator_files.routers.average_sentiment import generate_average_sentiment_router, get_router_host_and_port as get_avg_sentiment_router_host_and_port
 from docker_compose_generator_files.routers.average_sentiment_collector import generate_average_sentiment_collector_router, get_router_host_and_port as get_avg_sentiment_collector_router_host_and_port
+from docker_compose_generator_files.boundary.boundary import get_boundary_host_and_port
 
 from docker_compose_generator_files.rabbitmq.rabbitmq import generate_rabbitmq_service
 from docker_compose_generator_files.boundary.boundary import generate_boundary_service
@@ -180,6 +181,15 @@ def generate_docker_compose(output_file='docker-compose-test.yaml', num_clients=
 
 
     # Add sentinels for all critical routers
+
+    # 0. Add sentinel for boundary service
+    boundary_host, boundary_port = get_boundary_host_and_port()
+    sentinel_boundary = generate_sentinel_service("boundary",
+                                                [boundary_host], 
+                                                [boundary_port], 
+                                                sentinel_replicas, 
+                                                network)
+    services.update(sentinel_boundary)
     
     # 1. Add sentinel for filter_by_year workers (existing)
     year_worker_hosts, year_worker_ports = get_year_worker_hosts_and_ports(num_year_workers)

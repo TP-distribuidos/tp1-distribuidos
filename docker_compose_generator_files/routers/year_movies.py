@@ -38,7 +38,11 @@ def generate_year_movies_router(num_workers=2, network=NETWORK):
                 "BALANCER_TYPE=round_robin",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

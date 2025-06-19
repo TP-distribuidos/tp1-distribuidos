@@ -43,7 +43,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting max_min worker service...")
+    logging.debug("Starting max_min worker service...")
     try:
         main()
     except KeyboardInterrupt:

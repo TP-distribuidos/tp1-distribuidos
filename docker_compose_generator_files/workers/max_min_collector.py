@@ -30,7 +30,11 @@ def generate_collector_max_min_worker(network=NETWORK):
                 f"SENTINEL_PORT={worker_port}",
                 f"NODE_ID={worker_name}_node"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/worker/collector_max_min:/app",
                 "./server/rabbitmq:/app/rabbitmq",

@@ -17,6 +17,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 # Load environment variables
 load_dotenv()
 
@@ -84,7 +86,6 @@ class Worker:
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
         # Start consuming messages (blocking call)
         try:
@@ -186,15 +187,14 @@ class Worker:
                 return
 
             if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             if eof_marker:
-                logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_eq_one_country(client_id, data, self.producer_queue_names[0], True, new_operation_id)
+                self.data_persistence.persist(client_id, node_id, {}, operation_id)
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

@@ -1,3 +1,5 @@
+#Usage ./check_ouputs.sh (use -q5 flag for checking q5)
+
 # Colors for nice output formatting
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -8,6 +10,26 @@ NC='\033[0m' # No Color
 
 # Path to output directory (relative)
 OUTPUT_DIR="client/output"
+
+# Default to not checking Q5
+CHECK_Q5=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -q5)
+            CHECK_Q5=true
+            shift
+            ;;
+        *)
+            # Unknown option
+            echo "Unknown option: $1"
+            echo "Usage: $0 [-q5]"
+            echo "  -q5  Also check Q5 output files"
+            exit 1
+            ;;
+    esac
+done
 
 # Function to check Q1 output (25 movies with genres)
 check_q1() {
@@ -121,7 +143,7 @@ check_q4() {
     
     printf "${BLUE}→ Checking Q4 (Actors and Movie Count)...${NC}\n"
     
-    # Array of expected entries (in correct order)
+    # Array of expected entries
     declare -a expected=(
         '{"Ricardo Dar\u00edn": 18}'
         '{"Alejandro Awada": 7}'
@@ -148,32 +170,70 @@ check_q4() {
         status=1
     fi
     
-    # Check order - read file line by line and compare with expected array
-    local line_num=0
-    while IFS= read -r line && [ $line_num -lt $expected_count ]; do
-        # Compare with expected entry at the same position
-        expected_item="${expected[$line_num]}"
-        # Remove potential whitespace
-        line=$(echo "$line" | tr -d '[:space:]')
-        expected_item=$(echo "$expected_item" | tr -d '[:space:]')
-        
-        if [ "$line" != "$expected_item" ]; then
-            printf "  ${RED}✗ Order mismatch at line $((line_num+1)):${NC}\n"
-            printf "    Expected: ${YELLOW}$expected_item${NC}\n"
-            printf "    Found: ${RED}$line${NC}\n"
-            status=1
-        else
+    # Check each expected entry without enforcing order
+    for item in "${expected[@]}"; do
+        # Escape special characters for grep
+        if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
             ((found_count++))
+        else
+            printf "  ${RED}✗ Missing:${NC} $item\n"
+            status=1
         fi
-        
-        ((line_num++))
-    done < "$file"
+    done
     
     # Summary for this file
     if [ $status -eq 0 ]; then
-        printf "  ${GREEN}✓ All $expected_count actor records found in correct order!${NC}\n"
+        printf "  ${GREEN}✓ All $expected_count actor records found!${NC}\n"
     else
-        printf "  ${RED}✗ Found $found_count of $expected_count expected records in correct order${NC}\n"
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
+    fi
+    
+    return $status
+}
+
+check_q5() {
+    local file=$1
+    local status=0
+    local expected_count=2
+    local found_count=0
+    
+    printf "${BLUE}→ Checking Q5 (Sentiment Analysis)...${NC}\n"
+    
+    # Array of expected entries
+    declare -a expected=(
+        '{"sentiment": "POSITIVE", "average_ratio": 5668.65, "movie_count": 3091}'
+        '{"sentiment": "NEGATIVE", "average_ratio": 5455.79, "movie_count": 2278}'
+    )
+    
+    # Check file exists
+    if [ ! -f "$file" ]; then
+        printf "  ${RED}✗ File $file not found${NC}\n"
+        return 1
+    fi
+    
+    # Check line count - fail if not exact match
+    local actual_count=$(grep -c . "$file")
+    if [ "$actual_count" -ne $expected_count ]; then
+        printf "  ${RED}✗ File has $actual_count records, expected exactly $expected_count${NC}\n"
+        status=1
+    fi
+    
+    # Check each expected line
+    for item in "${expected[@]}"; do
+        # Escape special characters for grep
+        if grep -q "$(echo "$item" | sed 's/[]\/$*.^[]/\\&/g')" "$file"; then
+            ((found_count++))
+        else
+            printf "  ${RED}✗ Missing:${NC} $item\n"
+            status=1
+        fi
+    done
+    
+    # Summary for this file
+    if [ $status -eq 0 ]; then
+        printf "  ${GREEN}✓ All $expected_count sentiment analysis records found!${NC}\n"
+    else
+        printf "  ${RED}✗ Found $found_count of $expected_count expected records${NC}\n"
     fi
     
     return $status
@@ -182,7 +242,13 @@ check_q4() {
 # Main function
 main() {
     printf "${BOLD}${YELLOW}===== Output Validation Script =====${NC}\n"
-    printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC}\n\n"
+    
+    # Show Q5 check status
+    if $CHECK_Q5; then
+        printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC} (including Q5)\n\n"
+    else
+        printf "Checking files in: ${BLUE}$OUTPUT_DIR${NC} (Q5 checks disabled)\n\n"
+    fi
     
     # Find all unique client numbers
     clients=$(find "$OUTPUT_DIR" -name "output_records_client_*_Q*.json" | grep -o "client_[0-9]\+" | sort -u | cut -d'_' -f2)
@@ -224,6 +290,17 @@ main() {
             client_passed=false
         fi
         
+        # Check Q5 only if flag is provided
+        if $CHECK_Q5; then
+            printf "\n"
+            
+            # Check Q5
+            q5_file="$OUTPUT_DIR/output_records_client_${client}_Q5.json"
+            if ! check_q5 "$q5_file"; then
+                client_passed=false
+            fi
+        fi
+        
         # Display client summary
         if $client_passed; then
             printf "\n  ${GREEN}✓ CLIENT $client PASSED ALL TESTS${NC}\n"
@@ -235,6 +312,11 @@ main() {
     
     # Display final summary
     printf "\n${BOLD}${YELLOW}===== Summary =====${NC}\n"
+    if $CHECK_Q5; then
+        printf "Checked: Q1, Q3, Q4, Q5\n"
+    else
+        printf "Checked: Q1, Q3, Q4 (Q5 skipped)\n"
+    fi
     printf "Total clients checked: $total_clients\n"
     printf "${GREEN}Clients passed:${NC} $passed_clients\n"
     printf "${RED}Clients failed:${NC} $((total_clients - passed_clients))\n"

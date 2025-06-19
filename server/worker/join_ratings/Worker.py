@@ -19,6 +19,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 # Load environment variables
 load_dotenv()
 
@@ -97,7 +99,6 @@ class Worker:
             logging.error("Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info("Worker running and consuming from both queues simultaneously")
         
         # Keep the worker running until shutdown is triggered
         try:
@@ -163,7 +164,7 @@ class Worker:
             if not success:
                 logging.error(f"Failed to set up consumer for queue '{queue_name}'")
                 return False
-            logging.info(f"Started consuming from {queue_name}")
+            logging.debug(f"Started consuming from {queue_name}")
 
         return True
     
@@ -190,14 +191,13 @@ class Worker:
                 return
             
             if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id or self.client_states_data_persistence.is_message_processed(client_id, self.node_id, operation_id)):
-                logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.ratings_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Handle EOF marker for movies
             elif eof_marker:
-                logging.info(f"Received EOF marker for movies from client '{client_id}'")
+                logging.info(f"\033[38;5;208mReceived EOF marker for movies from client '{client_id}'\033[0m")
                 self.client_states_data_persistence.persist(client_id, self.node_id, True, operation_id)
             
             # Process movie data
@@ -241,7 +241,6 @@ class Worker:
                 return
             
             if self.ratings_data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Rating message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.ratings_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

@@ -13,6 +13,11 @@ import json
 from dotenv import load_dotenv
 from ThreadLocalRabbitMQ import ThreadLocalRabbitMQ
 from Protocol import Protocol
+from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from StateInterpreter import StateInterpreter
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +27,9 @@ MOVIES_ROUTER_QUEUE = os.getenv("MOVIES_ROUTER_QUEUE")
 MOVIES_ROUTER_Q5_QUEUE = os.getenv("MOVIES_ROUTER_Q5_QUEUE")
 CREDITS_ROUTER_QUEUE = os.getenv("CREDITS_ROUTER_QUEUE")
 RATINGS_ROUTER_QUEUE = os.getenv("RATINGS_ROUTER_QUEUE")
+NODE_ID = os.getenv("NODE_ID", "boundary_node")
+
+SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", 9850))
 
 COLUMNS_Q1 = {'genres': 3, 'id':5, 'original_title': 8, 'production_countries': 13, 'release_date': 14}
 COLUMNS_Q3 = {'id': 1, 'rating': 2}
@@ -50,14 +58,33 @@ class Boundary:
     self._server_socket.bind(("", port))
     self._server_socket.listen(listen_backlog)
     self._running = True
+    self.is_shutting_down = False
     self._client_sockets = []
     self._client_threads = {}
     self._lock = threading.Lock()  # Thread synchronization lock
     self.protocol = Protocol
-    self.node_id = str(uuid.uuid4())
+    self.node_id = NODE_ID
     
-    self.message_counter = 0
+    self.data_persistence_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="counter"
+    )
     
+    self.data_persistence_clients = WriteAheadLog(
+        StateInterpreter(),
+        FileSystemStorage(),
+        service_name="clients"
+    )
+
+    self.data_persistence_response_counter = WriteAheadLog(
+        StatelessStateInterpreter(),
+        FileSystemStorage(),
+        service_name="response_counter"
+    )
+    
+    self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
+
     # Create RabbitMQ client instance
     self.rabbitmq = ThreadLocalRabbitMQ()  # Uses the same defaults as RabbitMQClient
     
@@ -105,6 +132,17 @@ class Boundary:
           logging.info(f"New client {addr[0]}:{addr[1]}")
           
           with self._lock:
+
+            client = self.data_persistence_clients.retrieve(addr[0])
+            if client is not None and addr[0] in client:
+              client_id = client[addr[0]]
+              logging.info(f"Reusing existing client ID {client_id} for {addr[0]}")
+            else:
+              # Store the new mapping in the clients WAL
+              operation_id = self.data_persistence_counter.get_counter_value()
+              self.data_persistence_clients.persist(addr[0], self.node_id, {addr[0]: client_id}, operation_id)
+              self.data_persistence_counter.increment_counter()
+
             self._client_sockets.append({client_id: client_sock})
           
           # Start client handling in a new thread
@@ -115,152 +153,234 @@ class Boundary:
           )
           with self._lock:
             self._client_threads[client_id] = client_thread
-          client_thread.start()
+          
+          try:
+            client_thread.start()
+            logging.info(f"Thread started for client {client_id}")
+          except Exception as thread_exc:
+            logging.error(f"Failed to start thread for client {client_id}: {thread_exc}")
+            # Clean up resources for this client
+            with self._lock:
+              self._client_sockets = [s for s in self._client_sockets if client_id not in s]
+              if client_id in self._client_threads:
+                del self._client_threads[client_id]
+            client_sock.close()
+            
       except Exception as exc:
         if self._running:  # Only log if we're supposed to be running
           logging.error(f"Accept failed: {exc}")
-
-  def _get_next_message_id(self):
-    """Get the next incremental message ID for this node"""
-    with self._lock:
-      self.message_counter += 1
-      return self.message_counter
 
 # ------------------------------------------------------------------ #
 # response queue consumer logic                                      #
 # ------------------------------------------------------------------ #
   def _handle_response_queue(self):
-    """
-    Handle messages from the response queue in a separate thread.
-    """
-    try:
-        logging.info(self.green(f"Starting response queue consumer thread"))
-        
-        # Set up RabbitMQ consumer
-        self.rabbitmq.client.consume(
-            queue_name=RESPONSE_QUEUE,
-            callback=self._process_response_message,
-            no_ack=False
-        )
-        
-        logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
-        
-        # Start consuming (blocking call)
-        self.rabbitmq.client.start_consuming()
-            
-    except Exception as e:
-        logging.error(f"Error in response queue handler: {e}")
+      """
+      Handle messages from the response queue in a separate thread.
+      Implements reconnection logic for resilience.
+      """
+      while self._running:
+          try:
+              logging.info(self.green(f"Starting response queue consumer thread"))
+              
+              # Set up RabbitMQ consumer
+              self.rabbitmq.client.consume(
+                  queue_name=RESPONSE_QUEUE,
+                  callback=self._process_response_message,
+                  no_ack=False
+              )
+              
+              logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
+              
+              # Start consuming (blocking call)
+              self.rabbitmq.client.start_consuming()
+                  
+          except Exception as e:
+              if not self._running:
+                  logging.info("Response queue handler stopping as server is shutting down")
+                  break
+                  
+              logging.error(f"Error in response queue handler: {e}")
+              logging.info("Will attempt to reconnect to response queue in 2 seconds...")
+              time.sleep(2)
 
   def _process_response_message(self, channel, method, properties, body):
-    """Process messages from the response queue"""
-    try:
-        # Deserialize the message
-        deserialized_message = Serializer.deserialize(body)
-        
-        # Extract client_id and data from the deserialized message
-        client_id = deserialized_message.get("client_id")
-        data = deserialized_message.get("data")
-        query = deserialized_message.get("query")
+      """Process messages from the response queue with improved error handling"""
+      try:
+          # Deserialize the message
+          deserialized_message = Serializer.deserialize(body)
+          
+          # Extract client_id and data from the deserialized message
+          client_id = deserialized_message.get("client_id")
+          data = deserialized_message.get("data")
+          query = deserialized_message.get("query")
+          node_id = deserialized_message.get("node_id")
+          operation_id = deserialized_message.get("operation_id")
 
-        if not data:
-            logging.warning(f"Response message contains no data")
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-            return
-        
-        # Convert data to list if it's not already
-        if not isinstance(data, list):
-            data = [data]
-        
-        # Find the client socket by client_id
-        client_socket = None
-        with self._lock:
-            for client_dict in self._client_sockets:
-                if client_id in client_dict:
-                    client_socket = client_dict[client_id]
-                    break
-        
-        # Send the data to the client if the socket is found
-        if client_socket:
-            try:
-                # Prepare data for sending
-                proto = self.protocol()
-                
-                serialized_data = json.dumps(data)
-                proto.send_all(client_socket, serialized_data, query)
-                
-            except Exception as e:
-                logging.error(f"Failed to send data to client {client_id}: {e}")
-        else:
-            logging.warning(f"Client socket not found for client ID: {client_id}")
-        
-        # Acknowledge message
-        channel.basic_ack(delivery_tag=method.delivery_tag)
-        
-    except Exception as e:
-        logging.error(f"Error processing response message: {e}")
-        # Reject message but don't requeue
-        channel.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+          if self.data_persistence_response_counter.is_message_processed(client_id, node_id, operation_id):
+              logging.info(f"Message for client {client_id} with operation ID {operation_id} already processed, skipping")
+              self.data_persistence_response_counter.increment_counter()
+              try:
+                  channel.basic_ack(delivery_tag=method.delivery_tag)
+              except Exception as e:
+                  logging.warning(f"Failed to acknowledge message (already processed): {e}")
+              return
+
+          if not data:
+              logging.warning(f"Response message contains no data")
+              try:
+                  channel.basic_ack(delivery_tag=method.delivery_tag)
+              except Exception as e:
+                  logging.warning(f"Failed to acknowledge empty message: {e}")
+              return
+          
+          # Convert data to list if it's not already
+          if not isinstance(data, list):
+              data = [data]
+          
+          # Find the client socket by client_id
+          client_socket = None
+          with self._lock:
+              for client_dict in self._client_sockets:
+                  if client_id in client_dict:
+                      client_socket = client_dict[client_id]
+                      break
+          
+          # Send the data to the client if the socket is found
+          if client_socket:
+              try:
+                  # Prepare data for sending
+                  proto = self.protocol()
+                  
+                  serialized_data = json.dumps(data)
+                  proto.send_all(client_socket, serialized_data, query)
+                  
+                  # Successfully sent, persist operation and acknowledge message
+                  self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
+                  self.data_persistence_response_counter.increment_counter()
+                  try:
+                      channel.basic_ack(delivery_tag=method.delivery_tag)
+                  except Exception as e:
+                      logging.warning(f"Failed to acknowledge message after processing: {e}")
+                      
+              except Exception as e:
+                  logging.error(f"Failed to send data to client {client_id}: {e}")
+                  # Don't requeue if we can't send to client - client will reconnect if needed
+                  try:
+                      channel.basic_ack(delivery_tag=method.delivery_tag)
+                  except Exception as channel_e:
+                      logging.warning(f"Failed to acknowledge message after send error: {channel_e}")
+          else:
+              # logging.warning(f"Client socket not found for client ID: {client_id}")
+              # Requeue the message only if we're not shutting down
+              # This gives the client time to reconnect
+              if not self.is_shutting_down:
+                  try:
+                      channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
+                  except Exception as e:
+                      logging.warning(f"Failed to requeue message: {e}")
+          
+      except Exception as e:
+          logging.error(f"Error processing response message: {e}")
+          # Acknowledge the message to avoid getting stuck in a loop
+          try:
+              channel.basic_ack(delivery_tag=method.delivery_tag)
+          except Exception as ack_e:
+              logging.warning(f"Failed to acknowledge message after processing error: {ack_e}")
 
 # ------------------------------------------------------------------ #
 # per‑client logic                                                   #
 # ------------------------------------------------------------------ #
   def _handle_client_connection(self, sock, addr, client_id):
-    proto = self.protocol()
-    logging.info(self.green(f"Client ID: {client_id} successfully started"))
-    csvs_received = 0
-    client_addr = f"{addr[0]}:{addr[1]}"
-
+    """
+    Handle communication with a connected client.
+    
+    Args:
+        sock: Client socket
+        addr: Client address tuple (ip, port)
+        client_id: Unique identifier for this client
+    """
     try:
-        data = ''
-        while True:
-            try:
-                data = self._receive_csv_batch(sock, proto)
-                new_operation_id = self._get_next_message_id()
-                if data == EOF_MARKER:
-                    self._send_eof_marker(csvs_received, client_id, new_operation_id)
-                    csvs_received += 1
-                    logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
-                    continue
-                
-                if csvs_received == MOVIES_CSV:
-                    filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
+        proto = self.protocol()
+        logging.info(self.green(f"Client ID: {client_id} successfully started"))
+        csvs_received = 0
+        client_addr = f"{addr[0]}:{addr[1]}"
 
-                    # Send data for Q1 to the movies router
-                    prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+        try:
+            data = ''
+            while True:
+                try:
+                    data, file_index = self._receive_csv_batch(sock, proto)
+                    with self._lock:
+                        new_operation_id = self.data_persistence_counter.get_counter_value()
+                        if data == EOF_MARKER:
+                            self._send_eof_marker(csvs_received, client_id, new_operation_id)
+                            csvs_received += 1
+                            self.data_persistence_counter.increment_counter()
+                            logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
+                            continue
+                        csvs_received = file_index
+                        if csvs_received == MOVIES_CSV:
+                            filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
-                    # Send data for Q5 to the reviews router
-                    prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                            # Send data for Q1 to the movies router
+                            prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+
+                            # Send data for Q5 to the reviews router
+                            prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                        
+                        elif csvs_received == CREDITS_CSV:
+                            filtered_data = self._project_to_columns(data, COLUMNS_Q4)
+                            filtered_data = self._remove_cast_extra_data(filtered_data)
+                            prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+                        
+                        elif csvs_received == RATINGS_CSV:
+                            filtered_data = self._project_to_columns(data, COLUMNS_Q3)
+                            filtered_data = self._remove_ratings_with_0_rating(filtered_data)
+                            prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+                            
+                        self.data_persistence_counter.increment_counter()                
+
+                except ConnectionError:
+                    logging.info(f"Client {client_addr} disconnected")
+                    # Check if this is due to server shutdown
+                    with self._lock:
+                        if not self.is_shutting_down:
+                            logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
+                            new_operation_id = self.data_persistence_counter.get_counter_value()
+                            self._send_disconnect_marker(client_id, new_operation_id)
+                            self._cleanup_client_resources(client_id)
+                            self.data_persistence_counter.increment_counter()
+                        else:
+                            logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                            self._cleanup_client_resources(client_id)
+                    break
                 
-                elif csvs_received == CREDITS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q4)
-                    filtered_data = self._remove_cast_extra_data(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
-                
-                elif csvs_received == RATINGS_CSV:
-                    filtered_data = self._project_to_columns(data, COLUMNS_Q3)
-                    filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                    prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                    self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
-                
-            except ConnectionError:
-                logging.info(f"Client {client_addr} disconnected")
-                logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                new_operation_id = self._get_next_message_id()
-                self._send_disconnect_marker(client_id, new_operation_id)
-                self._cleanup_client_resources(client_id)
-                break
-               
-    except Exception as exc:
-        logging.error(f"Client {client_addr} error: {exc}")
-        logging.exception(exc)
-        # Also send DISCONNECT markers on uncaught exceptions
-        logging.info(f"Treating error as DISCONNECT for client {client_id}")
-        new_operation_id = self._get_next_message_id()
-        self._send_disconnect_marker(client_id, new_operation_id)
-        self._cleanup_client_resources(client_id)
+        except Exception as exc:
+            logging.error(f"Client {client_addr} error: {exc}")
+            logging.exception(exc)
+            # Check if this is due to server shutdown
+            with self._lock:
+                if not self.is_shutting_down:
+                    logging.info(f"Treating error as DISCONNECT for client {client_id}")
+                    new_operation_id = self.data_persistence_counter.get_counter_value()
+                    self._send_disconnect_marker(client_id, new_operation_id)
+                    self._cleanup_client_resources(client_id)
+                    self.data_persistence_counter.increment_counter()
+                else:
+                    logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                    self._cleanup_client_resources(client_id)
+    
+    except Exception as init_exc:
+        # Handle initialization errors
+        logging.error(f"Error initializing client thread for {client_id}: {init_exc}")
+        logging.exception(init_exc)
+        # Clean up resources without sending DISCONNECT markers (since we couldn't initialize properly)
+        with self._lock:
+            self._cleanup_client_resources(client_id)
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """
@@ -362,7 +482,7 @@ class Boundary:
                     result.append(row)
             except (SyntaxError, ValueError, TypeError) as e:
                 # Skip rows with unparseable cast data
-                logging.warning(f"Could not parse cast data: {e}")
+                # logging.warning(f"Could not parse cast data: {e}")
                 pass
     return result
 
@@ -448,13 +568,17 @@ class Boundary:
     Receive a CSV batch from the socket
     First read 4 bytes to get the length, then read the actual data
     """
+
+    data_bytes_file_index = proto.recv_exact(sock, 4)
+    data_file_index = proto.decode_int(data_bytes_file_index)
+
     length_bytes = proto.recv_exact(sock, 4)
     msg_length = int.from_bytes(length_bytes, byteorder='big')
 
     data_bytes = proto.recv_exact(sock, msg_length)
     data = proto.decode(data_bytes)
 
-    return data
+    return data, data_file_index
 
 # ----------------------------------------------------------------------- #
 # Rabbit-Related-Section                                                  #
@@ -505,6 +629,8 @@ class Boundary:
 # ------------------------------------------------------------------ #
 
   def _handle_shutdown(self, *_):
+    with self._lock:
+        self.is_shutting_down = True
     logging.info(f"Shutting down server")
     self._running = False
     

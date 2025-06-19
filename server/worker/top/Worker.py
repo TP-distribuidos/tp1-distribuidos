@@ -19,6 +19,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 # Load environment variables
 load_dotenv()
 
@@ -72,8 +74,6 @@ class Worker:
         if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
-        
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
         # Start consuming messages (blocking call)
         try:

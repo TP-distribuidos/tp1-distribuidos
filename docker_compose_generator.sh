@@ -2,7 +2,7 @@
 
 # Default values
 OUTPUT_FILE="docker-compose-test.yaml"
-NUM_CLIENTS=4
+NUM_CLIENTS=5
 NUM_YEAR_WORKERS=2
 NUM_COUNTRY_WORKERS=2
 NUM_JOIN_CREDITS_WORKERS=2
@@ -11,9 +11,9 @@ AVG_RATING_SHARDS=2
 AVG_RATING_REPLICAS=2
 COUNT_SHARDS=2
 COUNT_WORKERS_PER_SHARD=2
-NUM_TOP_WORKERS=3
+NUM_TOP_WORKERS=2
 NUM_MAX_MIN_WORKERS=2
-NUM_SENTIMENT_WORKERS=2
+NUM_SENTIMENT_WORKERS=4
 NUM_AVG_SENTIMENT_WORKERS=2
 NETWORK="tp_distribuidos"
 INCLUDE_Q5="false"
@@ -25,23 +25,23 @@ show_help() {
     echo "Generate Docker Compose configuration file."
     echo ""
     echo "Options:"
-    echo "  -o, --output FILE     Specify output filename (default: docker-compose-test.yaml)"
-    echo "  -c, --clients NUM     Specify number of client nodes to generate (default: 4)"
-    echo "  -y, --year-workers NUM    Specify number of filter_by_year worker nodes (default: 2)"
-    echo "  -n, --country-workers NUM Specify number of filter_by_country worker nodes (default: 2)"
-    echo "  -j, --join-credits-workers NUM Specify number of join_credits worker nodes (default: 2)"
-    echo "  -r, --join-ratings-workers NUM Specify number of join_ratings worker nodes (default: 2)"
-    echo "  -a, --avg-rating-shards NUM Specify number of average_movies_by_rating shards (default: 2)"
-    echo "  -b, --avg-rating-replicas NUM Specify replicas per avg_rating shard (default: 2)"
-    echo "  -d, --count-shards NUM Specify number of count worker shards (default: 2)"
-    echo "  -e, --count-workers-per-shard NUM Specify workers per count shard (default: 2)"
-    echo "  -t, --top-workers NUM Specify number of top workers (default: 3)"
-    echo "  -m, --max-min-workers NUM Specify number of max_min workers (default: 2)"
-    echo "  -s, --sentiment-workers NUM Specify number of sentiment analysis workers (default: 2)"
-    echo "  -v, --avg-sentiment-workers NUM Specify number of average sentiment workers (default: 2)"
-    echo "  -k, --network NAME     Specify Docker network name (default: tp_distribuidos)"
-    echo "  -q, --include-q5       Include Q5 sentiment analysis components (default: false)"
-    echo "  -S, --sentinel-replicas NUM Specify number of sentinel replicas per service (default: 2)"
+    echo "  -o, --output FILE     Specify output filename (default: $OUTPUT_FILE)"
+    echo "  -c, --clients NUM     Specify number of client nodes to generate (default: $NUM_CLIENTS)"
+    echo "  -y, --year-workers NUM    Specify number of filter_by_year worker nodes (default: $NUM_YEAR_WORKERS)"
+    echo "  -n, --country-workers NUM Specify number of filter_by_country worker nodes (default: $NUM_COUNTRY_WORKERS)"
+    echo "  -j, --join-credits-workers NUM Specify number of join_credits worker nodes (default: $NUM_JOIN_CREDITS_WORKERS)"
+    echo "  -r, --join-ratings-workers NUM Specify number of join_ratings worker nodes (default: $NUM_JOIN_RATINGS_WORKERS)"
+    echo "  -a, --avg-rating-shards NUM Specify number of average_movies_by_rating shards (default: $AVG_RATING_SHARDS)"
+    echo "  -b, --avg-rating-replicas NUM Specify replicas per avg_rating shard (default: $AVG_RATING_REPLICAS)"
+    echo "  -d, --count-shards NUM Specify number of count worker shards (default: $COUNT_SHARDS)"
+    echo "  -e, --count-workers-per-shard NUM Specify workers per count shard (default: $COUNT_WORKERS_PER_SHARD)"
+    echo "  -t, --top-workers NUM Specify number of top workers (default: $NUM_TOP_WORKERS)"
+    echo "  -m, --max-min-workers NUM Specify number of max_min workers (default: $NUM_MAX_MIN_WORKERS)"
+    echo "  -s, --sentiment-workers NUM Specify number of sentiment analysis workers (default: $NUM_SENTIMENT_WORKERS)"
+    echo "  -v, --avg-sentiment-workers NUM Specify number of average sentiment workers (default: $NUM_AVG_SENTIMENT_WORKERS)"
+    echo "  -k, --network NAME     Specify Docker network name (default: $NETWORK)"
+    echo "  -q, --include-q5       Include Q5 sentiment analysis components (default: $INCLUDE_Q5)"
+    echo "  -S, --sentinel-replicas NUM Specify number of sentinel replicas per service (default: $SENTINEL_REPLICAS)"
     echo "  -h, --help             Display this help message and exit"
     
     echo ""

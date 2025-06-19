@@ -5,7 +5,10 @@
 ### Levantar nuevos clientes
 
 Para levantar nuevos clientes usar el siguiente comando:
-`docker-compose -f docker-compose-test.yaml --profile manual up <client_container_name>`
+`docker compose -f docker-compose-test.yaml --profile manual up <client_container_name>`
+
+Example
+`docker compose -f docker-compose-test.yaml --profile manual up client4`
 
 Esto permite:
 

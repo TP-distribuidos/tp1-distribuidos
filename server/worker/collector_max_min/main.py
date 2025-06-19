@@ -38,7 +38,7 @@ def main():
     worker.run()
 
 if __name__ == "__main__":
-    logging.info("Starting collector max min worker service...")
+    logging.debug("Starting collector max min worker service...")
     try:
         main()
     except KeyboardInterrupt:

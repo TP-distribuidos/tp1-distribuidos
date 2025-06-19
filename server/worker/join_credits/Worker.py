@@ -18,6 +18,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 load_dotenv()
 
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
@@ -96,7 +98,6 @@ class Worker:
             logging.error("Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info("Worker running and consuming from both queues simultaneously")
         
         # Keep the worker running until shutdown is triggered
         try:
@@ -162,7 +163,7 @@ class Worker:
             if not success:
                 logging.error(f"Failed to set up consumer for queue '{queue_name}'")
                 return False
-            logging.info(f"Started consuming from {queue_name}")
+            logging.debug(f"Started consuming from {queue_name}")
 
         return True
     
@@ -189,14 +190,13 @@ class Worker:
                 return
             
             if self.movies_data_persistence.is_message_processed(client_id, node_id, operation_id or self.client_states_data_persistence.is_message_processed(client_id, self.node_id, operation_id)):
-                logging.info(f"Movie message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.credits_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
                 
             # Handle EOF marker for movies
             elif eof_marker:
-                logging.info(f"Received EOF marker for movies from client '{client_id}'")
+                logging.info(f"\033[38;5;208mReceived EOF marker for movies from client '{client_id}'\033[0m")
                 # Mark that we've received all movies for this client
                 self.client_states_data_persistence.persist(client_id, self.node_id, True, operation_id)
             
@@ -242,13 +242,11 @@ class Worker:
             
             # Check if this message was already processed (deduplication)
             if self.credits_data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Credits message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.credits_data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
             movies_done = self.client_states_data_persistence.retrieve(client_id)
-
             if movies_done is None:
                 # We haven't received all movies yet, reject and requeue the message
                 logging.debug(f"Not all movies received for client {client_id}, requeuing credits message")
@@ -268,8 +266,8 @@ class Worker:
                 if joined_data:
                     self.send_data(client_id, joined_data, operation_id=new_operation_id)
 
-                self.credits_data_persistence.persist(client_id, node_id, None, operation_id)
 
+            self.credits_data_persistence.persist(client_id, node_id, None, operation_id)
             self.credits_data_persistence.increment_counter()
             channel.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -288,9 +286,9 @@ class Worker:
         """Finalize processing for a client whose data is complete"""        
         self.send_data(client_id, [], True, operation_id=operation_id)
         
-        # self.client_states_data_persistence.clear(client_id)
-        # self.movies_data_persistence.clear(client_id)
-        # self.credits_data_persistence.clear(client_id)
+        self.client_states_data_persistence.clear(client_id)
+        self.movies_data_persistence.clear(client_id)
+        self.credits_data_persistence.clear(client_id)
         
         logging.info(f"Client {client_id} processing completed")
     

@@ -59,7 +59,7 @@ class WriteAheadLog(DataPersistenceInterface):
         self.base_dir = Path(base_dir + "/" + service_name)
         self.storage.create_directory(self.base_dir)
         
-        logging.info(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
+        logging.debug(f"WriteAheadLog initialized for service {service_name} at {base_dir}")
         
         self._initialize_counter()
         
@@ -106,7 +106,7 @@ class WriteAheadLog(DataPersistenceInterface):
                         if len(content_lines) > 1:
                             try:
                                 self.counter_value = int(content_lines[1])
-                                logging.info(f"Recovered counter value: {self.counter_value}")
+                                logging.debug(f"Recovered counter value: {self.counter_value}")
                                 break
                             except (ValueError, TypeError):
                                 logging.warning(f"Invalid counter value in {counter_file}, trying next file")
@@ -530,7 +530,7 @@ class WriteAheadLog(DataPersistenceInterface):
         """
         return self.counter_value
 
-    def increment_counter(self) -> None:
+    def increment_counter(self, amount = 1) -> None:
         """
         Increment the counter.
         
@@ -538,7 +538,7 @@ class WriteAheadLog(DataPersistenceInterface):
         1. Write the new counter value with PROCESSING status
         2. Update the status to COMPLETED
         """
-        self.counter_value += 1
+        self.counter_value += amount
         success = self._write_counter(self.counter_value)
         
         if not success:
@@ -739,7 +739,7 @@ class WriteAheadLog(DataPersistenceInterface):
                                 logging.debug(f"Extracted business data from log {log_file.name} for node {node_id}")
             
             if not all_business_data_items:
-                logging.info(f"No business data in service {self.service_name} found for client {client_id} across all nodes")
+                logging.debug(f"No business data in service {self.service_name} found for client {client_id} across all nodes")
                 return None
                 
             # Use state interpreter to merge all business data items from all nodes

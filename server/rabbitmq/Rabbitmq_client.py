@@ -14,7 +14,7 @@ class RabbitMQClient:
         self._declared_exchanges = set()
         self._declared_queues = set()
 
-        logging.info(f"RabbitMQ client initialized for {host}:{port}")
+        logging.debug(f"RabbitMQ client initialized for {host}:{port}")
     
     def connect(self) -> bool:
         """Establish connection to RabbitMQ server"""
@@ -32,7 +32,7 @@ class RabbitMQClient:
             
             self._connection = pika.BlockingConnection(parameters)
             self._channel = self._connection.channel()
-            logging.info(f"Connected to RabbitMQ at {self.host}:{self.port}")
+            logging.debug(f"Connected to RabbitMQ at {self.host}:{self.port}")
             return True
         except Exception as e:
             logging.error(f"Failed to connect to RabbitMQ: {e}")
@@ -53,7 +53,7 @@ class RabbitMQClient:
             self._declared_exchanges.clear()
             self._declared_queues.clear()
                 
-            logging.info("RabbitMQ connection closed")
+            logging.debug("RabbitMQ connection closed")
         except Exception as e:
             logging.error(f"Error closing RabbitMQ connection: {e}")
     
@@ -77,7 +77,7 @@ class RabbitMQClient:
             
             # Cache this exchange declaration
             self._declared_exchanges.add(exchange_key)
-            logging.info(f"Exchange '{name}' declared")
+            logging.debug(f"Exchange '{name}' declared")
             return True
         except Exception as e:
             logging.error(f"Failed to declare exchange '{name}': {e}")
@@ -102,7 +102,7 @@ class RabbitMQClient:
             
             # Cache this queue declaration
             self._declared_queues.add(queue_key)
-            logging.info(f"Queue '{name}' declared")
+            logging.debug(f"Queue '{name}' declared")
             return True
         except Exception as e:
             logging.error(f"Failed to declare queue '{name}': {e}")
@@ -130,7 +130,7 @@ class RabbitMQClient:
                 routing_key=routing_key
             )
             
-            logging.info(f"Queue '{queue_name}' bound to exchange '{exchange_name}' with key '{routing_key}'")
+            logging.debug(f"Queue '{queue_name}' bound to exchange '{exchange_name}' with key '{routing_key}'")
             return True
         except Exception as e:
             logging.error(f"Failed to bind queue '{queue_name}' to exchange '{exchange_name}': {e}")
@@ -187,7 +187,7 @@ class RabbitMQClient:
             )
             
             self._consumers[queue_name] = True
-            logging.info(f"Consumer set up for queue '{queue_name}' with prefetch_count={prefetch_count}")
+            logging.debug(f"Consumer set up for queue '{queue_name}' with prefetch_count={prefetch_count}")
             return True
         except Exception as e:
             logging.error(f"Failed to set up consumer for queue '{queue_name}': {e}")
@@ -200,11 +200,11 @@ class RabbitMQClient:
                 if not self.connect():
                     return False
                     
-            logging.info("Starting to consume messages...")
+            logging.debug("Starting to consume messages...")
             self._channel.start_consuming()
             return True
         except KeyboardInterrupt:
-            logging.info("Keyboard interrupt received, stopping consumer")
+            logging.debug("Keyboard interrupt received, stopping consumer")
             self.stop_consuming()
             return False
         except Exception as e:
@@ -217,7 +217,7 @@ class RabbitMQClient:
             if self._channel and self._channel.is_open:
                 self._channel.stop_consuming()
                 self._consumers.clear()
-                logging.info("Stopped consuming messages")
+                logging.debug("Stopped consuming messages")
             return True
         except Exception as e:
             logging.error(f"Error stopping consumer: {e}")
@@ -227,7 +227,7 @@ class RabbitMQClient:
         """Reset the cache of declared exchanges and queues"""
         self._declared_exchanges.clear()
         self._declared_queues.clear()
-        logging.info("Declaration cache reset")
+        logging.debug("Declaration cache reset")
 
     def publish_to_queue(self, queue_name: str, message: str, persistent=True) -> bool:
         """Publish message directly to queue using the default exchange"""

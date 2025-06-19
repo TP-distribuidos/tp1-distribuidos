@@ -18,12 +18,16 @@ class Protocol:
             buffer.extend(packet)
         return buffer
 
-    def send_all(self, sock, data: str):
+    def send_all(self, sock, data: str, file_index: int):
         """
         Helper to send all string, handling short writes
         First sends 4 bytes with the length, then the actual data
         """
+        _, data_bytes_index = self._encode_data(file_index)
         length_bytes, data_bytes = self._encode_data(data)
+
+        # Send the file_index bytes first
+        self._send_all(sock, data_bytes_index)
         
         # Send the length bytes first
         self._send_all(sock, length_bytes)
@@ -39,6 +43,9 @@ class Protocol:
         # Convert to bytes if it's a string
         if isinstance(data, str):
             data_bytes = data.encode('utf-8')
+        elif isinstance(data, int):
+            # If it is an integer, we should send it as a number
+            data_bytes = data.to_bytes(4, byteorder='big')
         else:
             # Already bytes
             data_bytes = data

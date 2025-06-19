@@ -118,7 +118,11 @@ def generate_average_movies_by_rating_workers(num_shards=2, num_replicas=2, netw
                 "context": "./server",
                 "dockerfile": "worker/average_movies_by_rating/Dockerfile"
             },
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "ports": [
                 f"{worker_port}:{worker_port}"
             ],

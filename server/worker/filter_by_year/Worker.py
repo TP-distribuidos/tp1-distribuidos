@@ -16,6 +16,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 load_dotenv()
 
 # Node identification
@@ -78,7 +80,6 @@ class Worker:
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
         
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_names}'")
         
         # Start consuming messages (blocking call)
         try:
@@ -160,27 +161,24 @@ class Worker:
             query = deserialized_message.get("query", "")
             operation_id = deserialized_message.get("operation_id")
             node_id = deserialized_message.get("node_id")
-            
-            # Check if this message was already processed (deduplication)
-            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
-                self.data_persistence.increment_counter()
-                channel.basic_ack(delivery_tag=method.delivery_tag)
-                return
-            
-            # Get a new operation ID for outgoing messages
             new_operation_id = self.data_persistence.get_counter_value()
 
             if disconnect_marker:
                 # Propagate DISCONNECT to downstream components
-                self.send_disconnect(client_id, query)
+                self.send_disconnect(client_id, query, new_operation_id)
                 self.data_persistence.clear(client_id)
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return
+            
+            # Check if this message was already processed (deduplication)
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
 
             if eof_marker:
-                logging.info(f"\033[95mReceived EOF marker for client_id '{client_id}'\033[0m")
                 # Generate a new operation ID for this EOF message
                 self.send_data(client_id, data, QUERY_GT_YEAR, True, new_operation_id)
                 # Mark this message as processed
@@ -199,7 +197,7 @@ class Worker:
             
             # Mark this message as processed in WAL
             self.data_persistence.persist(client_id, node_id, {}, operation_id)
-            self.data_persistence.increment_counter()
+            self.data_persistence.increment_counter(2)
             
             # Acknowledge message
             channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -216,11 +214,9 @@ class Worker:
             # Reject the message and requeue it
             channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
 
-    def send_disconnect(self, client_id, query=""):
+    def send_disconnect(self, client_id, query="", operation_id=None):
         """Send DISCONNECT notification to downstream components"""
         # Generate an operation ID for this message
-        operation_id = self.data_persistence.get_counter_value()
-        self.data_persistence.increment_counter()
         
         message = Serializer.add_metadata(client_id, {}, False, query, True, operation_id, self.node_id)
         success = self.rabbitmq.publish(
@@ -233,11 +229,7 @@ class Worker:
             logging.error(f"Failed to send disconnect notification to queue {self.producer_queue_name}")
 
     def send_data(self, client_id, data, query, eof_marker=False, operation_id=None):
-        """Send data to the router queue with query type in metadata"""
-        if operation_id is None:
-            operation_id = self.data_persistence.get_counter_value()
-            self.data_persistence.increment_counter()
-            
+        """Send data to the router queue with query type in metadata"""            
         message = Serializer.add_metadata(client_id, data, eof_marker, query, False, operation_id, self.node_id)
         success = self.rabbitmq.publish(
             exchange_name=self.exchange_name_producer,

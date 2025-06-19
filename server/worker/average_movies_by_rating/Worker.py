@@ -18,6 +18,8 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.ERROR)
+
 # Load environment variables
 load_dotenv()
 
@@ -61,7 +63,7 @@ class Worker:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
         logging.info(f"Worker initialized for consumer queue '{consumer_queue_name}', producer queues '{producer_queue_names}'")
-        logging.info(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
+        logging.debug(f"Exchange producer: '{exchange_name_producer}', type: '{exchange_type_producer}'")
     
     def run(self):
         """Run the worker, connecting to RabbitMQ and consuming messages"""
@@ -69,8 +71,6 @@ class Worker:
         if not self._setup_rabbitmq():
             logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
             return False
-        
-        logging.info(f"Worker running and consuming from queue '{self.consumer_queue_name}'")
         
         # Start consuming messages (blocking call)
         try:
@@ -161,7 +161,6 @@ class Worker:
                 return
 
             if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
-                logging.info(f"Message {operation_id} from node {node_id} already processed for client {client_id}")
                 self.data_persistence.increment_counter()
                 channel.basic_ack(delivery_tag=method.delivery_tag)
                 return

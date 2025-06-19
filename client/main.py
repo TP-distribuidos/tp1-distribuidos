@@ -25,10 +25,9 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    try:
-        client.connect(config.get_host(), config.get_port())
-    except (ConnectionRefusedError, TimeoutError) as e:   
-        logging.error(f"Connection error: {e}")
+    # Try to establish initial connection with retries
+    if not client.reconnection_manager.reconnect():
+        logging.error("Failed to establish initial connection. Exiting.")
         return
     
     try:

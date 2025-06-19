@@ -30,7 +30,11 @@ def generate_collector_top_10_actors_worker(network=NETWORK):
                 f"SENTINEL_PORT={worker_port}",
                 f"NODE_ID={worker_name}_node"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/worker/collector_top_10_actors:/app",
                 "./server/rabbitmq:/app/rabbitmq",

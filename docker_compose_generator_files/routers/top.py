@@ -42,7 +42,11 @@ def generate_top_router(num_count_workers=4, num_top_workers=3, network=NETWORK)
                 "BALANCER_TYPE=shard_by_ascii",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

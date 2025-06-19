@@ -38,7 +38,11 @@ def generate_filter_by_country_workers(num_workers=2, network=NETWORK):
                 "context": "./server",
                 "dockerfile": "worker/filter_by_country/Dockerfile"
             },
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "ports": [
                 f"{worker_port}:{worker_port}"
             ],

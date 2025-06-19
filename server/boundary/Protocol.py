@@ -53,3 +53,7 @@ class Protocol:
     def decode(self, data_bytes):
         """Decode bytes to string"""
         return data_bytes.decode('utf-8')
+
+    def decode_int(self, data_bytes):
+        """Decode bytes to integer"""
+        return int.from_bytes(data_bytes, byteorder='big')

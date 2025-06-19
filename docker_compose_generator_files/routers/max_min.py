@@ -41,7 +41,11 @@ def generate_max_min_router(num_avg_rating_workers, num_max_min_workers=2, netwo
                 "BALANCER_TYPE=shard_by_ascii",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

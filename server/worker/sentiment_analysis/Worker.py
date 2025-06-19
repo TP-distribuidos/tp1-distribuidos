@@ -7,6 +7,9 @@ from common.Serializer import Serializer
 from transformers import pipeline
 from dotenv import load_dotenv
 from common.SentinelBeacon import SentinelBeacon
+from common.data_persistance.StatelessStateInterpreter import StatelessStateInterpreter
+from common.data_persistance.WriteAheadLog import WriteAheadLog
+from common.data_persistance.FileSystemStorage import FileSystemStorage
 
 # Load environment variables
 load_dotenv()
@@ -17,23 +20,44 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+logging.getLogger("pika").setLevel(logging.CRITICAL)
+
 # Queue names and constants
 CONSUMER_QUEUE = os.getenv("ROUTER_CONSUME_QUEUE")
 PRODUCER_QUEUE = os.getenv("ROUTER_PRODUCER_QUEUE")
 SENTINEL_PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 NODE_ID = os.getenv("NODE_ID")
+EXCHANGE_NAME = os.getenv("EXCHANGE_NAME", "sentiment_exchange")
+EXCHANGE_TYPE = os.getenv("EXCHANGE_TYPE", "direct")
+RECONNECT_DELAY = 5  # Base delay for reconnection attempts in seconds
+MAX_RECONNECT_DELAY = 60  # Maximum reconnect delay
 
 class SentimentWorker:
-    def __init__(self, consumer_queue_name=CONSUMER_QUEUE, response_queue_name=PRODUCER_QUEUE):
+    def __init__(self, consumer_queue_name=CONSUMER_QUEUE, router_queue_name=PRODUCER_QUEUE):
         self._running = True
         self.consumer_queue_name = consumer_queue_name
-        self.response_queue_name = response_queue_name
+        
+        # Handle single queue or multiple queues
+        if isinstance(router_queue_name, str):
+            self.producer_queue_name = [router_queue_name]
+        else:
+            self.producer_queue_name = router_queue_name
+            
+        # Exchange configuration
+        self.exchange_name_producer = EXCHANGE_NAME
+        self.exchange_type_producer = EXCHANGE_TYPE
+        
         self.rabbitmq = RabbitMQClient()
         
         self.sentinel_beacon = SentinelBeacon(SENTINEL_PORT)
         
-        # Message counter for incremental IDs
-        self.message_counter = 0
+        # Initialize WAL with StatelessStateInterpreter for persistence
+        self.data_persistence = WriteAheadLog(
+            state_interpreter=StatelessStateInterpreter(),
+            storage=FileSystemStorage(),
+            service_name="sentiment_analysis_worker",
+            base_dir="/app/persistence"
+        )
         
         # Store the node ID for message identification
         self.node_id = NODE_ID
@@ -47,32 +71,45 @@ class SentimentWorker:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         
-        logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queue '{response_queue_name}'")
-    
-    def _get_next_message_id(self):
-        """Get the next incremental message ID for this node"""
-        self.message_counter += 1
-        return self.message_counter
+        logging.info(f"Sentiment Analysis Worker initialized for consumer queue '{consumer_queue_name}', response queues '{self.producer_queue_name}'")
     
     def run(self):
-        """Run the worker, connecting to RabbitMQ and consuming messages"""
-        # Connect to RabbitMQ
-        if not self._setup_rabbitmq():
-            logging.error(f"Failed to set up RabbitMQ connection. Exiting.")
-            return False
+        """Run the worker, connecting to RabbitMQ and consuming messages with reconnection logic"""
+        retry_count = 0
         
-        logging.info(f"Sentiment Analysis Worker running and consuming from queue '{self.consumer_queue_name}'")
+        while self._running:
+            try:
+                # Connect to RabbitMQ
+                if not self._setup_rabbitmq():
+                    retry_count += 1
+                    wait_time = min(MAX_RECONNECT_DELAY, RECONNECT_DELAY * (2 ** min(retry_count, 5)))
+                    logging.error(f"Failed to set up RabbitMQ connection. Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    continue
+                
+                # Reset retry count on successful connection
+                retry_count = 0
+                
+                # Start consuming messages (blocking call)
+                self.rabbitmq.start_consuming()
+                
+            except KeyboardInterrupt:
+                self._handle_shutdown()
+                break
+            except Exception as e:
+                logging.error(f"Error in message consumption: {e}")
+                if self._running:
+                    retry_count += 1
+                    wait_time = min(MAX_RECONNECT_DELAY, RECONNECT_DELAY * (2 ** min(retry_count, 5)))
+                    logging.info(f"Attempting to reconnect in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    # Close any existing connection before reconnecting
+                    try:
+                        self.rabbitmq.close()
+                    except:
+                        pass
+                    continue
         
-        # Start consuming messages (this will block until shutdown)
-        try:
-            self.rabbitmq.start_consuming()
-        except KeyboardInterrupt:
-            logging.info("Received keyboard interrupt, shutting down...")
-            self._running = False
-        except Exception as e:
-            logging.error(f"Error during message consumption: {e}")
-            return False
-            
         return True
     
     def _setup_rabbitmq(self, retry_count=1):
@@ -85,27 +122,122 @@ class SentimentWorker:
             time.sleep(wait_time)
             return self._setup_rabbitmq(retry_count + 1)
         
-        # Declare queues (idempotent operation)
+        # -------------------- CONSUMER --------------------
+        # Declare input queue
         queue = self.rabbitmq.declare_queue(self.consumer_queue_name, durable=True)
         if not queue:
+            logging.error(f"Failed to declare consumer queue '{self.consumer_queue_name}'")
             return False
-            
-        response_queue = self.rabbitmq.declare_queue(self.response_queue_name, durable=True)
-        if not response_queue:
-            return False
+        # --------------------------------------------------
 
-        # Set up consumer
+        # -------------------- PRODUCER --------------------
+        # Declare exchange
+        exchange = self.rabbitmq.declare_exchange(
+            name=self.exchange_name_producer,
+            exchange_type=self.exchange_type_producer,
+            durable=True
+        )
+        if not exchange:
+            logging.error(f"Failed to declare exchange '{self.exchange_name_producer}'")
+            return False
+        
+        # Declare output queues
+        for queue_name in self.producer_queue_name:
+            queue = self.rabbitmq.declare_queue(queue_name, durable=True)
+            if not queue:
+                logging.error(f"Failed to declare producer queue '{queue_name}'")
+                return False        
+            
+            # Bind queues to exchange
+            success = self.rabbitmq.bind_queue(
+                queue_name=queue_name,
+                exchange_name=self.exchange_name_producer,
+                routing_key=queue_name,
+                exchange_type=self.exchange_type_producer
+            )
+            if not success:
+                logging.error(f"Failed to bind queue '{queue_name}' to exchange '{self.exchange_name_producer}'")
+                return False
+        # --------------------------------------------------
+        
+        # Set up consumer for the input queue
         success = self.rabbitmq.consume(
             queue_name=self.consumer_queue_name,
             callback=self._process_message,
             no_ack=False,
             prefetch_count=1
         )
+        
         if not success:
             logging.error(f"Failed to set up consumer for queue '{self.consumer_queue_name}'")
             return False
 
         return True
+    
+    def _safe_publish_to_exchange(self, exchange_name, routing_key, message, persistent=True, retries=0):
+        """
+        Safely publish a message to an exchange with unlimited retry logic
+        Will NEVER give up until the message is successfully published
+        Returns True only when the message is successfully published
+        """
+        try:
+            success = self.rabbitmq.publish(
+                exchange_name=exchange_name,
+                routing_key=routing_key,
+                message=message,
+                persistent=persistent
+            )
+            
+            if success:
+                # Message successfully published
+                if retries > 0:
+                    logging.info(f"Successfully published message after {retries} retries")
+                return True
+            else:
+                # Publishing returned False but didn't raise an exception
+                backoff_time = min(30, 1 + (retries % 10))  # Cap backoff but keep retrying
+                logging.warning(f"Failed to publish to exchange {exchange_name}, retry {retries+1}. Retrying in {backoff_time}s...")
+                time.sleep(backoff_time)
+                return self._safe_publish_to_exchange(exchange_name, routing_key, message, persistent, retries + 1)
+                
+        except Exception as e:
+            # An exception occurred during publishing
+            backoff_time = min(30, 1 + (retries % 10))  # Cap backoff but keep retrying
+            logging.error(f"Error publishing to exchange (retry {retries+1}): {e}")
+            
+            # If connection issues, try to reconnect
+            if "connection" in str(e).lower() or "channel" in str(e).lower():
+                logging.warning(f"Connection issue detected. Reconnecting before retry {retries+1}...")
+                try:
+                    self.rabbitmq.close()
+                except:
+                    pass
+                
+                # Try to reconnect
+                reconnect_success = False
+                reconnect_attempts = 0
+                max_reconnect_attempts = 5  # Try a few times before backing off
+                
+                while not reconnect_success and reconnect_attempts < max_reconnect_attempts:
+                    try:
+                        reconnect_success = self._setup_rabbitmq()
+                        if reconnect_success:
+                            logging.info("Successfully reconnected to RabbitMQ")
+                            break
+                    except Exception as reconnect_error:
+                        logging.warning(f"Failed reconnection attempt {reconnect_attempts+1}: {reconnect_error}")
+                    
+                    reconnect_attempts += 1
+                    time.sleep(2)  # Short delay between reconnection attempts
+                
+                if not reconnect_success:
+                    logging.error(f"Failed to reconnect after {max_reconnect_attempts} attempts. Will retry again in {backoff_time}s")
+            
+            # Sleep with backoff before retrying
+            time.sleep(backoff_time)
+            
+            # Always retry, no matter what - unlimited persistence
+            return self._safe_publish_to_exchange(exchange_name, routing_key, message, persistent, retries + 1)
     
     def _process_message(self, channel, method, properties, body):
         """Process a message from the queue"""
@@ -118,11 +250,20 @@ class SentimentWorker:
             eof_marker = deserialized_message.get("EOF_MARKER", False)
             disconnect_marker = deserialized_message.get("DISCONNECT", False)
             operation_id = deserialized_message.get("operation_id")
+            node_id = deserialized_message.get("node_id")
+            new_operation_id = self.data_persistence.get_counter_value()
+            
+            # Default routing key - use the first queue name
+            routing_key = self.producer_queue_name[0]
+            
+            # Check if this message was already processed
+            if self.data_persistence.is_message_processed(client_id, node_id, operation_id):
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                return
             
             if disconnect_marker:
                 # Generate an operation ID for this message
-                new_operation_id = self._get_next_message_id()
-                
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
                     data=None,
@@ -133,22 +274,27 @@ class SentimentWorker:
                     node_id=self.node_id
                 )
                 
-                # Send processed data to response queue
-                success = self.rabbitmq.publish_to_queue(
-                    queue_name=self.response_queue_name,
+                # Send processed data to exchange with retry logic
+                success = self._safe_publish_to_exchange(
+                    exchange_name=self.exchange_name_producer,
+                    routing_key=routing_key,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
                 if not success:
-                    logging.error("Failed to send processed data to response queue")
+                    logging.error("Failed to send disconnect marker to exchange")
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    return
+                
+                # Clear client data from WAL
+                self.data_persistence.clear(client_id)
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
             
             elif eof_marker:
-                logging.info(f"\033[93mReceived EOF marker for client_id '{client_id}'\033[0m")
-                # Generate an operation ID for the EOF message
-                new_operation_id = self._get_next_message_id()
-                
-                # Pass through EOF marker to response queue using add_metadata
+                # Pass through EOF marker to exchange using add_metadata
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
                     data=[],
@@ -158,25 +304,31 @@ class SentimentWorker:
                     operation_id=new_operation_id,
                     node_id=self.node_id
                 )
-                
-                self.rabbitmq.publish_to_queue(
-                    queue_name=self.response_queue_name,
+
+                success = self._safe_publish_to_exchange(
+                    exchange_name=self.exchange_name_producer,
+                    routing_key=routing_key,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
+                if not success:
+                    logging.error("Failed to send EOF marker to exchange")
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    return
+                
+                # Persist this operation in WAL
+                self.data_persistence.persist(client_id, node_id, None, operation_id)
+                self.data_persistence.increment_counter()
+                
                 channel.basic_ack(delivery_tag=method.delivery_tag)
-                return
             
             # Process the movie data for sentiment analysis
             elif data:
                 logging.info(f"Processing {len(data)} movies for sentiment analysis")
                 processed_data = self._analyze_sentiment_and_calculate_ratios(data)
                 
-                # Use incremental ID if no operation_id is provided
-                if operation_id is None:
-                    operation_id = self._get_next_message_id()
-                    
                 # Prepare response message using the standardized add_metadata method
                 response_message = Serializer.add_metadata(
                     client_id=client_id,
@@ -184,35 +336,57 @@ class SentimentWorker:
                     eof_marker=False,
                     query=None,
                     disconnect_marker=False,
-                    operation_id=operation_id,
+                    operation_id=new_operation_id,
                     node_id=self.node_id
                 )
                 
-                # Send processed data to response queue
-                success = self.rabbitmq.publish_to_queue(
-                    queue_name=self.response_queue_name,
+                logging.info(f"Sending message with operation ID {new_operation_id} to Exchange, node ID {self.node_id}")
+                
+                # Send processed data to exchange with retry logic - will never give up
+                success = self._safe_publish_to_exchange(
+                    exchange_name=self.exchange_name_producer,
+                    routing_key=routing_key,
                     message=Serializer.serialize(response_message),
                     persistent=True
                 )
                 
+                # Message WILL be published with unlimited retries, so this should never happen
                 if not success:
-                    logging.error("Failed to send processed data to response queue")
+                    logging.error("Failed to send processed data to exchange")
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    return
+                
+                # Persist this operation in WAL
+                self.data_persistence.persist(client_id, node_id, None, operation_id)
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
             else:
                 logging.warning(f"Received empty data from client {client_id}")
-            
-            # Acknowledge message
-            channel.basic_ack(delivery_tag=method.delivery_tag)
+                self.data_persistence.increment_counter()
+                channel.basic_ack(delivery_tag=method.delivery_tag)
 
         except ValueError as ve:
             if "was previously cleared, cannot recreate directory" in str(ve):
                 channel.basic_ack(delivery_tag=method.delivery_tag)
             else:
                 logging.error(f"ValueError processing message: {ve}")
-                channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True) 
+                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True) 
 
         except Exception as e:
             logging.error(f"Error processing message: {e}")
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            # Check if it's a connection issue
+            if "connection" in str(e).lower() or "channel" in str(e).lower():
+                logging.error("Connection issue detected, will retry message")
+                try:
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                except Exception as ex:
+                    logging.error(f"Failed to nack message due to {ex}, will be requeued on reconnection")
+            else:
+                # For non-connection errors, don't requeue to avoid infinite loops
+                try:
+                    channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                except:
+                    logging.error("Failed to nack message, channel may be closed")
 
     def _analyze_sentiment_and_calculate_ratios(self, data):
         processed_movies = []
@@ -304,11 +478,14 @@ class SentimentWorker:
         except Exception as e:
             logging.error(f"Error during sentiment analysis: {e}")
             return ("NEUTRAL", 0.5)
-        
-
     
     def _handle_shutdown(self, *_):
         logging.info(f"Shutting down sentiment analysis worker...")
         self._running = False
         if hasattr(self, 'rabbitmq'):
+            self.rabbitmq.stop_consuming()
             self.rabbitmq.close()
+            
+        # Shut down the sentinel beacon
+        if hasattr(self, 'sentinel_beacon'):
+            self.sentinel_beacon.shutdown()

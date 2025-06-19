@@ -32,7 +32,11 @@ def generate_top_10_actors_collector_router(num_top_workers=3, network=NETWORK):
                 "BALANCER_TYPE=round_robin",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

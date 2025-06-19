@@ -48,7 +48,11 @@ def generate_join_movies_router(num_country_workers=2, num_join_credits_workers=
                 "EXCHANGE_NAME=join_router_exchange",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

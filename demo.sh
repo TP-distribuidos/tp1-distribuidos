@@ -5,16 +5,17 @@
 # EXAMPLE: ./demo.sh -t 10 -n 3 -p max_min_worker,join_ratings_worker
 
 # Default values
-INTERVAL=3 # Default interval in seconds
-NUM_CONTAINERS=10  # Default number of containers to kill per interval
-PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker") #Default prefixed, do not separate with commas.
-# PREFIXES=("filter_by_country_worker") 
+INTERVAL=10 # Default interval in seconds
+NUM_CONTAINERS=5  # Default number of containers to kill per interval
+PREFIXES=("max_min_worker" "average_movies_by_rating_worker" "collector_max_min_worker" "join_ratings_worker" "collector_top_10_actors_worker" "top_worker" "join_credits_worker" "count_worker" "filter_by_country_worker" "filter_by_year_worker" "collector_average_sentiment_worker" "average_sentiment_worker" "boundary" "sentinel") #Default prefixed, do not separate with commas.
+# PREFIXES=("collector_average_sentiment_worker" "average_sentiment_worker") 
 
 # ANSI Color Codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 ORANGE='\033[38;5;208m' 
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Function to display usage information
@@ -93,6 +94,29 @@ $matching"
   echo "$containers"
 }
 
+# Function to check if a sentinel container is the last of its group
+function is_last_sentinel_of_group {
+  local container="$1"
+  
+  # Skip if not a sentinel container
+  if [[ "$container" != sentinel_* ]]; then
+    return 1 # Not a sentinel, so not the last one
+  fi
+  
+  # Extract the sentinel group name (everything before the last dash)
+  local group_name=$(echo "$container" | sed -E 's/(.+)-[0-9]+$/\1/')
+  
+  # Count how many containers of this group are running
+  local count=$(docker ps --format "{{.Names}}" | grep "tp1-distribuidos-$group_name-" | wc -l | tr -d ' ')
+  
+  # If count is 1, this is the last one
+  if [ "$count" -eq 1 ]; then
+    return 0 # True, this is the last one
+  else
+    return 1 # False, not the last one
+  fi
+}
+
 # Main execution loop
 echo -e "${GREEN}Starting periodic container kill script${NC}"
 echo -e "${GREEN}Interval: ${INTERVAL} seconds | Containers per interval: ${NUM_CONTAINERS} | Targeting prefixes: ${PREFIXES[*]}${NC}"
@@ -121,8 +145,15 @@ while true; do
     # Take the first $to_kill containers
     selected_containers=$(echo "$matching_containers" | head -n $to_kill)
     
+    killed_count=0
     while read -r container; do
       if [ ! -z "$container" ]; then
+        # Check if this is the last sentinel of its group
+        if is_last_sentinel_of_group "$container"; then
+          echo -e "${BLUE}Skipping ${ORANGE}$container${BLUE} as it's the last sentinel of its group${NC}"
+          continue
+        fi
+        
         echo -e "${YELLOW}Killing container: $container${NC}"
         
         # Modify kill_container.sh output handling
@@ -136,10 +167,12 @@ while true; do
         
         if echo "$output" | grep -q "Successfully sent SIGKILL"; then
           echo -e "${GREEN}Successfully sent SIGKILL to container${NC}"
-          # Removed the blank line here
+          killed_count=$((killed_count + 1))
         fi
       fi
     done <<< "$selected_containers"
+    
+    echo -e "${GREEN}Killed $killed_count containers this cycle${NC}"
   fi
   
   # Wait for the next interval

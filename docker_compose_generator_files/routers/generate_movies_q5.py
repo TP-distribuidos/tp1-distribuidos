@@ -34,7 +34,11 @@ def generate_movies_q5_router(num_sentiment_workers=2, network=NETWORK):
                 "BALANCER_TYPE=round_robin",
                 f"SENTINEL_PORT={base_port}"
             ],
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "volumes": [
                 "./server/router:/app",
                 "./server/rabbitmq:/app/rabbitmq",

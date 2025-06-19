@@ -49,7 +49,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.info("Starting filter_by_country worker service...")
+    logging.debug("Starting filter_by_country worker service...")
     try:
         main()
     except KeyboardInterrupt:

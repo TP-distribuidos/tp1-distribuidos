@@ -23,7 +23,7 @@ def main():
         # Create worker with the environment configuration
         worker = SentimentWorker(
             consumer_queue_name=consumer_queue,
-            response_queue_name=producer_queue
+            router_queue_name=producer_queue
         )
         
         success = worker.run()
@@ -39,7 +39,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.info("Starting sentiment analysis worker service...")
+    logging.debug("Starting sentiment analysis worker service...")
     try:
         main()
     except KeyboardInterrupt:

@@ -96,7 +96,11 @@ def generate_count_workers(num_shards=2, num_workers_per_shard=2, network=NETWOR
                 "context": "./server",
                 "dockerfile": "worker/count/Dockerfile"
             },
-            "depends_on": ["rabbitmq"],
+            "depends_on": {
+                "rabbitmq": {
+                    "condition": "service_healthy"
+                }
+            },
             "ports": [
                 f"{worker_port}:{worker_port}"
             ],

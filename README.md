@@ -2,6 +2,29 @@
 
 ## Ejecucion
 
+### Correr el sistema
+
+Para correr el sistema, primero debes generar un archivo de docker compose:
+`./docker-compose.sh -q`
+
+Esto generará un archivo `docker-compose-test.yaml` que contiene la configuración de todos los servicios necesarios para el sistema (incluyendo la Q5 por el flag -q).
+
+Luego, puedes iniciar el sistema con el siguiente comando:
+`run.sh --no-demo`
+
+Esto iniciará todos los servicios definidos en el archivo `docker-compose-test.yaml`, incluyendo los workers, sentinelas y la base de datos sin estar matando servicios.
+
+Para correrlo con la demo de tolerancia a fallos (matar servicios), puedes usar:
+`run.sh`
+
+Para luego chekear el resultado (con Q5), se puede correr el siguiente comando:
+`./check_output.sh -q5`
+
+Sin Q5, se puede correr:
+`./check_output.sh`
+
+Aclaracion: Los resultados que chequea el script `check_output.sh` estan basados en los dataset de movies, credits y ratings_small completos.
+
 ### Levantar nuevos clientes
 
 Para levantar nuevos clientes usar el siguiente comando:

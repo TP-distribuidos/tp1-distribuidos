@@ -153,7 +153,19 @@ class Boundary:
           )
           with self._lock:
             self._client_threads[client_id] = client_thread
-          client_thread.start()
+          
+          try:
+            client_thread.start()
+            logging.info(f"Thread started for client {client_id}")
+          except Exception as thread_exc:
+            logging.error(f"Failed to start thread for client {client_id}: {thread_exc}")
+            # Clean up resources for this client
+            with self._lock:
+              self._client_sockets = [s for s in self._client_sockets if client_id not in s]
+              if client_id in self._client_threads:
+                del self._client_threads[client_id]
+            client_sock.close()
+            
       except Exception as exc:
         if self._running:  # Only log if we're supposed to be running
           logging.error(f"Accept failed: {exc}")
@@ -279,79 +291,96 @@ class Boundary:
 # per‑client logic                                                   #
 # ------------------------------------------------------------------ #
   def _handle_client_connection(self, sock, addr, client_id):
-    proto = self.protocol()
-    logging.info(self.green(f"Client ID: {client_id} successfully started"))
-    csvs_received = 0
-    client_addr = f"{addr[0]}:{addr[1]}"
-
+    """
+    Handle communication with a connected client.
+    
+    Args:
+        sock: Client socket
+        addr: Client address tuple (ip, port)
+        client_id: Unique identifier for this client
+    """
     try:
-        data = ''
-        while True:
-            try:
-                data, file_index = self._receive_csv_batch(sock, proto)
-                with self._lock:
-                  new_operation_id = self.data_persistence_counter.get_counter_value()
-                  if data == EOF_MARKER:
-                      self._send_eof_marker(csvs_received, client_id, new_operation_id)
-                      csvs_received += 1
-                      self.data_persistence_counter.increment_counter()
-                      logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
-                      continue
-                  csvs_received = file_index
-                  if csvs_received == MOVIES_CSV:
-                      filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
+        proto = self.protocol()
+        logging.info(self.green(f"Client ID: {client_id} successfully started"))
+        csvs_received = 0
+        client_addr = f"{addr[0]}:{addr[1]}"
 
-                      # Send data for Q1 to the movies router
-                      prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
-                      self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
+        try:
+            data = ''
+            while True:
+                try:
+                    data, file_index = self._receive_csv_batch(sock, proto)
+                    with self._lock:
+                        new_operation_id = self.data_persistence_counter.get_counter_value()
+                        if data == EOF_MARKER:
+                            self._send_eof_marker(csvs_received, client_id, new_operation_id)
+                            csvs_received += 1
+                            self.data_persistence_counter.increment_counter()
+                            logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
+                            continue
+                        csvs_received = file_index
+                        if csvs_received == MOVIES_CSV:
+                            filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
-                      # Send data for Q5 to the reviews router
-                      prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
-                      self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
-                  
-                  elif csvs_received == CREDITS_CSV:
-                      filtered_data = self._project_to_columns(data, COLUMNS_Q4)
-                      filtered_data = self._remove_cast_extra_data(filtered_data)
-                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                      self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
-                  
-                  elif csvs_received == RATINGS_CSV:
-                      filtered_data = self._project_to_columns(data, COLUMNS_Q3)
-                      filtered_data = self._remove_ratings_with_0_rating(filtered_data)
-                      prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
-                      self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
-                    
-                  self.data_persistence_counter.increment_counter()                
+                            # Send data for Q1 to the movies router
+                            prepared_data_q1 = Serializer.add_metadata(client_id, filtered_data_q1, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data_q1, self.movies_router_queue)
 
-            except ConnectionError:
-              logging.info(f"Client {client_addr} disconnected")
-              # Check if this is due to server shutdown
-              with self._lock:
-                  if not self.is_shutting_down:
-                      logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
-                      new_operation_id = self.data_persistence_counter.get_counter_value()
-                      self._send_disconnect_marker(client_id, new_operation_id)
-                      self._cleanup_client_resources(client_id)
-                      self.data_persistence_counter.increment_counter()
-                  else:
-                      logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
-                      self._cleanup_client_resources(client_id)
-              break
-               
-    except Exception as exc:
-        logging.error(f"Client {client_addr} error: {exc}")
-        logging.exception(exc)
-        # Check if this is due to server shutdown
+                            # Send data for Q5 to the reviews router
+                            prepared_data_q5 = Serializer.add_metadata(client_id, filtered_data_q5, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data_q5, self.movies_router_q5_queue)
+                        
+                        elif csvs_received == CREDITS_CSV:
+                            filtered_data = self._project_to_columns(data, COLUMNS_Q4)
+                            filtered_data = self._remove_cast_extra_data(filtered_data)
+                            prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data, self.credits_router_queue)
+                        
+                        elif csvs_received == RATINGS_CSV:
+                            filtered_data = self._project_to_columns(data, COLUMNS_Q3)
+                            filtered_data = self._remove_ratings_with_0_rating(filtered_data)
+                            prepared_data = Serializer.add_metadata(client_id, filtered_data, operation_id=new_operation_id, node_id=self.node_id)
+                            self._send_data_to_rabbitmq_queue(prepared_data, self.ratings_router_queue)
+                            
+                        self.data_persistence_counter.increment_counter()                
+
+                except ConnectionError:
+                    logging.info(f"Client {client_addr} disconnected")
+                    # Check if this is due to server shutdown
+                    with self._lock:
+                        if not self.is_shutting_down:
+                            logging.info(f"Treating disconnection as DISCONNECT for client {client_id}")
+                            new_operation_id = self.data_persistence_counter.get_counter_value()
+                            self._send_disconnect_marker(client_id, new_operation_id)
+                            self._cleanup_client_resources(client_id)
+                            self.data_persistence_counter.increment_counter()
+                        else:
+                            logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                            self._cleanup_client_resources(client_id)
+                    break
+                
+        except Exception as exc:
+            logging.error(f"Client {client_addr} error: {exc}")
+            logging.exception(exc)
+            # Check if this is due to server shutdown
+            with self._lock:
+                if not self.is_shutting_down:
+                    logging.info(f"Treating error as DISCONNECT for client {client_id}")
+                    new_operation_id = self.data_persistence_counter.get_counter_value()
+                    self._send_disconnect_marker(client_id, new_operation_id)
+                    self._cleanup_client_resources(client_id)
+                    self.data_persistence_counter.increment_counter()
+                else:
+                    logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
+                    self._cleanup_client_resources(client_id)
+    
+    except Exception as init_exc:
+        # Handle initialization errors
+        logging.error(f"Error initializing client thread for {client_id}: {init_exc}")
+        logging.exception(init_exc)
+        # Clean up resources without sending DISCONNECT markers (since we couldn't initialize properly)
         with self._lock:
-            if not self.is_shutting_down:
-                logging.info(f"Treating error as DISCONNECT for client {client_id}")
-                new_operation_id = self.data_persistence_counter.get_counter_value()
-                self._send_disconnect_marker(client_id, new_operation_id)
-                self._cleanup_client_resources(client_id)
-                self.data_persistence_counter.increment_counter()
-            else:
-                logging.info(f"Server is shutting down, not sending DISCONNECT for client {client_id}")
-                self._cleanup_client_resources(client_id)
+            self._cleanup_client_resources(client_id)
 
   def _send_disconnect_marker(self, client_id, new_operation_id):
     """

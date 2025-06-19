@@ -286,9 +286,9 @@ class Worker:
         """Finalize processing for a client whose data is complete"""        
         self.send_data(client_id, [], True, operation_id=operation_id)
         
-        # self.client_states_data_persistence.clear(client_id)
-        # self.movies_data_persistence.clear(client_id)
-        # self.credits_data_persistence.clear(client_id)
+        self.client_states_data_persistence.clear(client_id)
+        self.movies_data_persistence.clear(client_id)
+        self.credits_data_persistence.clear(client_id)
         
         logging.info(f"Client {client_id} processing completed")
     

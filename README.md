@@ -203,7 +203,18 @@ Este sistema de tolerancia a fallos proporciona una solución robusta para mante
 
 ## Visión General
 
-El Write-Ahead Log (WAL) es el mecanismo de persistencia en el que nos basamos para la durabilidad y recuperación de datos. Esta implementación proporciona:
+El Write-Ahead Log (WAL) es el mecanismo de persistencia en el que nos basamos para la durabilidad y recuperación de datos. Cada worker utiliza el WAL para persistir datos de negocio de manera confiable. Cada nodo sigue el siguiente patron de persistencia:
+
+1. POP del mensaje de la cola de mensajes
+2. Checkear si el mensaje ya fue procesado (deduplicación) y si lo fue, incrementar el contador y enviar el ACK al producer
+3. Procesar el mensaje (varia segun el nodo)
+4. Enviar el mensaje a la cola de mensajes de salida con el operation_id del contador actual 
+5. Persistir el mensaje en el WAL
+6. Incrementar el contador de mensajes procesados
+7. Enviar el ACK al producer
+
+
+Esta implementación proporciona:
 
 - Persistencia fiable de datos con recuperación ante fallos
 - Deduplicación de mensajes mediante identificadores de operación

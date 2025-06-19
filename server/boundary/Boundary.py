@@ -162,87 +162,118 @@ class Boundary:
 # response queue consumer logic                                      #
 # ------------------------------------------------------------------ #
   def _handle_response_queue(self):
-    """
-    Handle messages from the response queue in a separate thread.
-    """
-    try:
-        logging.info(self.green(f"Starting response queue consumer thread"))
-        
-        # Set up RabbitMQ consumer
-        self.rabbitmq.client.consume(
-            queue_name=RESPONSE_QUEUE,
-            callback=self._process_response_message,
-            no_ack=False
-        )
-        
-        logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
-        
-        # Start consuming (blocking call)
-        self.rabbitmq.client.start_consuming()
-            
-    except Exception as e:
-        logging.error(f"Error in response queue handler: {e}")
+      """
+      Handle messages from the response queue in a separate thread.
+      Implements reconnection logic for resilience.
+      """
+      while self._running:
+          try:
+              logging.info(self.green(f"Starting response queue consumer thread"))
+              
+              # Set up RabbitMQ consumer
+              self.rabbitmq.client.consume(
+                  queue_name=RESPONSE_QUEUE,
+                  callback=self._process_response_message,
+                  no_ack=False
+              )
+              
+              logging.info(self.green(f"Started consuming from {RESPONSE_QUEUE}"))
+              
+              # Start consuming (blocking call)
+              self.rabbitmq.client.start_consuming()
+                  
+          except Exception as e:
+              if not self._running:
+                  logging.info("Response queue handler stopping as server is shutting down")
+                  break
+                  
+              logging.error(f"Error in response queue handler: {e}")
+              logging.info("Will attempt to reconnect to response queue in 2 seconds...")
+              time.sleep(2)
 
   def _process_response_message(self, channel, method, properties, body):
-    """Process messages from the response queue"""
-    try:
-        # Deserialize the message
-        deserialized_message = Serializer.deserialize(body)
-        
-        # Extract client_id and data from the deserialized message
-        client_id = deserialized_message.get("client_id")
-        data = deserialized_message.get("data")
-        query = deserialized_message.get("query")
-        node_id = deserialized_message.get("node_id")
-        operation_id = deserialized_message.get("operation_id")
+      """Process messages from the response queue with improved error handling"""
+      try:
+          # Deserialize the message
+          deserialized_message = Serializer.deserialize(body)
+          
+          # Extract client_id and data from the deserialized message
+          client_id = deserialized_message.get("client_id")
+          data = deserialized_message.get("data")
+          query = deserialized_message.get("query")
+          node_id = deserialized_message.get("node_id")
+          operation_id = deserialized_message.get("operation_id")
 
-        if self.data_persistence_response_counter.is_message_processed(client_id, node_id, operation_id):
-            logging.info(f"Message for client {client_id} with operation ID {operation_id} already processed, skipping")
-            self.data_persistence_response_counter.increment_counter()
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-            return
+          if self.data_persistence_response_counter.is_message_processed(client_id, node_id, operation_id):
+              logging.info(f"Message for client {client_id} with operation ID {operation_id} already processed, skipping")
+              self.data_persistence_response_counter.increment_counter()
+              try:
+                  channel.basic_ack(delivery_tag=method.delivery_tag)
+              except Exception as e:
+                  logging.warning(f"Failed to acknowledge message (already processed): {e}")
+              return
 
-        if not data:
-            logging.warning(f"Response message contains no data")
-            channel.basic_ack(delivery_tag=method.delivery_tag)
-            return
-        
-        # Convert data to list if it's not already
-        if not isinstance(data, list):
-            data = [data]
-        
-        # Find the client socket by client_id
-        client_socket = None
-        with self._lock:
-            for client_dict in self._client_sockets:
-                if client_id in client_dict:
-                    client_socket = client_dict[client_id]
-                    break
-        
-        # Send the data to the client if the socket is found
-        if client_socket:
-            try:
-                # Prepare data for sending
-                proto = self.protocol()
-                
-                serialized_data = json.dumps(data)
-                proto.send_all(client_socket, serialized_data, query)
-                
-            except Exception as e:
-                logging.error(f"Failed to send data to client {client_id}: {e}")
-        else:
-            logging.warning(f"Client socket not found for client ID: {client_id}")
-            channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
-        
-        self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
-        self.data_persistence_response_counter.increment_counter()
-        # Acknowledge message
-        channel.basic_ack(delivery_tag=method.delivery_tag)
-        
-    except Exception as e:
-        logging.error(f"Error processing response message: {e}")
-        # Reject message
-        channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
+          if not data:
+              logging.warning(f"Response message contains no data")
+              try:
+                  channel.basic_ack(delivery_tag=method.delivery_tag)
+              except Exception as e:
+                  logging.warning(f"Failed to acknowledge empty message: {e}")
+              return
+          
+          # Convert data to list if it's not already
+          if not isinstance(data, list):
+              data = [data]
+          
+          # Find the client socket by client_id
+          client_socket = None
+          with self._lock:
+              for client_dict in self._client_sockets:
+                  if client_id in client_dict:
+                      client_socket = client_dict[client_id]
+                      break
+          
+          # Send the data to the client if the socket is found
+          if client_socket:
+              try:
+                  # Prepare data for sending
+                  proto = self.protocol()
+                  
+                  serialized_data = json.dumps(data)
+                  proto.send_all(client_socket, serialized_data, query)
+                  
+                  # Successfully sent, persist operation and acknowledge message
+                  self.data_persistence_response_counter.persist(client_id, node_id, {}, operation_id)
+                  self.data_persistence_response_counter.increment_counter()
+                  try:
+                      channel.basic_ack(delivery_tag=method.delivery_tag)
+                  except Exception as e:
+                      logging.warning(f"Failed to acknowledge message after processing: {e}")
+                      
+              except Exception as e:
+                  logging.error(f"Failed to send data to client {client_id}: {e}")
+                  # Don't requeue if we can't send to client - client will reconnect if needed
+                  try:
+                      channel.basic_ack(delivery_tag=method.delivery_tag)
+                  except Exception as channel_e:
+                      logging.warning(f"Failed to acknowledge message after send error: {channel_e}")
+          else:
+              # logging.warning(f"Client socket not found for client ID: {client_id}")
+              # Requeue the message only if we're not shutting down
+              # This gives the client time to reconnect
+              if not self.is_shutting_down:
+                  try:
+                      channel.basic_reject(delivery_tag=method.delivery_tag, requeue=True)
+                  except Exception as e:
+                      logging.warning(f"Failed to requeue message: {e}")
+          
+      except Exception as e:
+          logging.error(f"Error processing response message: {e}")
+          # Acknowledge the message to avoid getting stuck in a loop
+          try:
+              channel.basic_ack(delivery_tag=method.delivery_tag)
+          except Exception as ack_e:
+              logging.warning(f"Failed to acknowledge message after processing error: {ack_e}")
 
 # ------------------------------------------------------------------ #
 # per‑client logic                                                   #
@@ -257,7 +288,7 @@ class Boundary:
         data = ''
         while True:
             try:
-                data = self._receive_csv_batch(sock, proto)
+                data, file_index = self._receive_csv_batch(sock, proto)
                 with self._lock:
                   new_operation_id = self.data_persistence_counter.get_counter_value()
                   if data == EOF_MARKER:
@@ -266,7 +297,7 @@ class Boundary:
                       self.data_persistence_counter.increment_counter()
                       logging.info(self.green(f"EOF received for CSV #{csvs_received} from client {client_addr}"))
                       continue
-                  
+                  csvs_received = file_index
                   if csvs_received == MOVIES_CSV:
                       filtered_data_q1, filtered_data_q5 = self._project_to_columns(data, [COLUMNS_Q1, COLUMNS_Q5])
 
@@ -422,7 +453,7 @@ class Boundary:
                     result.append(row)
             except (SyntaxError, ValueError, TypeError) as e:
                 # Skip rows with unparseable cast data
-                logging.warning(f"Could not parse cast data: {e}")
+                # logging.warning(f"Could not parse cast data: {e}")
                 pass
     return result
 
@@ -508,13 +539,17 @@ class Boundary:
     Receive a CSV batch from the socket
     First read 4 bytes to get the length, then read the actual data
     """
+
+    data_bytes_file_index = proto.recv_exact(sock, 4)
+    data_file_index = proto.decode_int(data_bytes_file_index)
+
     length_bytes = proto.recv_exact(sock, 4)
     msg_length = int.from_bytes(length_bytes, byteorder='big')
 
     data_bytes = proto.recv_exact(sock, msg_length)
     data = proto.decode(data_bytes)
 
-    return data
+    return data, data_file_index
 
 # ----------------------------------------------------------------------- #
 # Rabbit-Related-Section                                                  #
